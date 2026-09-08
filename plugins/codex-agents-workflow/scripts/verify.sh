@@ -43,17 +43,17 @@ tmp_dir=''
 cleanup() {
   if [ -n "$tmp_dir" ] && [ -d "$tmp_dir" ]; then
     case "$tmp_dir" in
-      "$tmp_base"/sol-advisor-verify.*) rm -rf "$tmp_dir" ;;
+      "$tmp_base"/codex-agents-workflow-verify.*) rm -rf "$tmp_dir" ;;
       *) printf '%s\n' "REFUSING cleanup of unexpected directory: $tmp_dir" >&2 ;;
     esac
   fi
 }
 trap cleanup 0 HUP INT TERM
-tmp_dir=$(mktemp -d "$tmp_base/sol-advisor-verify.XXXXXX") || fail "could not create disposable verification directory"
+tmp_dir=$(mktemp -d "$tmp_base/codex-agents-workflow-verify.XXXXXX") || fail "could not create disposable verification directory"
 
-luna_file=sol-advisor-luna-implementer.toml
-terra_file=sol-advisor-terra-implementer.toml
-sol_file=sol-advisor-sol-reviewer.toml
+luna_file=codex-workflow-luna-implementer.toml
+terra_file=codex-workflow-terra-implementer.toml
+reviewer_file=codex-workflow-reviewer.toml
 legacy_luna_sha256=fba1b42849d93737e83b094a2ab0b1611f87ac37db7438c8bbdf581f0813f8eb
 legacy_terra_sha256=4425a8c1f21ce8c6af93f96adc253bbc33ea301f1389b3fa8ce350be08584eca
 legacy_luna_v050_sha256=5cfaf77f14757074ca5d3cfecd0b8204c91dc14eff8d6119985c64416ddf4853
@@ -80,13 +80,13 @@ write_legacy_roles() {
   target=$1
   mkdir -p "$target"
   cat > "$target/$luna_file" <<'LEGACY_LUNA'
-name = "sol_advisor_luna_implementer"
-description = "Sol Advisor's routine implementation lane for bounded, fully specified work."
+name = "codex_workflow_luna_implementer"
+description = "Codex Agents Workflow's routine implementation lane for bounded, fully specified work."
 model = "gpt-5.6-luna"
 model_reasoning_effort = "max"
 
 developer_instructions = """
-You are Sol Advisor's routine implementation worker. Execute the supplied five-part
+You are Codex Agents Workflow's routine implementation worker. Execute the supplied five-part
 implementation specification exactly when it is bounded and largely determined by
 the contract. Preserve stated interfaces and constraints, make only the files you
 own, and adapt to concurrent edits instead of reverting work you do not own.
@@ -98,13 +98,13 @@ reasoning level; this installed custom-agent profile is the required routine lan
 """
 LEGACY_LUNA
   cat > "$target/$terra_file" <<'LEGACY_TERRA'
-name = "sol_advisor_terra_implementer"
-description = "Sol Advisor's complex implementation lane for context-heavy or higher-risk work."
+name = "codex_workflow_terra_implementer"
+description = "Codex Agents Workflow's complex implementation lane for context-heavy or higher-risk work."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "max"
 
 developer_instructions = """
-You are Sol Advisor's complex implementation worker. Resolve difficult implementation
+You are Codex Agents Workflow's complex implementation worker. Resolve difficult implementation
 details within the settled architecture, including context-heavy, higher-risk, or
 wider-blast-radius work. Preserve every stated interface and constraint, stay within
 the owned file set, and document material judgment calls.
@@ -116,7 +116,7 @@ actual evidence. Do not silently substitute a different role, model, or reasonin
 level; this installed custom-agent profile is the required complex lane.
 """
 LEGACY_TERRA
-  cp "$templates/$sol_file" "$target/$sol_file"
+  cp "$templates/$reviewer_file" "$target/$reviewer_file"
   [ "$(hash_digest "$target/$luna_file")" = "$legacy_luna_sha256" ] || fail "legacy Luna fixture digest drifted"
   [ "$(hash_digest "$target/$terra_file")" = "$legacy_terra_sha256" ] || fail "legacy Terra fixture digest drifted"
 }
@@ -125,13 +125,13 @@ write_v050_roles() {
   target=$1
   mkdir -p "$target"
   cat > "$target/$luna_file" <<'V050_LUNA'
-name = "sol_advisor_luna_implementer"
-description = "Sol Advisor's default routine implementation lane for bounded, fully specified work."
+name = "codex_workflow_luna_implementer"
+description = "Codex Agents Workflow's default routine implementation lane for bounded, fully specified work."
 model = "gpt-5.6-luna"
 model_reasoning_effort = "max"
 
 developer_instructions = """
-You are Sol Advisor's default routine implementation worker. Execute the supplied
+You are Codex Agents Workflow's default routine implementation worker. Execute the supplied
 five-part implementation specification when the work is bounded and largely
 determined by the contract. Preserve every stated interface and constraint, stay
 within the owned file set, and document material judgment calls.
@@ -146,13 +146,13 @@ level; this installed custom-agent profile is the required routine lane.
 """
 V050_LUNA
   cat > "$target/$terra_file" <<'V050_TERRA'
-name = "sol_advisor_terra_implementer"
-description = "Sol Advisor's explicit high-complexity escalation lane for judgment-heavy or high-risk work."
+name = "codex_workflow_terra_implementer"
+description = "Codex Agents Workflow's explicit high-complexity escalation lane for judgment-heavy or high-risk work."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
 
 developer_instructions = """
-You are Sol Advisor's explicit high-complexity escalation worker. Execute the
+You are Codex Agents Workflow's explicit high-complexity escalation worker. Execute the
 supplied five-part implementation specification within the settled architecture when
 the parent identifies judgment-heavy, high-risk, or wider-blast-radius work, or when
 one corrected Luna attempt shows that routine routing was a misclassification.
@@ -166,7 +166,7 @@ report actual evidence. Do not silently substitute a different role, model, or
 reasoning level; this installed custom-agent profile is the required escalation lane.
 """
 V050_TERRA
-  cp "$templates/$sol_file" "$target/$sol_file"
+  cp "$templates/$reviewer_file" "$target/$reviewer_file"
   [ "$(hash_digest "$target/$luna_file")" = "$legacy_luna_v050_sha256" ] || fail "v0.5.0 Luna fixture digest drifted"
   [ "$(hash_digest "$target/$terra_file")" = "$legacy_terra_v050_sha256" ] || fail "v0.5.0 Terra fixture digest drifted"
 }
@@ -199,21 +199,15 @@ expected = {
         "model_reasoning_effort": "medium",
         "sandbox_mode": "read-only",
     },
-    "sol-advisor-luna-implementer.toml": {
-        "name": "sol_advisor_luna_implementer",
+    "codex-workflow-luna-implementer.toml": {
+        "name": "codex_workflow_luna_implementer",
         "model": "gpt-5.6-luna",
         "model_reasoning_effort": "max",
     },
-    "sol-advisor-terra-implementer.toml": {
-        "name": "sol_advisor_terra_implementer",
+    "codex-workflow-terra-implementer.toml": {
+        "name": "codex_workflow_terra_implementer",
         "model": "gpt-5.6-terra",
         "model_reasoning_effort": "high",
-    },
-    "sol-advisor-sol-reviewer.toml": {
-        "name": "sol_advisor_sol_reviewer",
-        "model": "gpt-5.6-sol",
-        "model_reasoning_effort": "high",
-        "sandbox_mode": "read-only",
     },
 }
 actual = {path.name for path in root.glob("*.toml")}
@@ -227,7 +221,7 @@ for filename, pins in expected.items():
     for field, value in pins.items():
         if data.get(field) != value:
             raise SystemExit(f"{filename}: {field}={data.get(field)!r}, expected {value!r}")
-print("current and legacy role pins are valid")
+print("current native role pins are valid")
 PY
 pass "exact current and legacy TOML inventory"
 
@@ -239,7 +233,7 @@ pass "immutable historical migration fingerprints"
 
 clean_target=$tmp_dir/clean
 sh "$installer" --target-dir "$clean_target"
-for role in "$luna_file" "$terra_file" "$sol_file"; do
+for role in "$luna_file" "$terra_file" "$reviewer_file"; do
   cmp -s "$templates/$role" "$clean_target/$role" || fail "clean install mismatch: $role"
 done
 sh "$installer" --target-dir "$clean_target" --check
@@ -300,7 +294,7 @@ pass "missing-target check refusal is non-mutating"
 
 codex_home=$tmp_dir/codex-home
 CODEX_HOME="$codex_home" sh "$installer"
-for role in "$luna_file" "$terra_file" "$sol_file"; do
+for role in "$luna_file" "$terra_file" "$reviewer_file"; do
   cmp -s "$templates/$role" "$codex_home/agents/$role" || fail "CODEX_HOME install mismatch: $role"
 done
 test ! -e "$codex_home/config.toml" || fail "installer created config.toml"
@@ -313,7 +307,7 @@ pass "CODEX_HOME and relative target behavior"
 migration_target=$tmp_dir/migration
 write_legacy_roles "$migration_target"
 sh "$installer" --target-dir "$migration_target"
-for role in "$luna_file" "$terra_file" "$sol_file"; do
+for role in "$luna_file" "$terra_file" "$reviewer_file"; do
   cmp -s "$templates/$role" "$migration_target/$role" || fail "historical migration mismatch: $role"
 done
 sh "$installer" --target-dir "$migration_target" --check
@@ -322,7 +316,7 @@ pass "exact historical Luna/Terra migration"
 v050_migration_target=$tmp_dir/v050-migration
 write_v050_roles "$v050_migration_target"
 sh "$installer" --target-dir "$v050_migration_target"
-for role in "$luna_file" "$terra_file" "$sol_file"; do
+for role in "$luna_file" "$terra_file" "$reviewer_file"; do
   cmp -s "$templates/$role" "$v050_migration_target/$role" || fail "v0.5.0 migration mismatch: $role"
 done
 sh "$installer" --target-dir "$v050_migration_target" --check
@@ -384,7 +378,7 @@ if sh "$installer" --target-dir "$unsafe"; then fail "installer accepted symlink
 after=$(snapshot_files "$unsafe")
 [ "$before" = "$after" ] || fail "symlink refusal partially mutated target"
 test ! -e "$unsafe/$terra_file" || fail "symlink refusal partially installed Terra"
-test ! -e "$unsafe/$sol_file" || fail "symlink refusal partially installed Sol"
+test ! -e "$unsafe/$reviewer_file" || fail "symlink refusal partially installed Sol"
 pass "unsafe destination refusal with zero partial mutation"
 
 runtime_sessions=$tmp_dir/runtime-sessions
@@ -394,12 +388,12 @@ runtime_id=11111111-1111-7111-8111-111111111111
 runtime_rollout=$runtime_day/rollout-2026-08-15T00-00-00-$runtime_id.jsonl
 printf '%s\n' \
   '{"type":"response_item","payload":{"prompt":"DO_NOT_LEAK_PROMPT"}}' \
-  "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$runtime_id\",\"parent_thread_id\":\"00000000-0000-7000-8000-000000000000\",\"agent_role\":\"sol_advisor_luna_implementer\",\"agent_path\":\"/root/fixture\",\"model_provider\":\"openai\",\"cwd\":\"/fixture\"}}" \
+  "{\"type\":\"session_meta\",\"payload\":{\"id\":\"$runtime_id\",\"parent_thread_id\":\"00000000-0000-7000-8000-000000000000\",\"agent_role\":\"codex_workflow_luna_implementer\",\"agent_path\":\"/root/fixture\",\"model_provider\":\"openai\",\"cwd\":\"/fixture\"}}" \
   '{"type":"turn_context","payload":{"model":"gpt-5.6-luna","effort":"max","sandbox_policy":{"type":"danger-full-access"},"permission_profile":{"type":"disabled"},"cwd":"/fixture"}}' \
   > "$runtime_rollout"
 runtime_output=$(sh "$runtime_inspector" --sessions-dir "$runtime_sessions" "$runtime_id")
 printf '%s\n' "$runtime_output" | jq -e --arg id "$runtime_id" '
-  .thread_id == $id and .agent_role == "sol_advisor_luna_implementer"
+  .thread_id == $id and .agent_role == "codex_workflow_luna_implementer"
   and .model == "gpt-5.6-luna" and .effort == "max"
   and .sandbox_policy_type == "danger-full-access"
   and .permission_profile_type == "disabled"
@@ -411,8 +405,8 @@ if sh "$runtime_inspector" --sessions-dir "$runtime_sessions" "$zero_id" >/dev/n
 pass "runtime inspector Luna/Max routing and safe refusal"
 
 for document in "$contracts" "$operations"; do
-  grep -Fq 'agent_type: sol_advisor_luna_implementer' "$document" || fail "missing Luna spawn in $document"
-  grep -Fq 'agent_type: sol_advisor_terra_implementer' "$document" || fail "missing Terra spawn in $document"
+  grep -Fq 'agent_type: codex_workflow_luna_implementer' "$document" || fail "missing Luna spawn in $document"
+  grep -Fq 'agent_type: codex_workflow_terra_implementer' "$document" || fail "missing Terra spawn in $document"
   grep -Fq 'agent_type: codex_workflow_reviewer' "$document" || fail "missing Astra spawn in $document"
   grep -Fq 'fork_turns: none' "$document" || fail "missing fresh context in $document"
   if grep -Eq 'agent_type:.*terra_max' "$document"; then fail "retired Terra-Max spawn remains in $document"; fi
@@ -451,8 +445,8 @@ if grep -Fqi 'commitment-boundary sol consult' "$contracts"; then fail "contract
 pass "native role contracts, selective route declaration, escalation, and correction checks"
 
 for phrase in \
-  'agent_type: sol_advisor_luna_implementer' \
-  'agent_type: sol_advisor_terra_implementer' \
+  'agent_type: codex_workflow_luna_implementer' \
+  'agent_type: codex_workflow_terra_implementer' \
   'agent_type: codex_workflow_reviewer' \
   'fork_turns: none' \
   'SELECTIVE ROUTE' \
@@ -546,8 +540,8 @@ grep -Fq '## What the console does' "$readme" || fail "README omits console over
 grep -Fq 'Cursor and Grok are extra subagent entries.' "$readme" || fail "README omits connector scope"
 grep -Fq 'ChatGPT review uses the installed chatgpt-review-agent skill.' "$readme" || fail "README omits web review boundary"
 grep -Fq 'Attention Heads' "$readme" || fail "README lost Attention Heads section"
-grep -Fq 'https://attentionheads.substack.com/?utm_source=github&utm_medium=readme&utm_campaign=sol-advisor' "$readme" || fail "README changed Attention Heads link"
-grep -Fq 'https://attentionheads.substack.com/subscribe?utm_source=github&utm_medium=readme&utm_campaign=sol-advisor' "$readme" || fail "README changed Subscribe link"
+grep -Fq 'https://attentionheads.substack.com/?utm_source=github&utm_medium=readme&utm_campaign=codex-agents-workflow' "$readme" || fail "README changed Attention Heads link"
+grep -Fq 'https://attentionheads.substack.com/subscribe?utm_source=github&utm_medium=readme&utm_campaign=codex-agents-workflow' "$readme" || fail "README changed Subscribe link"
 pass "README selective routing and preserved Go deeper links"
 
 for document in "$readme" "$manifest" "$skill" "$contracts" "$ui" "$control_skill" "$architecture" "$control_ui"; do
@@ -555,7 +549,7 @@ for document in "$readme" "$manifest" "$skill" "$contracts" "$ui" "$control_skil
     fail "stale single-mode implementation claim remains in $document"
   fi
 done
-for forbidden in sol_advisor_terra_max sol-advisor-terra-max; do
+for forbidden in codex_workflow_terra_max codex-workflow-terra-max; do
   if rg -n "$forbidden" "$readme" "$manifest" "$skill" "$contracts" "$ui" "$templates"; then fail "forbidden second Terra role remains"; fi
 done
 pass "obsolete single-lane claims and second Terra role absent"

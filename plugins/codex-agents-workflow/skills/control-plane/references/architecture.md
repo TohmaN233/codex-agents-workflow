@@ -46,8 +46,8 @@ outside this plugin.
 
 ## Persistent state
 
-The default configuration path is `$CODEX_HOME/sol-advisor/control-plane.json`, or
-`~/.codex/sol-advisor/control-plane.json` when `CODEX_HOME` is unset. An absolute
+The default configuration path is `$CODEX_HOME/codex-agents-workflow/control-plane.json`, or
+`~/.codex/codex-agents-workflow/control-plane.json` when `CODEX_HOME` is unset. An absolute
 `SOL_CONTROL_CONFIG` overrides it. Saves are validated, atomic, restrictive-permission,
 and revision-checked.
 The default is user-global and independent of the repository or current working directory.

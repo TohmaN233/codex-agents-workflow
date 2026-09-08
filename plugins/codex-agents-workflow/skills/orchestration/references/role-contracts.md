@@ -115,7 +115,7 @@ correction for one corrected Luna attempt. That retry is not a prerequisite for 
 Spawn exactly:
 
 ~~~text
-agent_type: sol_advisor_luna_implementer
+agent_type: codex_workflow_luna_implementer
 fork_turns: none
 ~~~
 
@@ -141,7 +141,7 @@ for Terra.
 Spawn exactly:
 
 ~~~text
-agent_type: sol_advisor_terra_implementer
+agent_type: codex_workflow_terra_implementer
 fork_turns: none
 ~~~
 

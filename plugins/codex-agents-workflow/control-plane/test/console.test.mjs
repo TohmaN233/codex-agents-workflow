@@ -84,13 +84,13 @@ test('ordinary console reports global storage under CODEX_HOME', async (t) => {
   })).json();
   assert.deepEqual(payload.storage, {
     scope: 'global',
-    config_path: join(codexHome, 'sol-advisor', 'control-plane.json'),
+    config_path: join(codexHome, 'codex-agents-workflow', 'control-plane.json'),
   });
 });
 
 test('an explicitly passed resolved global path is still reported as global', async (t) => {
   const codexHome = await mkdtemp(join(tmpdir(), 'sol-control-explicit-global-'));
-  const configPath = join(codexHome, 'sol-advisor', 'control-plane.json');
+  const configPath = join(codexHome, 'codex-agents-workflow', 'control-plane.json');
   const state = await startConsole({
     configPath,
     defaultConfigPath: DEFAULT_CONFIG_PATH,

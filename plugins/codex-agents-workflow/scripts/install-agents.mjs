@@ -25,7 +25,7 @@ const roles = {
   },
   luna: {
     label: 'Luna',
-    file: 'sol-advisor-luna-implementer.toml',
+    file: 'codex-workflow-luna-implementer.toml',
     legacyDigests: new Set([
       'fba1b42849d93737e83b094a2ab0b1611f87ac37db7438c8bbdf581f0813f8eb',
       '5cfaf77f14757074ca5d3cfecd0b8204c91dc14eff8d6119985c64416ddf4853',
@@ -33,21 +33,17 @@ const roles = {
   },
   terra: {
     label: 'Terra',
-    file: 'sol-advisor-terra-implementer.toml',
+    file: 'codex-workflow-terra-implementer.toml',
     legacyDigests: new Set([
       '4425a8c1f21ce8c6af93f96adc253bbc33ea301f1389b3fa8ce350be08584eca',
       'dc329fe87f6f6610c13157ec16432f91c79cf5a541ee3e7448f6afb165dd18ce',
     ]),
   },
-  sol: {
-    label: 'Sol',
-    file: 'sol-advisor-sol-reviewer.toml',
-    legacyDigests: new Set(),
-  },
+
 };
 
 function usage() {
-  process.stdout.write(`Usage: install-agents.mjs [--target-dir PATH] [--check] [--check-role ROLE ...]\n\nInstall Codex Agents Workflow's current and legacy-compatible custom-agent templates into the target directory.\nNormal mode migrates only exact byte-matching historical templates. It never\noverwrites a modified, nonregular, or symlinked destination.\n\nWithout --target-dir, the target is CODEX_HOME/agents when CODEX_HOME is set,\notherwise the platform Codex home under the current user's home directory.\n\nOptions:\n  --target-dir PATH  Explicit destination directory.\n  --check            Verify all installed roles without mutation.\n  --check-role ROLE  Verify only reviewer, luna, terra, or sol; repeatable.\n  --help             Show this help text.\n`);
+  process.stdout.write(`Usage: install-agents.mjs [--target-dir PATH] [--check] [--check-role ROLE ...]\n\nInstall Codex Agents Workflow's current and legacy-compatible custom-agent templates into the target directory.\nNormal mode migrates only exact byte-matching historical templates. It never\noverwrites a modified, nonregular, or symlinked destination.\n\nWithout --target-dir, the target is CODEX_HOME/agents when CODEX_HOME is set,\notherwise the platform Codex home under the current user's home directory.\n\nOptions:\n  --target-dir PATH  Explicit destination directory.\n  --check            Verify all installed roles without mutation.\n  --check-role ROLE  Verify only reviewer, luna, or terra; repeatable.\n  --help             Show this help text.\n`);
 }
 
 function fail(message) {
@@ -108,8 +104,8 @@ function parseArguments(argv) {
       checkOnly = true;
     } else if (argument === '--check-role') {
       const role = argv[index + 1];
-      if (!role) fatal('--check-role requires a role: reviewer, luna, terra, or sol.');
-      if (!roles[role]) fatal(`unknown --check-role '${role}'; expected reviewer, luna, terra, or sol.`);
+      if (!role) fatal('--check-role requires a role: reviewer, luna, or terra.');
+      if (!roles[role]) fatal(`unknown --check-role '${role}'; expected reviewer, luna, or terra.`);
       checkOnly = true;
       checkRoles.add(role);
       index += 1;
@@ -153,7 +149,7 @@ function preflightTargetDirectory(targetDir) {
 }
 
 function temporaryPath(targetDir) {
-  return join(targetDir, `.sol-advisor-agent.${randomUUID()}.tmp`);
+  return join(targetDir, `.codex-agents-workflow-agent.${randomUUID()}.tmp`);
 }
 
 function installMissing(entry, targetDir) {
@@ -215,9 +211,7 @@ function main() {
   } else {
     for (const entry of entries) {
       const state = initialStates.get(entry.id);
-      const allowed = entry.id === 'sol'
-        ? new Set(['current', 'missing'])
-        : new Set(['current', 'legacy', 'missing']);
+      const allowed = new Set(['current', 'legacy', 'missing']);
       if (!allowed.has(state)) {
         errors.push(`${entry.label} destination is ${state} and will not be replaced: ${entry.destination}`);
       }
@@ -232,7 +226,7 @@ function main() {
   if (options.checkOnly) {
     const label = options.checkRoles.size > 0
       ? 'selected role templates'
-      : 'Astra reviewer, Luna, Terra, and legacy Sol';
+      : 'Astra reviewer, Luna, and Terra';
     process.stdout.write(`CHECK PASSED: ${label} exactly match ${templateDir}.\n`);
     return;
   }
@@ -260,7 +254,7 @@ function main() {
       fatal(`post-install exactness check failed: ${entry.destination}`);
     }
   }
-  process.stdout.write(`INSTALL PASSED: Astra reviewer, Luna, Terra, and legacy Sol exactly match ${templateDir}.\n`);
+  process.stdout.write(`INSTALL PASSED: Astra reviewer, Luna, and Terra exactly match ${templateDir}.\n`);
 }
 
 try {

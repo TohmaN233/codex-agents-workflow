@@ -20,7 +20,7 @@
         "background": false
       },
       "config": {
-        "agent_type": "sol_advisor_luna_implementer",
+        "agent_type": "codex_workflow_luna_implementer",
         "model": "gpt-5.6-luna",
         "reasoning_effort": "max",
         "role": "implementer",
@@ -41,7 +41,7 @@
         "background": false
       },
       "config": {
-        "agent_type": "sol_advisor_terra_implementer",
+        "agent_type": "codex_workflow_terra_implementer",
         "model": "gpt-5.6-terra",
         "reasoning_effort": "high",
         "role": "implementer",
@@ -50,7 +50,7 @@
       }
     },
     {
-      "id": "native-sol-reviewer",
+      "id": "native-reviewer",
       "name": "Fresh native Astra / Medium reviewer",
       "kind": "native_agent",
       "enabled": true,
@@ -211,7 +211,7 @@
         {
           "id": "review",
           "role": "reviewer",
-          "provider_id": "native-sol-reviewer",
+          "provider_id": "native-reviewer",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nIndependently review the difficult implementation. Remain read-only and do not fix your own findings.\n\nSTATED GOAL\n{{task}}\n\nIMPLEMENTATION RESULT AND CONTEXT\n{{context}}\n\nCONSTRAINTS AND ACCEPTANCE BOUNDARY\n{{constraints}}\n\nPRIMARY VERIFICATION EVIDENCE\n{{verification}}\n\nRETURN\nVERDICT: ship | fix-first | rethink\nBLOCKING FINDINGS: precise locations and required fixes, or none\nNON-BLOCKING RISKS: concise list, or none\nMISSING EVIDENCE: checks still required, or none\nRESIDUAL RISK: most important remaining risk, or none"
@@ -233,7 +233,7 @@
         {
           "id": "review",
           "role": "reviewer",
-          "provider_id": "native-sol-reviewer",
+          "provider_id": "native-reviewer",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nAct as a fresh final reviewer. Remain strictly read-only. Do not edit files, implement fixes, or broaden scope.\n\nSTATED GOAL\n{{task}}\n\nACCUMULATED CHANGE SET OR REVIEW PACKET\n{{context}}\n\nINTERFACES AND CONSTRAINTS\n{{constraints}}\n\nPRIMARY VERIFICATION EVIDENCE\n{{verification}}\n\nREVIEW\nJudge correctness, completeness, regressions, scope discipline, interface preservation, test adequacy, and material risk. Findings must cite precise evidence.\n\nRETURN\nVERDICT: ship | fix-first | rethink\nREASON: decisive evidence-based reason\nBLOCKING FINDINGS: precise locations and required fixes, or none\nNON-BLOCKING RISKS: concise list, or none\nSMALLEST NEXT CHECK: one discriminating validation step\nRESIDUAL RISK: most important remaining risk, or none"
@@ -309,7 +309,7 @@
         {
           "id": "review",
           "role": "reviewer",
-          "provider_id": "native-sol-reviewer",
+          "provider_id": "native-reviewer",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nIndependently review the completed implementation. Remain read-only and do not fix your own findings.\n\nSTATED GOAL\n{{task}}\n\nIMPLEMENTATION RESULT AND CONTEXT\n{{context}}\n\nCONSTRAINTS AND ACCEPTANCE BOUNDARY\n{{constraints}}\n\nPRIMARY VERIFICATION EVIDENCE\n{{verification}}\n\nRETURN\nVERDICT: ship | fix-first | rethink\nBLOCKING FINDINGS: precise locations and required fixes, or none\nNON-BLOCKING RISKS: concise list, or none\nMISSING EVIDENCE: checks still required, or none\nRESIDUAL RISK: most important remaining risk, or none"

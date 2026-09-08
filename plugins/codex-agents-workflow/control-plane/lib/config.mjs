@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, chmod, lstat, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { resourcePath } from './workflow-paths.mjs';
 import { canonicalJSON } from './workflow-revisions.mjs';
 import { validateStrictConfig } from './execution/strict-config.mjs';
@@ -81,18 +81,28 @@ function rejectSecretKeys(value, path = 'provider.config') {
 }
 
 export function isEnvironmentDisabled(env = process.env) {
-  return /^(1|true|yes|on)$/i.test(String(env.SOL_CONTROL_DISABLED || '').trim());
+  return /^(1|true|yes|on)$/i.test(String(env.CODEX_WORKFLOW_DISABLED || env.SOL_CONTROL_DISABLED || '').trim());
 }
 
 export function resolveConfigPath(env = process.env, userHome = homedir()) {
-  if (env.SOL_CONTROL_CONFIG) {
-    assert(isAbsolute(env.SOL_CONTROL_CONFIG), 'SOL_CONTROL_CONFIG must be an absolute path');
-    return resolve(env.SOL_CONTROL_CONFIG);
+  const explicit = env.CODEX_WORKFLOW_CONFIG || env.SOL_CONTROL_CONFIG;
+  if (explicit) {
+    const variable = env.CODEX_WORKFLOW_CONFIG ? 'CODEX_WORKFLOW_CONFIG' : 'SOL_CONTROL_CONFIG';
+    assert(isAbsolute(explicit), `${variable} must be an absolute path`);
+    return resolve(explicit);
   }
   const codexHome = env.CODEX_HOME
     ? (isAbsolute(env.CODEX_HOME) ? resolve(env.CODEX_HOME) : resolve(userHome, env.CODEX_HOME))
     : join(userHome, '.codex');
-  return join(codexHome, 'sol-advisor', 'control-plane.json');
+  return join(codexHome, 'codex-agents-workflow', 'control-plane.json');
+}
+
+function legacyStorePathFor(configPath) {
+  const workflowStore = dirname(configPath);
+  if (basename(workflowStore) === 'codex-agents-workflow') {
+    return join(dirname(workflowStore), 'sol-advisor');
+  }
+  return null;
 }
 
 export function resolveAuditPath(configPath) {
@@ -617,6 +627,16 @@ async function assertRegularNoSymlink(path, label) {
 
 export async function ensureConfigFile({ configPath, defaultConfigPath }) {
   if (await exists(configPath)) return;
+  const legacyStore = legacyStorePathFor(configPath);
+  if (legacyStore && await exists(legacyStore)) {
+    await mkdir(dirname(dirname(configPath)), { recursive: true, mode: 0o700 });
+    try {
+      await rename(legacyStore, dirname(configPath));
+    } catch (error) {
+      throw new Error(`cannot migrate legacy Codex Agents Workflow store from ${legacyStore}: ${error.message}`);
+    }
+    if (await exists(configPath)) return;
+  }
   await mkdir(dirname(configPath), { recursive: true, mode: 0o700 });
   const body = await readFile(defaultConfigPath);
   try {

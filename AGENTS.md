@@ -28,11 +28,11 @@ host auth fails visibly without opening OAuth pages. Managed per-node login is
 an explicit alternative only. Account identity must remain fixed during a node.
 The bundled reviewer is `codex_workflow_reviewer` (GPT-6 Astra / medium).
 Existing user Provider settings and Run pins are not rewritten by installation.
-Legacy storage (`sol-advisor`) and native role IDs remain compatibility
-identities; the public MCP service and tools use the `codex-agents-workflow`
-names. Preserve legacy storage and role IDs to reuse existing configuration and
-journals. See
-docs/PLUGIN_RENAME.md. Historical qualification records retain their original paths.
+The public MCP service, configuration path, Provider IDs and native role templates use
+`codex-agents-workflow` names. A one-time startup migration recognizes the old
+`sol-advisor` directory and moves it as a whole; it does not copy or retain a second
+active store. See docs/PLUGIN_RENAME.md. Historical qualification records retain their
+original paths.
 Strict session UI derives terminal state from the current attempt's journal, fences
 cached snapshots by attempt ID, and preserves active-session error diagnostics.
 Skill credential scanning must distinguish literal values from code expressions,

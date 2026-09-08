@@ -170,8 +170,8 @@ export async function startConsole({
     return { ...consoleState, browser: opened };
   }
   const configPath = requestedConfigPath || resolveConfigPath(env);
-  const globalConfigPath = resolveConfigPath({ ...env, SOL_CONTROL_CONFIG: '' });
-  const usesOverride = Boolean(env.SOL_CONTROL_CONFIG)
+  const globalConfigPath = resolveConfigPath({ ...env, CODEX_WORKFLOW_CONFIG: '', SOL_CONTROL_CONFIG: '' });
+  const usesOverride = Boolean(env.CODEX_WORKFLOW_CONFIG || env.SOL_CONTROL_CONFIG)
     || Boolean(requestedConfigPath && !samePath(configPath, globalConfigPath));
   const storage = {
     scope: usesOverride ? 'override' : 'global',

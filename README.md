@@ -27,7 +27,7 @@ The main agent owns architecture, routing, verification, and acceptance. Writes 
 
 ## Go deeper
 
-The original author writes [**Attention Heads**](https://attentionheads.substack.com/?utm_source=github&utm_medium=readme&utm_campaign=sol-advisor) — deep, evidence-backed writing on AI, cognition, and agentic engineering. [Subscribe](https://attentionheads.substack.com/subscribe?utm_source=github&utm_medium=readme&utm_campaign=sol-advisor) for new Agentic Engineering Field Notes.
+The original author writes [**Attention Heads**](https://attentionheads.substack.com/?utm_source=github&utm_medium=readme&utm_campaign=codex-agents-workflow) — deep, evidence-backed writing on AI, cognition, and agentic engineering. [Subscribe](https://attentionheads.substack.com/subscribe?utm_source=github&utm_medium=readme&utm_campaign=codex-agents-workflow) for new Agentic Engineering Field Notes.
 
 ## Quick start
 
@@ -49,7 +49,7 @@ The native-only workflow remains `$codex-agents-workflow:orchestration`.
 
 For v7 use the [upgrade and Workflow guide](docs/V7_UPGRADE.md). The following tutorials describe legacy v6 settings. Read the [English tutorial](docs/TUTORIAL.md) or [中文教程](docs/TUTORIAL.zh-CN.md) for one-click console scripts, configuration examples, and tests.
 
-Configuration is user-global at `$CODEX_HOME/sol-advisor/control-plane.json` or `~/.codex/sol-advisor/control-plane.json` when `CODEX_HOME` is unset.
+Configuration is user-global at `$CODEX_HOME/codex-agents-workflow/control-plane.json` or `~/.codex/codex-agents-workflow/control-plane.json` when `CODEX_HOME` is unset.
 
 ## Updating
 

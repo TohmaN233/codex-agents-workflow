@@ -63,13 +63,13 @@ node "$plugin_dir/scripts/install-agents.mjs" --check
 以下脚本读取真实用户配置：
 
 ```text
-$CODEX_HOME/sol-advisor/control-plane.json
+$CODEX_HOME/codex-agents-workflow/control-plane.json
 ```
 
 未设置 `CODEX_HOME` 时使用：
 
 ```text
-~/.codex/sol-advisor/control-plane.json
+~/.codex/codex-agents-workflow/control-plane.json
 ```
 
 这是用户级全局配置，与当前仓库和工作目录无关；保存后，其他项目和新任务读取的是同一份配置。

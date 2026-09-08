@@ -16,9 +16,8 @@ const orchestrationSkill = join(pluginDir, 'skills', 'orchestration', 'SKILL.md'
 const operationsReference = join(pluginDir, 'skills', 'orchestration', 'references', 'operations.md');
 const roleFiles = [
   'codex-workflow-reviewer.toml',
-  'sol-advisor-luna-implementer.toml',
-  'sol-advisor-terra-implementer.toml',
-  'sol-advisor-sol-reviewer.toml',
+  'codex-workflow-luna-implementer.toml',
+  'codex-workflow-terra-implementer.toml',
 ];
 
 function runNode(script, args = []) {
@@ -29,7 +28,7 @@ function runNode(script, args = []) {
 }
 
 test('installs and checks exact native roles without a shell', async (t) => {
-  const targetDir = await mkdtemp(join(tmpdir(), 'sol-advisor-native-install-'));
+  const targetDir = await mkdtemp(join(tmpdir(), 'codex-agents-workflow-native-install-'));
   t.after(() => rm(targetDir, { recursive: true, force: true }));
 
   const install = runNode(installer, ['--target-dir', targetDir]);
@@ -49,17 +48,17 @@ test('installs and checks exact native roles without a shell', async (t) => {
 });
 
 test('selective checks ignore unselected conflicts and explicit mismatches fail', async (t) => {
-  const targetDir = await mkdtemp(join(tmpdir(), 'sol-advisor-native-conflict-'));
+  const targetDir = await mkdtemp(join(tmpdir(), 'codex-agents-workflow-native-conflict-'));
   t.after(() => rm(targetDir, { recursive: true, force: true }));
   assert.equal(runNode(installer, ['--target-dir', targetDir]).status, 0);
 
-  const terraFile = join(targetDir, 'sol-advisor-terra-implementer.toml');
+  const terraFile = join(targetDir, 'codex-workflow-terra-implementer.toml');
   await writeFile(terraFile, 'user-modified-terra\n', 'utf8');
 
   const selected = runNode(installer, [
     '--target-dir', targetDir,
     '--check-role', 'luna',
-    '--check-role', 'sol',
+    '--check-role', 'reviewer',
   ]);
   assert.equal(selected.status, 0, selected.stderr);
 
@@ -73,7 +72,7 @@ test('selective checks ignore unselected conflicts and explicit mismatches fail'
 });
 
 test('emits allowlisted runtime evidence without shell or jq', async (t) => {
-  const sessionsDir = await mkdtemp(join(tmpdir(), 'sol-advisor-runtime-'));
+  const sessionsDir = await mkdtemp(join(tmpdir(), 'codex-agents-workflow-runtime-'));
   t.after(() => rm(sessionsDir, { recursive: true, force: true }));
   const nestedDir = join(sessionsDir, '2026', '08', '21');
   await mkdir(nestedDir, { recursive: true });
@@ -84,7 +83,7 @@ test('emits allowlisted runtime evidence without shell or jq', async (t) => {
       payload: {
         id: threadId,
         parent_thread_id: '00000000-0000-7000-8000-000000000000',
-        agent_role: 'sol_advisor_luna_implementer',
+        agent_role: 'codex_workflow_luna_implementer',
         agent_path: '/fixture',
         model_provider: 'openai',
         ignored_secret: 'must-not-leak',
@@ -113,7 +112,7 @@ test('emits allowlisted runtime evidence without shell or jq', async (t) => {
   assert.deepEqual(JSON.parse(result.stdout), {
     thread_id: threadId,
     parent_thread_id: '00000000-0000-7000-8000-000000000000',
-    agent_role: 'sol_advisor_luna_implementer',
+    agent_role: 'codex_workflow_luna_implementer',
     agent_path: '/fixture',
     model_provider: 'openai',
     model: 'gpt-5.6-luna',

@@ -25,11 +25,11 @@ test('default config path is user-global and independent of the project director
   const userHome = join(tmpdir(), 'sol-control-user');
   assert.equal(
     resolveConfigPath({}, userHome),
-    join(userHome, '.codex', 'sol-advisor', 'control-plane.json'),
+    join(userHome, '.codex', 'codex-agents-workflow', 'control-plane.json'),
   );
   assert.equal(
     resolveConfigPath({ CODEX_HOME: join(userHome, 'custom-codex-home') }, userHome),
-    join(userHome, 'custom-codex-home', 'sol-advisor', 'control-plane.json'),
+    join(userHome, 'custom-codex-home', 'codex-agents-workflow', 'control-plane.json'),
   );
 });
 
@@ -52,7 +52,7 @@ test('bundled defaults use delegate for light work and full for difficult work',
   ]);
   const review = config.task_types.find((taskType) => taskType.id === 'cross-review');
   assert.deepEqual(review.stages.map((stage) => [stage.id, stage.role, stage.provider_id]), [
-    ['review', 'reviewer', 'native-sol-reviewer'],
+    ['review', 'reviewer', 'native-reviewer'],
   ]);
   const analysis = config.task_types.find((taskType) => taskType.id === 'repository-analysis');
   assert.deepEqual(analysis.stages.map((stage) => [stage.role, stage.access]), [
@@ -137,7 +137,7 @@ test('resolution returns only the selected compiled prompt and adapter', async (
     user_approved: true,
   }, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {} });
   assert.equal(result.stages[0].adapter.execution, 'native_agent');
-  assert.equal(result.stages[0].adapter.agent_type, 'sol_advisor_luna_implementer');
+  assert.equal(result.stages[0].adapter.agent_type, 'codex_workflow_luna_implementer');
   assert.match(result.stages[0].compiled_prompt, /Implement the parser guard/);
   assert.match(result.stages[0].compiled_prompt, /src\/parser\.ts/);
   assert.doesNotMatch(JSON.stringify(result), /Hard-path ChatGPT/);
@@ -259,7 +259,7 @@ test('version-2 full route migrates disabled with a separate read-only reviewer'
   assert.equal(taskType.enabled, false);
   assert.deepEqual(taskType.stages.map((stage) => [stage.id, stage.provider_id, stage.access]), [
     ['implementation', 'native-luna', 'bounded_write'],
-    ['review', 'native-sol-reviewer', 'read_only'],
+    ['review', 'native-reviewer', 'read_only'],
   ]);
 });
 
@@ -279,7 +279,7 @@ test('version-3 difficult default preserves a customized implementation while ad
   assert.equal(migrated.version, 6);
   assert.deepEqual(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change')
     .stages.map((stage) => [stage.id, stage.provider_id]), [
-    ['implementation', 'native-terra'], ['review', 'native-sol-reviewer'],
+    ['implementation', 'native-terra'], ['review', 'native-reviewer'],
   ]);
   assert.match(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change')
     .stages[0].template, /CUSTOM IMPLEMENTATION/);
@@ -363,7 +363,7 @@ test('full resolves implementation then review with pinned providers and no fall
         template: 'Implement {{task}} with {{context}} and {{constraints}}; verify {{verification}}.',
       },
       {
-        id: 'review', role: 'reviewer', provider_id: 'native-sol-reviewer',
+        id: 'review', role: 'reviewer', provider_id: 'native-reviewer',
         access: 'read_only', requires_user_approval: false,
         template: 'Review {{task}} with {{context}} and {{constraints}}; verify {{verification}}.',
       },
@@ -374,16 +374,16 @@ test('full resolves implementation then review with pinned providers and no fall
     task_type_id: 'full-fixture', task: 'Change and review.', user_approved: true,
   }, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {} });
   assert.deepEqual(result.stages.map((stage) => [stage.stage.id, stage.provider.id]), [
-    ['implementation', 'native-luna'], ['review', 'native-sol-reviewer'],
+    ['implementation', 'native-luna'], ['review', 'native-reviewer'],
   ]);
 
-  config.providers.find((provider) => provider.id === 'native-sol-reviewer').enabled = false;
+  config.providers.find((provider) => provider.id === 'native-reviewer').enabled = false;
   await saveConfig(config, { configPath });
   await assert.rejects(
     resolveSelection({ task_type_id: 'full-fixture', task: 'Change and review.', user_approved: true }, {
       configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {},
     }),
-    /provider is disabled: native-sol-reviewer/,
+    /provider is disabled: native-reviewer/,
   );
 });
 

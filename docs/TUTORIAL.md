@@ -63,13 +63,13 @@ explicit role, model, or effort mismatch still stops that native lane.
 The following scripts use the real user configuration:
 
 ```text
-$CODEX_HOME/sol-advisor/control-plane.json
+$CODEX_HOME/codex-agents-workflow/control-plane.json
 ```
 
 When `CODEX_HOME` is not set, the path is:
 
 ```text
-~/.codex/sol-advisor/control-plane.json
+~/.codex/codex-agents-workflow/control-plane.json
 ```
 
 This is user-level global configuration, independent of the current repository and working directory. After you save it, other projects and new tasks read the same configuration. The top of the console explicitly shows **Global user configuration** and the actual file path. Only an explicitly configured absolute `SOL_CONTROL_CONFIG` path, or an override path passed by code for development/testing, is shown in red as **Override/test configuration**. An override does not modify the global configuration and should not be used as the normal entry point.

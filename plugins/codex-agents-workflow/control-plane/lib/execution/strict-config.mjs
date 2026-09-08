@@ -5,7 +5,7 @@ import { digest } from '../workflow-revisions.mjs';
 
 export const QUALIFIED_CODEX = Object.freeze({ platform: 'win32', architecture: 'x64', version: '0.145.0',
   sha256: '83751f15cb6a0a7b97df67752c001e3fe1c20e18ffbfec3ff63567296205eb6c',
-  boundary: 'catalog-and-explicit-input', live_model: 'gpt-5.6-sol', live_effort: 'low' });
+  boundary: 'catalog-and-explicit-input' });
 
 function keys(value, allowed, label) {
   requireValue(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => allowed.includes(key)), 'STRICT_CONFIG', `${label} contains unknown fields`);

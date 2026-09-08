@@ -2,26 +2,28 @@
 
 The plugin, source directory and local marketplace identity are renamed from
 `sol-advisor` to `codex-agents-workflow`. The GitHub repository remains
-`codex-agents-workflow`. This branch has not yet been published to the remote
-marketplace.
+`codex-agents-workflow`. This repository is the standalone public release; it is independent of the predecessor repository.
 
-Install `codex-agents-workflow@codex-agents-workflow` from the updated local marketplace. The new plugin opens
-the same `$CODEX_HOME/sol-advisor` store; configuration, Workflow Packs, revisions,
-Run journals, recovery identities and backups remain in place. This is compatibility
-reuse, not a second empty store or an automatic migration of user policy. Do not run
-two active controllers against the same Run. Disable the old plugin when switching
-to the renamed installation, and start a fresh Codex task to load its tools and skills.
+Install `codex-agents-workflow@codex-agents-workflow` from the updated local marketplace. The new plugin uses
+`$CODEX_HOME/codex-agents-workflow`. On first start, an existing
+`$CODEX_HOME/sol-advisor` store is moved there as one atomic directory migration so
+configuration, Workflow Packs, revisions, Run journals, recovery identities and backups
+remain together. Do not run two active controllers against the same Run. Disable the old
+plugin when switching to the renamed installation, and start a fresh Codex task to load
+its tools and skills.
 
-The `codex-agents-workflow` MCP identity is now canonical. Legacy native role
-files and existing Provider IDs remain stable as compatibility keys, not model
-selection. Historical qualification evidence is unchanged.
+The `codex-agents-workflow` MCP identity, configuration path, Provider IDs and native
+role templates are canonical. The old directory is recognized only for this one-time
+migration; it is not retained as a second active store. Historical qualification
+evidence is unchanged.
 
 The primary model has no eligibility restriction, reasoning floor or startup model
 recommendation. Strict finalizer proposal settings accept explicit model and effort
 identifiers; unavailable selections fail through the executor instead of substituting
-another model. New defaults use GPT-6 Astra / medium. The new read-only reviewer role
-is `codex_workflow_reviewer`; the old three role templates stay byte-identical for
-existing user bindings. Installation does not rewrite configured Providers or Run pins.
+another model. New defaults use GPT-6 Astra / medium. The read-only reviewer role is
+`codex_workflow_reviewer`; Luna and Terra use `codex_workflow_*` role IDs. Installation
+does not rewrite configured Providers or Run pins.
+
 
 New Strict authentication defaults to `host_chatgpt`, which reuses the current
 official Codex login. Existing configurations retain their saved mode; select

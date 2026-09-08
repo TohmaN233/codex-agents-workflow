@@ -10,21 +10,21 @@ The installed TOMLs are the source of truth:
 
 | Role type | Model | Effort | Use |
 |---|---|---|---|
-| sol_advisor_luna_implementer | gpt-5.6-luna | max | Delegate/full bounded routine implementation |
-| sol_advisor_terra_implementer | gpt-5.6-terra | high | Delegate/full judgment-heavy or high-risk implementation |
+| codex_workflow_luna_implementer | gpt-5.6-luna | max | Delegate/full bounded routine implementation |
+| codex_workflow_terra_implementer | gpt-5.6-terra | high | Delegate/full judgment-heavy or high-risk implementation |
 | codex_workflow_reviewer | gpt-6-astra | medium | Audit/full fresh review; requests read-only sandbox |
 
 Native spawn requests name the role and use a fresh context:
 
 ~~~text
-agent_type: sol_advisor_luna_implementer
+agent_type: codex_workflow_luna_implementer
 fork_turns: none
 ~~~
 
 Use the Terra type only when the selected delegate or full route needs it:
 
 ~~~text
-agent_type: sol_advisor_terra_implementer
+agent_type: codex_workflow_terra_implementer
 fork_turns: none
 ~~~
 
