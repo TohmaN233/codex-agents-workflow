@@ -140,3 +140,9 @@ connector background lifecycles observe failures and close their owned resources
 without depending on persistence recovery. Stdio shutdown awaits response write
 callbacks (including rejection responses) before exiting, and write failures are
 fatal rather than successful delivery. Exercise large responses under backpressure.
+
+Cursor synchronous start/control/reconcile failures must release local CDP and scope
+monitor ownership when persistence fails, while retaining remote uncertainty and
+workspace reservation. Grok human decisions commit request identity and response
+before resolving ACP requests; poisoned decision writes must never deliver approval.
+Concurrent decision attempts are rejected while one decision is committing.

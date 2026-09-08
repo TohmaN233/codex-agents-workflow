@@ -436,19 +436,19 @@ export class GrokAcpConnector {
       if (args.request_id !== active.pendingRequest.requestId) {
         throw connectorError('IDENTITY_MISMATCH', 'request_id does not match the pending permission');
       }
+      let response;
       if (args.decision === 'cancel') {
-        active.pendingRequest.resolve({ outcome: { outcome: 'cancelled' } });
+        response = { outcome: { outcome: 'cancelled' } };
       } else if (args.decision === 'select') {
         const option = active.pendingRequest.options.find((item) => item.optionId === args.option_id);
         if (!option) throw connectorError('IDENTITY_MISMATCH', 'option_id was not returned by Grok');
-        active.pendingRequest.resolve({ outcome: { outcome: 'selected', optionId: option.optionId } });
+        response = { outcome: { outcome: 'selected', optionId: option.optionId } };
       } else {
         throw connectorError('CONTROL_ACTION_INVALID', 'permission decision must be select or cancel');
       }
-      active.pendingRequest = null;
-      await this.store.update(taskId, { state: 'running', pending_request: null });
+      const committed = await this.#commitDecision(active, response);
       this.#signal(taskId);
-      return this.publicTask(await this.store.get(taskId));
+      return this.publicTask(committed);
     }
     if (action === 'respond_input') {
       if (!active?.pendingRequest || active.pendingRequest.kind !== 'input') {
@@ -462,16 +462,15 @@ export class GrokAcpConnector {
         throw connectorError('CONTROL_ACTION_INVALID',
           'input decision must be accept, decline, or cancel');
       }
-      active.pendingRequest.resolve(decision === 'accept'
+      const response = decision === 'accept'
         ? {
           action: 'accept',
           content: validateInputContent(active.pendingRequest.requestedSchema, args.content || {}),
         }
-        : { action: decision });
-      active.pendingRequest = null;
-      await this.store.update(taskId, { state: 'running', pending_request: null });
+        : { action: decision };
+      const committed = await this.#commitDecision(active, response);
       this.#signal(taskId);
-      return this.publicTask(await this.store.get(taskId));
+      return this.publicTask(committed);
     }
     if (action === 'cancel') {
       if (args.confirm !== true) throw connectorError('CONFIRMATION_REQUIRED', 'cancel requires confirm=true');
@@ -970,6 +969,32 @@ export class GrokAcpConnector {
         `Could not reattach the exact Grok session: ${redactDiagnostic(error?.message || error)}`, {
           details: { stderr_tail: stderrTail.filter(Boolean).slice(-5) },
         });
+    }
+  }
+
+  async #commitDecision(active, response) {
+    const pending = active.pendingRequest;
+    if (pending.committing) throw connectorError('CONTROL_IN_PROGRESS', 'This decision is already being committed');
+    pending.committing = true;
+    try {
+      const committed = await this.store.update(active.taskId, {
+        state: 'running', pending_request: null,
+        last_decision: { request_id: pending.requestId, kind: pending.kind,
+          response, committed_at: new Date().toISOString(), delivery: 'unconfirmed' },
+      }, { guard: current => this.active.get(active.taskId) === active
+        && !active.intentionalCleanup && active.pendingRequest === pending
+        && !RESULT_STATES.has(current.state) && current.pending_request?.request_id === pending.requestId });
+      if (committed.last_decision?.request_id !== pending.requestId
+        || active.intentionalCleanup || active.pendingRequest !== pending) {
+        throw connectorError('DECISION_NOT_DELIVERED', 'Task ownership changed before decision delivery; reconcile the task');
+      }
+      active.pendingRequest = null;
+      pending.resolve(response);
+      return committed;
+    } catch (error) {
+      // No approval is delivered if durability fails. Cleanup only declines pending requests.
+      await this.#cleanup(active);
+      throw error;
     }
   }
 

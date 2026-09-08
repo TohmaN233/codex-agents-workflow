@@ -501,6 +501,8 @@ export class CursorCdpConnector {
         error: publicConnectorError(safeError),
       }).catch(() => {});
       throw safeError;
+    } finally {
+      if (this.store.persistenceError && active) await this.#cleanup(active);
     }
   }
 
@@ -521,6 +523,17 @@ export class CursorCdpConnector {
   }
 
   async control(taskId, args) {
+    try { return await this.#control(taskId, args); }
+    catch (error) {
+      if (this.store.persistenceError) {
+        const active = this.active.get(taskId);
+        if (active) await this.#cleanup(active);
+      }
+      throw error;
+    }
+  }
+
+  async #control(taskId, args) {
     const task = await this.store.get(taskId);
     if (!task) throw connectorError('TASK_NOT_FOUND', `Unknown connector task: ${taskId}`);
     const action = String(args.action || '');
@@ -980,6 +993,8 @@ export class CursorCdpConnector {
     }, task.workspace, version, pages);
     const page = selectedTarget.page;
     const client = selectedTarget.client;
+    let recoveredActive = null;
+    try {
     const uiFlavor = selectedTarget.profile?.ui_flavor || task.remote_identity?.ui_flavor || null;
     let entry;
     if (uiFlavor === 'agents_panel') {
@@ -1021,7 +1036,6 @@ export class CursorCdpConnector {
         throw error;
       }
     }
-    let recoveredActive = null;
     const scopeMonitor = startWorkspaceScopeMonitor(task.workspace, {
       readOnly: task.read_only === true,
       allowedPaths: task.allowed_paths || [],
@@ -1107,6 +1121,11 @@ export class CursorCdpConnector {
     }
     this.#signal(task.task_id);
     return this.publicTask(await this.store.get(task.task_id));
+    } catch (error) {
+      if (recoveredActive) await this.#cleanup(recoveredActive);
+      else client.close();
+      throw error;
+    }
   }
 
   async #cursorRunning() {

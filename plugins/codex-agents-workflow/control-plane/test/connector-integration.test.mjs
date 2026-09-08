@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
 
+import { ConnectorTaskStore } from '../connectors/task-store.mjs';
 import { ConnectorRegistry } from '../connectors/registry.mjs';
 import { captureWorkspaceSnapshot, verifyWorkspaceScope } from '../connectors/scope-guard.mjs';
 import { loadConfig, saveConfig } from '../lib/config.mjs';
@@ -739,3 +740,76 @@ test('Cursor real filesystem store failure closes CDP and scope watchers and blo
   await assert.rejects(fx.registry.store.initialize(), { code: 'CONNECTOR_STORE_FAILED' });
   await assert.rejects(startScenario(fx, 'cursor-readonly-advice', 'MUST_NOT_DISPATCH'), { code: 'CONNECTOR_STORE_FAILED' });
 });
+
+
+for (const phase of ['start', 'reconcile', 'cancel']) {
+  test(`Cursor synchronous ${phase} poison releases ownership and preserves restart reservation`, { timeout: 15000 }, async t => {
+    const fx = await fixture(t);
+    let started;
+    if (phase !== 'start') started = await startScenario(fx, 'cursor-readonly-advice', 'CURSOR_WAIT_CANCEL');
+    if (phase === 'reconcile') await fx.registry.control(started.task_id, { action: 'disconnect', confirm: true });
+    const store = fx.registry.store;
+    const update = store.update.bind(store);
+    let owned, clientClosed = false, scopeClosed = false, taskId;
+    store.update = async (id, fields, options) => {
+      const hit = phase === 'start' ? fields.state === 'running'
+        : phase === 'reconcile' ? fields.remote_identity?.recovered_attachment === true
+        : fields.state === 'cancelled';
+      if (hit && !owned) {
+        taskId = id; owned = fx.registry.cursor.active.get(id);
+        const cc = owned.client.close.bind(owned.client), cs = owned.scopeMonitor.close.bind(owned.scopeMonitor);
+        owned.client.close = () => { clientClosed = true; cc(); };
+        owned.scopeMonitor.close = () => { scopeClosed = true; cs(); };
+        const error = new Error(`synthetic ${phase} publication failure`);
+        store.persistenceError = error; throw error;
+      }
+      return update(id, fields, options);
+    };
+    await assert.rejects(phase === 'start'
+      ? startScenario(fx, 'cursor-readonly-advice', 'CURSOR_WAIT_CANCEL')
+      : fx.registry.control(started.task_id, phase === 'reconcile' ? { action: 'reconcile' }
+        : { action: 'cancel', confirm: true, expected_agent_id: started.remote_identity.agent_id }));
+    assert.ok(owned, 'fault reached');
+    assert.equal(fx.registry.cursor.active.size, 0);
+    assert.equal(clientClosed, true); assert.equal(scopeClosed, true);
+    await assert.rejects(store.initialize(), { code: 'CONNECTOR_STORE_FAILED' });
+    const restarted = new ConnectorTaskStore({ statePath: store.statePath });
+    const durable = await restarted.get(taskId);
+    assert.equal(durable.state, 'unknown_after_restart');
+    await assert.rejects(restarted.create({ workspace: durable.workspace }), { code: 'CONNECTOR_BUSY' });
+  });
+}
+
+for (const kind of ['permission', 'input']) {
+  test(`Grok ${kind} decision persistence failure cannot deliver remote approval`, { timeout: 15000 }, async t => {
+    const fx = await fixture(t);
+    const started = await startScenario(fx, kind === 'permission' ? 'grok-bounded-change' : 'grok-readonly-advice',
+      kind === 'permission' ? 'GROK_WRITE_ALLOWED' : 'ASK_INPUT', kind === 'permission' ? { allowedPaths: ['allowed/'] } : {});
+    const waiting = await fx.registry.status(started.task_id, 5000);
+    assert.equal(waiting.state, kind === 'permission' ? 'needs_permission' : 'needs_input');
+    const active = fx.registry.grok.active.get(started.task_id);
+    const pending = active.pendingRequest;
+    const responses = [];
+    const resolve = pending.resolve;
+    pending.resolve = response => { responses.push(response); resolve(response); };
+    const update = fx.registry.store.update.bind(fx.registry.store);
+    fx.registry.store.update = async (id, fields, options) => {
+      if (fields.state === 'running' && fields.pending_request === null) {
+        const failure = new Error('synthetic decision publication failure');
+        fx.registry.store.persistenceError = failure; throw failure;
+      }
+      return update(id, fields, options);
+    };
+    await assert.rejects(fx.registry.control(started.task_id, {
+      action: `respond_${kind}`, request_id: waiting.pending_request.request_id,
+      decision: kind === 'permission' ? 'select' : 'accept', option_id: 'allow-once', content: { value: 'accepted' },
+    }), /synthetic decision publication failure/);
+    assert.equal(responses.some(r => r.action === 'accept' || r.outcome?.outcome === 'selected'), false);
+    assert.equal(fx.registry.grok.active.size, 0);
+    await assert.rejects(stat(join(fx.workspace, 'allowed', 'grok.txt')), { code: 'ENOENT' });
+    const restarted = new ConnectorTaskStore({ statePath: fx.registry.store.statePath });
+    const durable = await restarted.get(started.task_id);
+    assert.equal(durable.state, 'unknown_after_restart');
+    await assert.rejects(restarted.create({ workspace: durable.workspace }), { code: 'CONNECTOR_BUSY' });
+  });
+}
