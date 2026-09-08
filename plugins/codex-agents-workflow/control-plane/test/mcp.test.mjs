@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
 import test from 'node:test';
+import { createStdioRequestScheduler } from '../server.mjs';
 
 const controlDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const pluginDir = dirname(controlDir);
@@ -69,6 +70,41 @@ function makeClient(child) {
     },
   };
 }
+
+test('stdio scheduler bounds work, keeps a control lane, and drains in-flight requests on shutdown', async () => {
+  const writes = [];
+  const resolvers = new Map();
+  const scheduler = createStdioRequestScheduler({
+    maxGeneral: 2,
+    maxControl: 1,
+    maxPending: 2,
+    handle: async (request) => new Promise((resolve) => resolvers.set(request.id, resolve)),
+    write: (response) => writes.push(response),
+  });
+  assert.equal(scheduler.submit({ id: 1, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
+  assert.equal(scheduler.submit({ id: 2, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
+  assert.equal(scheduler.submit({ id: 3, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
+  assert.equal(scheduler.submit({ id: 4, method: 'tools/call', params: { name: 'workflow_cancel' } }), true);
+  assert.equal(scheduler.submit({ id: 5, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
+  assert.equal(scheduler.submit({ id: 6, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), false);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(scheduler.snapshot().active, { control: 1, general: 2 });
+  assert.equal(scheduler.snapshot().pending, 2);
+
+  const shutdown = scheduler.shutdown();
+  assert.equal(scheduler.snapshot().accepting, false);
+  assert.equal(scheduler.snapshot().pending, 0);
+  assert.equal(writes.find((response) => response.id === 3)?.error?.code, 'SERVER_SHUTTING_DOWN');
+  assert.equal(writes.find((response) => response.id === 5)?.error?.code, 'SERVER_SHUTTING_DOWN');
+  assert.equal(writes.find((response) => response.id === 6)?.error?.code, 'SERVER_BUSY');
+  assert.equal(scheduler.submit({ id: 7, method: 'ping' }), false);
+  assert.equal(writes.find((response) => response.id === 7)?.error?.code, 'SERVER_SHUTTING_DOWN');
+  assert.equal(scheduler.snapshot().in_flight, 3);
+
+  for (const resolve of resolvers.values()) resolve({ jsonrpc: '2.0', id: 0, result: {} });
+  await shutdown;
+  assert.equal(scheduler.snapshot().in_flight, 0);
+});
 
 test('stdio MCP lists control tools and returns sanitized status', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'sol-control-mcp-'));

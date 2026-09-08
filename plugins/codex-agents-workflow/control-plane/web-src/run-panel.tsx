@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { api, JsonField, Details, Status, FormValidContext, pretty, type Json, uid } from './shared';
 import { Canvas } from './canvas';
 import { strictSessionPresentation } from './strict-session-view.mjs';
@@ -17,19 +17,36 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
   const [nodeId, setNodeId] = useState(''); const [result, setResult] = useState<Json | null>(null); const [login, setLogin] = useState<Json | null>(null);
   const [nodeDetails, setNodeDetails] = useState<Json | null>(null); const [liveSnapshot, setLive] = useState<Json | null>(null);
   const [receipt, setReceipt] = useState<Json>({}); const [completion, setCompletion] = useState<Json>({ status: 'succeeded', summary: '', structured_output: {}, artifacts: [], evidence: [], changed_paths: [], outside_paths: [] });
+  const refreshGeneration = useRef(0);
   const valid = useContext(FormValidContext);
   const [accepted, setAccepted] = useState(false); const [merge, setMerge] = useState<Json | null>(null); const [reconciliation, setReconciliation] = useState<Json>({}); const [connectorControl, setConnectorControl] = useState<Json>({});
   const token = controllers.get(runId); const control = { run_id: runId, control_token: token };
   const key = runId + '/' + nodeId; const lease = leases.get(key); const args = { ...control, ...(lease ? { node_id: nodeId, attempt_id: lease.attempt_id, lease_token: lease.lease_token } : {}) };
   async function refresh() {
-    const [s, n] = await Promise.all([api('get', { run_id: runId }), api('next', { run_id: runId })]); setState(s); setNext(n);
-    if (controllers.has(runId)) setEvents(await api('events', { run_id: runId, control_token: controllers.get(runId), after_sequence: 0 }));
+    const generation = ++refreshGeneration.current;
+    const current = () => generation === refreshGeneration.current;
+    const [s, n] = await Promise.all([api('get', { run_id: runId }), api('next', { run_id: runId })]);
+    if (!current()) return;
+    setState(s); setNext(n);
+    if (controllers.has(runId)) {
+      const nextEvents = await api('events', { run_id: runId, control_token: controllers.get(runId), after_sequence: 0 });
+      if (!current()) return;
+      setEvents(nextEvents);
+    }
     if (lease && pack?.workflow.skill_policy.mode === 'strict' && ['claimed','running'].includes(s.nodes[nodeId]?.status) && s.nodes[nodeId]?.attempts.at(-1)?.dispatch?.receipt?.executor === 'codex-app-server') {
-      try { setLive({ attempt_id: lease.attempt_id, value: await api('strict_status', args) }); }
-      catch (cause) { if ((cause as any).detail?.code === 'STRICT_SESSION_UNAVAILABLE') setLive({ attempt_id: lease.attempt_id, value: { status: 'unavailable', error: (cause as any).detail } }); else throw cause; }
+      try {
+        const nextLive = await api('strict_status', args);
+        if (!current()) return;
+        setLive({ attempt_id: lease.attempt_id, value: nextLive });
+      }
+      catch (cause) {
+        if ((cause as any).detail?.code === 'STRICT_SESSION_UNAVAILABLE') {
+          if (current()) setLive({ attempt_id: lease.attempt_id, value: { status: 'unavailable', error: (cause as any).detail } });
+        } else throw cause;
+      }
     }
   }
-  useEffect(() => { setState(null); setPack(null); setNodeId(''); setResult(null); setLogin(null); setMerge(null); setEvents([]); act(async () => { setPack(await api('run_definition', { run_id: runId })); await refresh(); }); }, [runId]);
+  useEffect(() => { refreshGeneration.current += 1; setState(null); setPack(null); setNodeId(''); setResult(null); setLogin(null); setMerge(null); setEvents([]); act(async () => { setPack(await api('run_definition', { run_id: runId })); await refresh(); }); return () => { refreshGeneration.current += 1; }; }, [runId]);
   useEffect(() => { if (['succeeded','failed','cancelled'].includes(state?.status)) return; let stopped = false; let timer: ReturnType<typeof setTimeout>; const poll = async () => { if (stopped) return; try { await refresh(); } catch (error) { act(async () => { throw error; }); return; } if (!stopped) timer = setTimeout(poll, 2500); }; timer = setTimeout(poll, 2500); return () => { stopped = true; clearTimeout(timer); }; }, [runId, token, nodeId, lease?.attempt_id, pack?.revision_hash, state?.status]);
   useEffect(() => {
     let current = true;

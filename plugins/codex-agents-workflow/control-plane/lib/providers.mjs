@@ -140,6 +140,7 @@ function awaitWithAbort(value, signal) {
 async function readBoundedBody(response, signal) {
   const declared = Number(response.headers.get('content-length') || '0');
   if (declared > MAX_RESPONSE_BYTES) {
+    try { await response.body?.cancel?.('response too large'); } catch {}
     throw new Error(`provider response exceeds ${MAX_RESPONSE_BYTES} bytes`);
   }
   if (!response.body || typeof response.body.getReader !== 'function') {

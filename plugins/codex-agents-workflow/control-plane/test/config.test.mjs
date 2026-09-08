@@ -43,6 +43,21 @@ test('legacy SOL_CONTROL_CONFIG paths resolve into the canonical store', () => {
   );
 });
 
+test('Windows legacy store path protection is case-insensitive', { skip: process.platform !== 'win32' }, () => {
+  const userHome = join(tmpdir(), 'sol-control-legacy-case');
+  for (const directory of ['sol-advisor', 'SOL-ADVISOR', 'Sol-Advisor']) {
+    const legacy = join(userHome, directory, 'control-plane.json');
+    assert.equal(
+      resolveConfigPath({ SOL_CONTROL_CONFIG: legacy }, userHome),
+      join(userHome, 'codex-agents-workflow', 'control-plane.json'),
+    );
+    assert.throws(
+      () => resolveConfigPath({ CODEX_WORKFLOW_CONFIG: legacy }, userHome),
+      /retired sol-advisor store/,
+    );
+  }
+});
+
 test('legacy store migration refuses to strand owned Git worktrees', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sol-control-worktree-'));
   const legacy = join(root, 'sol-advisor');
@@ -375,6 +390,67 @@ test('version-4 migration never injects a reviewer binding absent from a customi
   assert.equal(migrated.providers.some((provider) => provider.id === 'native-reviewer'), false);
 });
 
+test('version-4 migration does not inject a reviewer incompatible with a customized provider', async () => {
+  const { configPath, config } = await fixture();
+  config.version = 4;
+  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  reviewer.config.role = 'implementer';
+  for (const taskType of config.task_types) {
+    for (const stage of taskType.stages) {
+      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'grok-local';
+    }
+  }
+  const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
+  difficult.route = 'delegate';
+  difficult.stages = difficult.stages.slice(0, 1);
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  const migratedDifficult = migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
+  assert.equal(migratedDifficult.route, 'delegate');
+  assert.deepEqual(migratedDifficult.stages.map((stage) => stage.id), ['implementation']);
+});
+
+test('version-4 migration does not inject a reviewer when the provider kind is customized', async () => {
+  const { configPath, config } = await fixture();
+  config.version = 4;
+  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  reviewer.kind = 'builtin_connector';
+  reviewer.config = { connector: 'grok_acp', binary_env: 'GROK_BIN', transport: 'leader_acp_stdio' };
+  for (const taskType of config.task_types) {
+    for (const stage of taskType.stages) {
+      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'grok-local';
+    }
+  }
+  const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
+  difficult.route = 'delegate';
+  difficult.stages = difficult.stages.slice(0, 1);
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  const migratedDifficult = migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
+  assert.equal(migratedDifficult.route, 'delegate');
+  assert.deepEqual(migratedDifficult.stages.map((stage) => stage.id), ['implementation']);
+});
+
+test('version-4 migration does not inject a disabled reviewer provider', async () => {
+  const { configPath, config } = await fixture();
+  config.version = 4;
+  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  reviewer.enabled = false;
+  for (const taskType of config.task_types) {
+    for (const stage of taskType.stages) {
+      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'grok-local';
+    }
+  }
+  const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
+  difficult.route = 'delegate';
+  difficult.stages = difficult.stages.slice(0, 1);
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  const migratedDifficult = migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
+  assert.equal(migratedDifficult.route, 'delegate');
+  assert.deepEqual(migratedDifficult.stages.map((stage) => stage.id), ['implementation']);
+});
+
 test('version-5 migration preserves all persisted approval gates and custom opt-ins', async () => {
   const { configPath, config } = await fixture();
   config.version = 5;
@@ -457,4 +533,14 @@ test('version-1 migration adds both built-in connectors disabled when legacy con
     assert.equal(provider.capabilities.write, true);
   }
   assert.equal(migrated.version, 6);
+});
+
+test('version-1 migration preserves an existing Grok write capability policy', async () => {
+  const { configPath, config } = await fixture();
+  const legacy = asVersion2(config);
+  legacy.version = 1;
+  legacy.providers.find((provider) => provider.id === 'grok-local').capabilities.write = false;
+  await writeFile(configPath, `${JSON.stringify(legacy, null, 2)}\n`);
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  assert.equal(migrated.providers.find((provider) => provider.id === 'grok-local').capabilities.write, false);
 });

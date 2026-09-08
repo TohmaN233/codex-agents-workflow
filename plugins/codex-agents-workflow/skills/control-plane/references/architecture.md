@@ -61,7 +61,8 @@ explicit port still overrides it, and port `0` requests an automatically selecte
 port for parallel tests or exceptional local conflicts.
 Version-1 and version-2 files migrate atomically to version 3. Legacy scenarios become
 Task Types; untouched disabled provider-specific connector defaults are removed, while
-enabled or customized policy is preserved for manual editing. Ambiguous legacy `full`
+enabled or customized provider capabilities and policy are preserved for manual editing.
+Ambiguous legacy `full`
 routes migrate disabled and require explicit review of both Stage bindings.
 
 Connector task records live beside the configuration and contain task identity,
@@ -70,6 +71,10 @@ identity, terminal/scope evidence, and bounded public errors. They do not contai
 prompt body. On MCP restart every nonterminal record becomes
 `unknown_after_restart`; no task is automatically resubmitted and its workspace remains
 reserved.
+
+The headless stdio transport uses bounded general and control lanes. A shutdown first
+stops intake, drains in-flight RPCs, then closes the console and Strict managers so a
+signal cannot race durable reconciliation.
 
 ## Effective permission gate
 

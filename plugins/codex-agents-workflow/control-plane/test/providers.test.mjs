@@ -125,3 +125,28 @@ test('direct API deadline also bounds a response body that stalls after headers'
   );
   assert(Date.now() - started < 3000, `body timeout exceeded bound: ${Date.now() - started}ms`);
 });
+
+test('direct API cancels a response body rejected by declared size', async () => {
+  let cancelled = 0;
+  const body = {
+    cancel: async () => { cancelled += 1; },
+    getReader() { throw new Error('reader must not be acquired for an oversized declaration'); },
+  };
+  const dir = await mkdtemp(join(tmpdir(), 'sol-control-provider-size-'));
+  const configPath = join(dir, 'control-plane.json');
+  const config = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  const provider = config.providers.find((item) => item.id === 'custom-openai-compatible');
+  await assert.rejects(
+    invokeOpenAICompatible(provider, 'oversized response', {
+      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-length': String(3 * 1024 * 1024) }),
+        body,
+      }),
+    }),
+    /provider response exceeds 2097152 bytes/,
+  );
+  assert.equal(cancelled, 1);
+});

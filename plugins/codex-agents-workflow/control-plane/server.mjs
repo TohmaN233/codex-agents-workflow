@@ -36,6 +36,20 @@ const DEFAULT_CONSOLE_PORT = 58712;
 const MAX_HTTP_BODY = 8 * 1024 * 1024;
 
 let consoleState = null;
+let activeStdioLifecycle = null;
+
+const STDIO_MAX_GENERAL_IN_FLIGHT = 24;
+const STDIO_MAX_CONTROL_IN_FLIGHT = 4;
+const STDIO_MAX_PENDING = 128;
+const STDIO_CONTROL_TOOLS = new Set([
+  'codex_agents_workflow_status',
+  'codex_agents_workflow_connector_status',
+  'codex_agents_workflow_connector_control',
+]);
+const STDIO_CONTROL_OPERATIONS = new Set([
+  'status', 'get', 'next', 'events', 'pause', 'resume', 'cancel', 'approve',
+  'control_connector', 'reconcile_connector', 'strict_status',
+]);
 
 function samePath(left, right) {
   const resolvedLeft = resolve(left);
@@ -512,36 +526,143 @@ export async function handleRpc(request, {
   };
 }
 
+function isStdioControlRequest(request) {
+  const method = String(request?.method || '');
+  if (method !== 'tools/call') return true;
+  const name = String(request?.params?.name || '');
+  if (STDIO_CONTROL_TOOLS.has(name)) return true;
+  return name.startsWith('workflow_') && STDIO_CONTROL_OPERATIONS.has(name.slice('workflow_'.length));
+}
+
+export function createStdioRequestScheduler({
+  handle,
+  write,
+  onUnexpectedError = () => {},
+  maxGeneral = STDIO_MAX_GENERAL_IN_FLIGHT,
+  maxControl = STDIO_MAX_CONTROL_IN_FLIGHT,
+  maxPending = STDIO_MAX_PENDING,
+} = {}) {
+  if (typeof handle !== 'function' || typeof write !== 'function') {
+    throw new TypeError('stdio scheduler requires handle and write functions');
+  }
+  const queues = { control: [], general: [] };
+  const inFlight = new Set();
+  let active = { control: 0, general: 0 };
+  let accepting = true;
+  let shutdownPromise = null;
+
+  const sendError = (request, code, message) => {
+    if (request?.id === undefined || request?.id === null) return;
+    write({ jsonrpc: '2.0', id: request.id, error: { code, message } });
+  };
+
+  const pump = () => {
+    while (active.control < maxControl && queues.control.length > 0) start(queues.control.shift(), 'control');
+    while (active.general < maxGeneral && queues.general.length > 0) start(queues.general.shift(), 'general');
+  };
+
+  const start = (request, lane) => {
+    active[lane] += 1;
+    const task = Promise.resolve()
+      .then(() => handle(request))
+      .then((response) => { if (response) write(response); })
+      .catch((error) => {
+        onUnexpectedError(error, request);
+      });
+    inFlight.add(task);
+    task.finally(() => {
+      inFlight.delete(task);
+      active[lane] -= 1;
+      pump();
+    }).catch(() => {});
+  };
+
+  const submit = (request) => {
+    if (!accepting) {
+      sendError(request, 'SERVER_SHUTTING_DOWN', 'server is shutting down');
+      return false;
+    }
+    const lane = isStdioControlRequest(request) ? 'control' : 'general';
+    const limit = lane === 'control' ? maxControl : maxGeneral;
+    if (active[lane] < limit) {
+      start(request, lane);
+      return true;
+    }
+    if (queues.control.length + queues.general.length >= maxPending) {
+      sendError(request, 'SERVER_BUSY', 'server request queue is full; retry later');
+      return false;
+    }
+    queues[lane].push(request);
+    return true;
+  };
+
+  const shutdown = () => {
+    if (shutdownPromise) return shutdownPromise;
+    accepting = false;
+    for (const lane of ['control', 'general']) {
+      for (const request of queues[lane]) sendError(request, 'SERVER_SHUTTING_DOWN', 'server is shutting down');
+      queues[lane].length = 0;
+    }
+    shutdownPromise = Promise.allSettled([...inFlight]).then(() => undefined);
+    return shutdownPromise;
+  };
+
+  return {
+    submit,
+    shutdown,
+    isAccepting: () => accepting,
+    snapshot: () => ({
+      accepting,
+      active: { ...active },
+      pending: queues.control.length + queues.general.length,
+      in_flight: inFlight.size,
+    }),
+  };
+}
+
 async function main() {
   const configPath = resolveConfigPath();
   const reader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-  const inFlight = new Set();
   const failures = [];
-  for await (const line of reader) {
-    if (!line.trim()) continue;
-    let request;
-    try {
-      request = JSON.parse(line);
-    } catch (error) {
-      process.stderr.write(`codex-agents-workflow invalid JSON-RPC input: ${error.message}\n`);
-      continue;
+  let shutdownPromise = null;
+  let scheduler;
+  const requestShutdown = () => {
+    if (shutdownPromise) return shutdownPromise;
+    reader.close();
+    shutdownPromise = (async () => {
+      await scheduler.shutdown();
+      await stopConsole();
+      await closeStrictManagers();
+    })();
+    return shutdownPromise;
+  };
+  scheduler = createStdioRequestScheduler({
+    handle: (request) => handleRpc(request, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH }),
+    write: (response) => process.stdout.write(`${JSON.stringify(response)}\n`),
+    onUnexpectedError: (error) => {
+      process.stderr.write(`codex-agents-workflow request failed: ${error.stack || error.message}\n`);
+      failures.push(error);
+    },
+  });
+  activeStdioLifecycle = { requestShutdown };
+  try {
+    for await (const line of reader) {
+      if (!scheduler.isAccepting()) break;
+      if (!line.trim()) continue;
+      let request;
+      try {
+        request = JSON.parse(line);
+      } catch (error) {
+        process.stderr.write(`codex-agents-workflow invalid JSON-RPC input: ${error.message}\n`);
+        continue;
+      }
+      scheduler.submit(request);
     }
-    // Keep the stdio transport responsive while a connector status or direct
-    // invocation waits. JSON-RPC IDs correlate out-of-order responses; Run and
-    // task stores provide their own durable ordering and ownership locks.
-    const task = handleRpc(request, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH })
-      .then((response) => { if (response) process.stdout.write(`${JSON.stringify(response)}\n`); })
-      .catch((error) => {
-        process.stderr.write(`codex-agents-workflow request failed: ${error.stack || error.message}\n`);
-        failures.push(error);
-      });
-    inFlight.add(task);
-    task.finally(() => inFlight.delete(task)).catch(() => {});
+    await requestShutdown();
+    if (failures.length) throw failures[0];
+  } finally {
+    if (activeStdioLifecycle?.requestShutdown === requestShutdown) activeStdioLifecycle = null;
   }
-  await Promise.all(inFlight);
-  if (failures.length) throw failures[0];
-  await stopConsole();
-  await closeStrictManagers();
 }
 
 const isMain = import.meta.url === pathToFileURL(process.argv[1] || '').href;
@@ -549,10 +670,17 @@ if (isMain) {
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return; shuttingDown = true;
-    Promise.allSettled([stopConsole(), closeStrictManagers()]).then(results => {
-      const failures = results.filter(result => result.status === 'rejected');
+    const cleanup = activeStdioLifecycle?.requestShutdown?.()
+      || Promise.allSettled([stopConsole(), closeStrictManagers()]);
+    cleanup.then((result) => {
+      const failures = Array.isArray(result)
+        ? result.filter(item => item.status === 'rejected')
+        : [];
       if (failures.length) process.stderr.write('codex-agents-workflow shutdown failed; retained executor ownership requires reconciliation\n');
       process.exit(failures.length ? 1 : 0);
+    }).catch((error) => {
+      process.stderr.write(`codex-agents-workflow shutdown failed: ${error.stack || error.message}\n`);
+      process.exit(1);
     });
   };
   process.on('SIGINT', shutdown);

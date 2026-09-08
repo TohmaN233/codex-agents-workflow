@@ -92,9 +92,10 @@ export function resolveConfigPath(env = process.env, userHome = homedir()) {
     // Keep the old variable as an input-only compatibility alias. A path in
     // the retired sol-advisor store is translated to the canonical store so it
     // cannot silently select a second active configuration.
-    assert(env.CODEX_WORKFLOW_CONFIG ? basename(dirname(resolved)) !== 'sol-advisor' : true,
+    const legacyStore = isLegacyStoreDirectory(dirname(resolved));
+    assert(env.CODEX_WORKFLOW_CONFIG ? !legacyStore : true,
       'CODEX_WORKFLOW_CONFIG cannot target the retired sol-advisor store; use the canonical codex-agents-workflow path');
-    if (!env.CODEX_WORKFLOW_CONFIG && basename(dirname(resolved)) === 'sol-advisor') {
+    if (!env.CODEX_WORKFLOW_CONFIG && legacyStore) {
       return join(dirname(dirname(resolved)), 'codex-agents-workflow', basename(resolved));
     }
     return resolved;
@@ -103,6 +104,11 @@ export function resolveConfigPath(env = process.env, userHome = homedir()) {
     ? (isAbsolute(env.CODEX_HOME) ? resolve(env.CODEX_HOME) : resolve(userHome, env.CODEX_HOME))
     : join(userHome, '.codex');
   return join(codexHome, 'codex-agents-workflow', 'control-plane.json');
+}
+
+function isLegacyStoreDirectory(path) {
+  const name = basename(path);
+  return process.platform === 'win32' ? name.toLowerCase() === 'sol-advisor' : name === 'sol-advisor';
 }
 
 function legacyStorePathFor(configPath) {
@@ -390,12 +396,6 @@ export function migrateConfigV1(raw, bundledDefaults) {
     providerIds.add(providerId);
   }
 
-  const grok = migrated.providers.find((provider) => provider?.id === 'grok-local');
-  if (grok?.kind === 'builtin_connector' && grok?.config?.connector === 'grok_acp') {
-    grok.capabilities = object(grok.capabilities) ? grok.capabilities : {};
-    grok.capabilities.write = true;
-  }
-
   return migrated;
 }
 
@@ -505,7 +505,9 @@ function upgradeLegacyDifficultTask(migrated, bundledDefaults) {
   // A customized provider set may have renamed or removed the bundled reviewer.
   // In that case preserving the user's one-stage route is safer than injecting
   // a binding that validation cannot resolve.
-  if (!(migrated.providers || []).some((provider) => provider?.id === reviewStage.provider_id)) return;
+  const reviewer = (migrated.providers || []).find((provider) => provider?.id === reviewStage.provider_id);
+  if (!reviewer || reviewer.kind !== 'native_agent' || reviewer.enabled === false || reviewer.capabilities?.read === false) return;
+  if (![reviewStage.role, 'advisor'].includes(reviewer.config?.role)) return;
   const index = migrated.task_types?.findIndex(
     (taskType) => taskType?.id === 'judgment-heavy-change') ?? -1;
   if (index < 0 || !isLegacyJudgmentHeavyDefault(migrated.task_types[index], bundledTaskType)) return;
