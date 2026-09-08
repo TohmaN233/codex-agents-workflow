@@ -207,7 +207,7 @@ export class WorkflowRuntime {
   async recordExecutorEvent(runId, { node_id, attempt_id, lease_token, control_token, event }) {
     const fields = {
       codex_event: ['method', 'thread_id', 'turn_id', 'item_type', 'status'],
-      tool_operation: ['call_id', 'tool', 'path', 'phase', 'sha256', 'before_sha256', 'after_sha256', 'entries'],
+      tool_operation: ['call_id', 'tool', 'path', 'phase', 'sha256', 'before_sha256', 'after_sha256', 'entries', 'start_line', 'end_line', 'total_lines', 'bytes'],
       profile_owned: ['home', 'executable_sha256', 'pid'],
       session_state: ['status', 'code'],
       model_catalog: ['requested_model', 'requested_effort', 'inventory_count', 'match_count', 'effort_supported', 'model_ids'],
@@ -219,6 +219,10 @@ export class WorkflowRuntime {
       Object.values(event.metadata).every(value => value === null || typeof value === 'boolean' || typeof value === 'string' && value.length <= 4096 || Number.isSafeInteger(value)) &&
       Buffer.byteLength(canonicalJSON(event)) <= 32000,
       'EXECUTOR_EVENT_SCHEMA', 'Executor events accept bounded metadata only, never raw auth/model payloads');
+    if(event.kind==='tool_operation' && event.metadata.tool==='read_workflow_resource_range') {
+      const {start_line:start,end_line:end,total_lines:total,bytes}=event.metadata;
+      requireValue([start,end,total,bytes].every(Number.isSafeInteger)&&start>=1&&end>=start&&end-start<200&&total>=end&&bytes>=0&&bytes<=32768,'EXECUTOR_EVENT_SCHEMA','Resource range evidence must contain bounded valid coverage');
+    }
     const result = await this.runs.mutate(runId, 'executor_event', state => {
       authorize(state, control_token);
       // Late shutdown metadata may document an already fenced attempt; it never

@@ -172,7 +172,7 @@ work. Explicit human acceptance applies the exact source-revision Draft; detaile
 Provider, workspace, and recovery controls remain in advanced options.
 
 Skill2Workflow generation defaults resolve registered Providers at start. The reviewer
-is a dedicated Sol/high Provider, separate from Strict global main defaults. Its
+defaults to a dedicated Sol/high Provider, separate from Strict global main defaults. Its
 registered configuration is pinned in server-created Run policy (never imported provenance) and permission revocation remains effective.
 Automatic repairs preserve old attempts, require closed read-only sessions, reject
 cancelled/paused Runs and stop on model/auth/transport errors or the round limit.
@@ -188,3 +188,17 @@ only initialize/account-read/model-list RPCs, never model turns or login. Client
 model inventory is separate from the qualified Strict runtime. Grok/Cursor discover
 local clients, honor explicit path overrides and report unknown model catalogs
 as client-managed rather than inventing lists.
+
+Skill conversion generation and review share conversion-contract.mjs through the
+pinned analysis/request.txt packet. Preserve intended source phases even when
+execution capabilities are missing; never substitute a blocker-only workflow or
+claim execution. Refer to pinned detailed instructions rather than copying them
+into every node. Review conversion semantics, not imported implementation quality.
+The resource broker offers audited 1–200-line/32-KiB pinned reads for large
+references; partial reads report coverage and never establish full-file review.
+Generation progress exposes journal-derived round, model, elapsed stage time and
+recent resource activity. Automatic repair never hides cancellation or acceptance.
+Generation planner defaults may be independent of planning-node routing via
+generation.planner_provider_id; absent means the prior planning route default.
+Any enabled native read-capable Provider can perform generation review regardless
+of its original role/model name. The finalizer remains read-only and human-accepted.

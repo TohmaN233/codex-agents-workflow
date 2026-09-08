@@ -41,8 +41,8 @@ export function Select({ label, value, onChange, options }: { label: string, val
   if (!choices.some(choice => choice.value === value)) choices.unshift({ value, label: value ? `${value} · 缺失，需处理` : '请选择' });
   return <label className="field">{label}<select value={value} onChange={e => onChange(e.target.value)}>{choices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</select></label>;
 }
-export function ProviderField({ providers, value, onChange, main = true }: { providers: Json[], value: string, onChange: (id: string) => void, main?: boolean }) {
-  return <Select label="固定 Provider" value={value} onChange={onChange} options={[...(main ? [{ value: '$main', label: 'Main · 主控制者' }] : []), ...providers.map(p => ({ value: p.id, label: `${p.name ?? p.id}${p.enabled ? '' : ' · 已禁用'}` }))]}/>;
+export function ProviderField({ providers, value, onChange, main = true, label='固定 Provider', emptyLabel }: { providers: Json[], value: string, onChange: (id: string) => void, main?: boolean, label?:string, emptyLabel?:string }) {
+  return <Select label={label} value={value} onChange={onChange} options={[...(emptyLabel?[{value:'',label:emptyLabel}]:[]),...(main ? [{ value: '$main', label: 'Main · 主控制者' }] : []), ...providers.map(p => ({ value: p.id, label: `${p.name ?? p.id}${p.config?.model?' · '+p.config.model+(p.config.reasoning_effort?' / '+p.config.reasoning_effort:''):''}${p.enabled ? '' : ' · 已禁用'}` }))]}/>;
 }
 export function Details({ title, value }: { title: string, value: any }) { return <details><summary>{title}</summary><pre>{displayDetails(value)}</pre></details>; }
 const statuses: Record<string, [string, string]> = { pending: ['○','等待'], ready: ['◇','就绪'], claimed: ['◈','已领取'], running: ['▶','运行中'], succeeded: ['✓','完成'], failed: ['×','失败'], skipped: ['↷','跳过'], blocked: ['⊘','阻塞'], cancelled: ['■','已取消'], interrupted: ['!','中断'], paused: ['Ⅱ','暂停'] };

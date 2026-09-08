@@ -132,3 +132,32 @@ Grok and Cursor honor registered path overrides, otherwise discover installed cl
 missing public model APIs are shown as client-managed/unknown, never an invented list.
 Observed on Windows: Codex0.153.4 returned eight models including gpt-6-astra with
 zero model calls. The separately qualified Strict executable remains0.145.0.
+
+
+### Conversion quality and observable review
+
+Generation and review consume one versioned conversion contract in the pinned request.
+It covers source phase order, producer/consumer dependencies, approval boundaries,
+conditional prerequisites, reference inheritance and truthful capability limitations.
+Unavailable execution does not justify reducing the intended workflow to a diagnostic.
+Review examines conversion semantics in one pass and returns all material findings;
+source-code audits and stylistic rewrites are outside this operation.
+
+The read-only broker supports explicit pinned line ranges (up to 200 lines / 32 KiB),
+with total line count, actual coverage, hash and durable read evidence. Complete
+resources remain pinned; partial reads never claim full coverage. Existing whole-file
+reads remain compatible. Both stages use the numbered SKILL.md already in the request.
+
+The console displays round/limit, pinned model/effort, stage duration and recent read
+activity; cancellation is visible without opening advanced options. Progress is derived
+from verified journal state rather than a separate progress store.
+
+Generation defaults support optional planner_provider_id, separate from generated-node
+planning routes. Missing planner_provider_id retains the prior route default. A clearly
+labelled per-run override changes only this conversion. Review can select any enabled
+native read-capable Provider, regardless of model name or original role. It still uses
+an independent read-only session and requires human acceptance. Other connector kinds
+remain unsupported by the current automatic conversion executor, visibly rather than
+being silently substituted. Prompt preview is non-dispatching and shows the shared
+request, stage instructions and schemas; runtime additionally supplies exact upstream
+results and repair feedback.

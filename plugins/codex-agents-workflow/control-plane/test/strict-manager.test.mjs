@@ -16,6 +16,25 @@ import { digest } from '../lib/workflow-revisions.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 
+test('generation accepts a non-reviewer registered native model with read-only review and shared prompt contract',async t=>{
+  let proposal;
+  const f=await fixture(t,{turn:async(settings)=>{const read=await settings.toolBroker.call('read_workflow_resource_range',{path:'source/SKILL.md',start_line:5,end_line:5},'range-read');assert.equal(JSON.parse(read.contentItems[0].text).text,'5: Review result.');return {output:JSON.stringify(settings.model==='gpt-5.6-luna'?{approved:true,findings:[]}:proposal),thread_id:'selectable-review',turn_id:'turn',audit:{}};}});
+  const source=join(f.root,'selectable-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: selectable\ndescription: test\n---\nReview result.');
+  const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'selectable-source'});
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+  proposal={source_revision:pack.revision_hash,nodes:[{id:'check',type:'agent',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  const rules=await f.service.call('routing_defaults');rules.generation={review_provider_id:'native-luna',planner_provider_id:'native-terra',max_rounds:3};rules.routes.planning.provider_id='native-luna';
+  const input={workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,routing_rules:rules};
+  const preview=await f.service.call('generation_prompt_preview',input,{human:true});
+  assert.equal(preview.invoked,false);assert.equal(f.sessions.length,0);assert.match(preview.shared_request,/Shared generation and review acceptance contract/);
+  const run=await f.service.call('start_generation',{...input,run_id:'selectable-generation'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  for(const phase of ['generating','reviewing']){const value=await f.service.call('advance_generation',control,{human:true});assert.equal(value.phase,phase);assert.equal(value.progress.round,1);await Promise.all([...f.manager.entries.values()].map(e=>e.job));}
+  const observed=await f.service.call('get',control);const range=observed.nodes.final.attempts[0].executor_events.find(e=>e.kind==='tool_operation' && e.metadata.tool==='read_workflow_resource_range');assert.equal(range.metadata.start_line,5);assert.equal(range.metadata.total_lines,5);assert.equal(range.metadata.end_line,5);
+  assert.equal(f.sessions[0].settings.model,'gpt-5.6-terra');assert.equal(f.sessions[1].settings.model,'gpt-5.6-luna');assert.equal(f.sessions[1].settings.toolBroker.tools().some(t=>t.name==='write_workspace'),false);
+  assert.equal((await f.service.call('advance_generation',control,{human:true})).phase,'review_required');
+  await f.service.call('cancel',control);
+});
+
 test('one-click generation prepares workspace and advances only to explicit human acceptance', async t => {
   let proposal;
   const f = await fixture(t,{turn:async(settings)=>({output:JSON.stringify(settings.model==='gpt-5.6-sol'?{approved:true,findings:[]}:proposal),thread_id:'generation-test',turn_id:'turn',audit:{}})});

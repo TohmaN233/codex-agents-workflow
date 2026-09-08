@@ -56,7 +56,8 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
     { name: 'list_workspace', description: 'List one workspace directory, excluding runtime internals and ambient Skills. Use . for its root.', inputSchema: schema({ path: string }) },
     { name: 'read_workspace', description: 'Read a bounded UTF-8 workspace file and its SHA-256 for a later compare-and-swap write.', inputSchema: schema({ path: string }) },
     ...(access === 'bounded_write' ? [{ name: 'write_workspace', description: 'Atomically write UTF-8 text inside the node scope. expected_sha256 must match the current file; null creates a new file. Parent directory must exist.', inputSchema: schema({ path: string, text: string, expected_sha256: { type: ['string', 'null'] } }) }] : []),
-    ...(pinned.size ? [{ name: 'read_workflow_resource', description: 'Read an immutable resource pinned to this node.', inputSchema: schema({ path: { type: 'string', enum: [...pinned.keys()] } }) }] : []),
+    ...(pinned.size ? [{ name: 'read_workflow_resource', description: 'Read an immutable resource pinned to this node. Prefer read_workflow_resource_range for large references.', inputSchema: schema({ path: { type: 'string', enum: [...pinned.keys()] } }) },
+      {name:'read_workflow_resource_range',description:'Read 1–200 numbered lines of an immutable pinned UTF-8 resource. Reports total lines; partial content is not a full-file audit.',inputSchema:schema({path:{type:'string',enum:[...pinned.keys()]},start_line:{type:'integer',minimum:1},end_line:{type:'integer',minimum:1}})}] : []),
   ];
   let queue = Promise.resolve(); let revoked = false;
   async function checkAuthority() {
@@ -66,7 +67,17 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
   async function perform(name, args, callId) {
     requireValue(tools.some(tool => tool.name === name) && typeof callId === 'string' && callId.length <= 256, 'CODEX_TOOL_DENIED', 'Tool is outside this node broker');
     await checkAuthority();
-    argsShape(args, name === 'write_workspace' ? ['path', 'text', 'expected_sha256'] : ['path']);
+    argsShape(args, name === 'write_workspace' ? ['path', 'text', 'expected_sha256'] : name==='read_workflow_resource_range'?['path','start_line','end_line']:['path']);
+    if(name==='read_workflow_resource_range') {
+      const item=pinned.get(args.path);requireValue(item,'CODEX_RESOURCE_DENIED','Resource is outside the pinned node manifest');
+      const lines=decode(item.bytes).split('\n');
+      requireValue(Number.isInteger(args.start_line)&&Number.isInteger(args.end_line)&&args.start_line>=1&&args.start_line<=lines.length&&args.end_line>=args.start_line&&args.end_line-args.start_line<200,'CODEX_RESOURCE_RANGE','Use a valid starting line and at most 200 lines');
+      const end=Math.min(args.end_line,lines.length);
+      const text=lines.slice(args.start_line-1,end).map((line,index)=>`${args.start_line+index}: ${line}`).join('\n');
+      requireValue(Buffer.byteLength(text)<=32768,'CODEX_RESOURCE_RANGE_LIMIT','Selected lines exceed 32 KiB; select a smaller range');
+      await onOperation({call_id:callId,tool:name,path:args.path,phase:'read',sha256:item.sha256,start_line:args.start_line,end_line:end,total_lines:lines.length,bytes:Buffer.byteLength(text)});
+      return textResult({path:args.path,sha256:item.sha256,start_line:args.start_line,end_line:end,total_lines:lines.length,text});
+    }
     if (name === 'read_workflow_resource') {
       const item = pinned.get(args.path); requireValue(item, 'CODEX_RESOURCE_DENIED', 'Resource is outside the pinned node manifest');
       await onOperation({ call_id: callId, tool: name, path: args.path, phase: 'read', sha256: item.sha256 });

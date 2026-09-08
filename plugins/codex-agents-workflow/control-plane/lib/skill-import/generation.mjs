@@ -1,4 +1,5 @@
 import { repairGeneration } from './generation-repair.mjs';
+import { generationProgress } from './generation-progress.mjs';
 import { compileExpansion } from './semantic-expander.mjs';
 import { leaseToken } from '../workflow-execution-envelope.mjs';
 import { requireValue } from '../workflow-paths.mjs';
@@ -34,14 +35,14 @@ export async function advanceGeneration(service, runtime, executor, args, {store
       }
       const lease = await runtime.claimNode(args.run_id,{...args,node_id:nodeId,owner:state.main_actor,request_id:'generation-'+nodeId+'-'+node.attempts.length});
       await executor.dispatch(args.run_id,{...args,node_id:nodeId,attempt_id:lease.attempt_id,lease_token:lease.lease_token});
-      return {phase:nodeId==='expand'?'generating':'reviewing'};
+      return {phase:nodeId==='expand'?'generating':'reviewing',progress:generationProgress(await runtime.runs.read(args.run_id),nodeId)};
     }
     const attempt = node.attempts.find(a=>a.id===node.active_attempt_id);
     if (!attempt || !['claimed','running'].includes(node.status)) return {phase:'attention',status:node.status,error:node.error};
     const lease = {...args,node_id:nodeId,attempt_id:attempt.id,lease_token:leaseToken(args.control_token,args.run_id,nodeId,attempt.id,attempt.lease_generation ?? 0)};
     if (!attempt.dispatch) {
       await executor.dispatch(args.run_id,lease);
-      return {phase:nodeId==='expand'?'generating':'reviewing'};
+      return {phase:nodeId==='expand'?'generating':'reviewing',progress:generationProgress(await runtime.runs.read(args.run_id),nodeId)};
     }
     if (nodeId==='final' && attempt.result_proposal) {
       const result = await service.strictManager.collect(runtime,args.run_id,{...lease,accepted:false});
@@ -53,7 +54,7 @@ export async function advanceGeneration(service, runtime, executor, args, {store
       return {phase:'review_required',source,proposal:state.nodes.expand.output,workflow:compiled.workflow,validation:compiled.validation,review:result.completion};
     }
     const live = await service.strictManager.status(runtime,args.run_id,lease);
-    return {phase:['auth_required','auth_pending'].includes(live.status)?'authentication_required':nodeId==='expand'?'generating':'reviewing',live};
+    return {phase:['auth_required','auth_pending'].includes(live.status)?'authentication_required':nodeId==='expand'?'generating':'reviewing',live,progress:generationProgress(record,nodeId)};
   }
   return {phase:'attention',status:state.status};
 }

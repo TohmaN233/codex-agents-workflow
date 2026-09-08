@@ -92,6 +92,16 @@ export class WorkflowService {
     const { config, context, store, runtime, executor } = await this.open();
     if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
+      case 'generation_prompt_preview': {
+        requireValue(human,'HUMAN_GENERATION','Prompt preview belongs to the console');
+        const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const provider=config.providers.find(p=>p.id===(args.provider_id || rules.generation?.planner_provider_id || rules.routes.planning.provider_id));
+        const reviewerId=rules.generation?.review_provider_id ?? 'native-generation-reviewer';
+        const reviewer=config.providers.find(p=>p.id===reviewerId) ?? (reviewerId==='native-generation-reviewer'?JSON.parse(await readFile(this.defaultConfigPath,'utf8')).providers.find(p=>p.id===reviewerId):null);
+        const pack=await store.snapshot(args.workflow_id,args.revision_hash);
+        const job=expansionRunPack(pack,await store.resources(args.workflow_id,pack.revision_hash),provider,'generation-preview',rules,true,reviewer);
+        return {invoked:false,source_revision:pack.revision_hash,generator:job.workflow.nodes.find(n=>n.id==='expand').prompt_template,reviewer:job.workflow.nodes.find(n=>n.id==='final').prompt_template,shared_request:job.resources['analysis/request.txt'],output_schemas:Object.fromEntries(job.workflow.nodes.filter(n=>n.outputs_schema).map(n=>[n.id,n.outputs_schema])),runtime_context:'Execution additionally supplies actual upstream results, output schema and any previous repair feedback. This preview does not invoke a model.'};
+      }
       case 'start_generation': {
         requireValue(human,'HUMAN_GENERATION','Start automatic generation from the console');
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
@@ -104,7 +114,7 @@ export class WorkflowService {
         }
         const runId = workflowId(args.run_id);
         const workspace = args.workspace || await ensureDirectory(join(dirname(this.configPath),'skill-generation-workspaces','job-'+runId));
-        return this.call('create_expansion_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.routes.planning.provider_id,routing_rules:rules,automatic_generation:true,main_actor:'human-console'});
+        return this.call('create_expansion_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.generation?.planner_provider_id || rules.routes.planning.provider_id,routing_rules:rules,automatic_generation:true,main_actor:'human-console'});
       }
       case 'advance_generation': {
         requireValue(human,'HUMAN_GENERATION','Automatic generation belongs to its console controller');

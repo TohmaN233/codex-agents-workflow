@@ -17,6 +17,18 @@ async function fixture(t) {
 }
 const output = result => JSON.parse(result.contentItems[0].text);
 
+test('bounded resource reads preserve pin identity and report actual numbered coverage',async t=>{
+  const f=await fixture(t);const bytes='first\nsecond\nthird';
+  const options={...f.options,resources:[{path:'source/file.md',bytes,sha256:digest(bytes)}]};
+  const broker=await createCodexToolBroker(options);
+  const result=output(await broker.call('read_workflow_resource_range',{path:'source/file.md',start_line:2,end_line:10},'slice'));
+  assert.equal(result.text,'2: second\n3: third');assert.equal(result.total_lines,3);assert.equal(result.end_line,3);assert.equal(result.sha256,digest(bytes));
+  assert.equal(f.operations[0].start_line,2);
+  await assert.rejects(broker.call('read_workflow_resource_range',{path:'source/file.md',start_line:1,end_line:201},'too-large'),{code:'CODEX_RESOURCE_RANGE'});
+  const other=await createCodexToolBroker(options);
+  await assert.rejects(other.call('read_workflow_resource_range',{path:'unowned',start_line:1,end_line:2},'unowned'),{code:'CODEX_RESOURCE_DENIED'});
+});
+
 test('workspace broker performs audited CAS writes and rejects stale observations', async t => {
   const f = await fixture(t); const broker = await createCodexToolBroker(f.options);
   const read = output(await broker.call('read_workspace', { path: 'src/main.txt' }, 'read-1'));
