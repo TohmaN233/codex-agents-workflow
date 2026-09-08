@@ -11,14 +11,21 @@ export class JsonRpcPeer {
     this.requestHandlers = new Map();
     this.notificationHandlers = new Map();
     this.closed = false;
-    this.messageTail = Promise.resolve();
+    this.messageTasks = new Set();
     this.reader = readline.createInterface({ input, crlfDelay: Infinity });
     input.on?.('error', (error) => this.close(error));
     output.on?.('error', (error) => this.close(error));
     this.reader.on('line', (line) => {
-      this.messageTail = this.messageTail
+      // Correlated responses must be demultiplexed immediately. A human
+      // permission/input handler may intentionally remain pending; it must not
+      // block a cancellation or completion response that is already on the
+      // stream. Durable state transitions are serialized by their stores, not
+      // by this transport-wide input queue.
+      const task = Promise.resolve()
         .then(() => this.#onLine(line))
         .catch((error) => this.close(error instanceof Error ? error : new Error(String(error))));
+      this.messageTasks.add(task);
+      task.finally(() => this.messageTasks.delete(task)).catch(() => {});
     });
     this.reader.on('close', () => this.close(new Error('ACP stream closed')));
   }

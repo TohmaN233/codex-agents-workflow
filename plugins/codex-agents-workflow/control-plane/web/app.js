@@ -550,7 +550,7 @@ $('#add-provider').addEventListener('click', () => {
     config: {
       endpoint: 'https://example.invalid/v1/chat/completions',
       model: 'replace-me',
-      api_key_env: 'SOL_CONTROL_CUSTOM_API_KEY',
+      api_key_env: 'CODEX_WORKFLOW_CUSTOM_API_KEY',
       auth_type: 'bearer',
       timeout_ms: 120000,
       max_output_tokens: 4096,

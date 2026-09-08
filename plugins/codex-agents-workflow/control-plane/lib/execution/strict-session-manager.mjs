@@ -186,6 +186,7 @@ export class StrictSessionManager {
     if (!entry.adapter.final_acceptance_required) {
       await entry.runtime.completeNode(entry.runId, { ...entry.args, completion }); entry.status = 'succeeded';
     }
+    this.#compactSettledEntry(entry);
   }
   async fail(entry, cause) {
     entry.stopping = true; clearTimeout(entry.timer); entry.broker?.revoke();
@@ -202,6 +203,7 @@ export class StrictSessionManager {
     entry.status = failures.length === 1 ? entry.resultSaved ? 'result_commit_failed' : 'failed' : 'audit_or_cleanup_failed';
     entry.error = { code, secondary_codes: failures.slice(1).map(codeOf) };
     entry.failure = failures.length === 1 ? cause : Object.assign(new AggregateError(failures, 'Strict execution and audit/cleanup failed'), { code: 'STRICT_FAILURE_INCOMPLETE' });
+    this.#compactSettledEntry(entry);
     // Background failures become an explicit observable outcome, never a dropped rejection.
     return this.view(entry);
   }
@@ -278,6 +280,29 @@ export class StrictSessionManager {
     if (entry.session) { await entry.session.close(); await entry.event('session_state', { status: 'closed' }); }
     if (entry.job) await entry.job;
     entry.status = 'stopped';
+    this.#compactSettledEntry(entry);
+  }
+
+  #compactSettledEntry(entry) {
+    if (entry.compacted) return;
+    // Status, exact attempt identity and final-acceptance policy remain local;
+    // heavyweight session, broker, prompt and pinned envelope references do not.
+    // Durable Run artifacts are the source of truth for later collection.
+    if (!['succeeded', 'result_ready', 'awaiting_main_acceptance', 'failed', 'result_commit_failed', 'audit_or_cleanup_failed', 'stopped'].includes(entry.status)) return;
+    const finalAcceptanceRequired = Boolean(entry.adapter?.final_acceptance_required);
+    entry.session = null;
+    entry.broker = null;
+    entry.prompt = null;
+    entry.envelope = null;
+    entry.authorize = null;
+    entry.event = null;
+    entry.runtime = null;
+    entry.writes = new Set();
+    entry.job = null;
+    entry.skillResources = null;
+    entry.adapter = { final_acceptance_required: finalAcceptanceRequired };
+    entry.journal = Promise.resolve();
+    entry.compacted = true;
   }
   async close() { try { for (const entry of this.entries.values()) await this.stop(entry); } finally { this.hostAuth?.clear(); } }
 }

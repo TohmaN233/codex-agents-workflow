@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, resolve, win32 as winPath } from 'node:path';
+import { isAbsolute, join, resolve, win32 as winPath } from 'node:path';
 import { promisify } from 'node:util';
 import http from 'node:http';
 import { CdpClient } from './cdp-client.mjs';
@@ -238,12 +238,6 @@ export class CursorCdpConnector {
     if (!readOnly && provider.capabilities.write !== true) {
       throw connectorError('WRITE_CAPABILITY_REQUIRED', `Provider ${provider.id} is not write-capable`);
     }
-    const conflicts = await this.store.activeForWorkspace(fullWorkspace);
-    if (conflicts.length) {
-      throw connectorError('CONNECTOR_BUSY',
-        `Workspace already has an active connector task: ${conflicts[0].task_id}`);
-    }
-    const baseline = await captureWorkspaceSnapshot(fullWorkspace);
     const boundedPrompt = accessEnvelope(prompt, fullWorkspace, readOnly, boundedPaths);
     const task = await this.store.create({
       ...(taskId ? { task_id: taskId } : {}),
@@ -255,17 +249,23 @@ export class CursorCdpConnector {
       read_only: readOnly,
       allowed_paths: boundedPaths,
       prompt_sha256: createHash('sha256').update(boundedPrompt).digest('hex'),
-      baseline_snapshot: baseline,
+      baseline_snapshot: null,
       deadline_at: new Date(Date.now() + provider.config.task_timeout_ms).toISOString(),
     });
     let transport;
     let active = null;
     let scopeMonitor = null;
+    let baseline = null;
     let submissionAttempted = false;
     let submissionAccepted = false;
     let baselineMessageCount = 0;
     let lastSubmitSnapshot = null;
     try {
+      // Reserve the workspace in the durable task store before taking the
+      // baseline or touching the remote UI. This closes the check-before-create
+      // race shared by all connector backends.
+      baseline = await captureWorkspaceSnapshot(fullWorkspace);
+      await this.store.update(task.task_id, { baseline_snapshot: baseline });
       scopeMonitor = startWorkspaceScopeMonitor(fullWorkspace, {
         readOnly,
         allowedPaths: boundedPaths,
@@ -290,6 +290,7 @@ export class CursorCdpConnector {
         resultText: '',
         agentId: null,
         timeout: null,
+        terminalObservedAt: null,
         intentionalCleanup: false,
       };
       this.active.set(task.task_id, active);
@@ -761,6 +762,11 @@ export class CursorCdpConnector {
           stable = key === lastKey ? stable + 1 : 1;
           lastKey = key;
           if ((complete && stable >= 2) || (fallback && stable >= 4)) {
+            // The stable reply is the remote terminal observation. Mark it
+            // before extracting the text so a slow CDP read cannot race the
+            // connector deadline and misclassify an already completed Agent.
+            active.terminalObservedAt = new Date().toISOString();
+            clearTimeout(active.timeout);
             active.resultText = String(await active.client.evaluate(cursorExtractExpression()) || '').trim();
             await this.#complete(active);
             return;
@@ -773,6 +779,11 @@ export class CursorCdpConnector {
   }
 
   async #complete(active) {
+    // Stable reply observation is the remote terminal boundary. Clear the
+    // remote deadline before local scope verification and durable publication
+    // so slow local finalization cannot be reported as a remote timeout.
+    active.terminalObservedAt = new Date().toISOString();
+    clearTimeout(active.timeout);
     const current = await this.store.get(active.taskId);
     if (current && TERMINAL.has(current.state)) {
       await this.#cleanup(active);
@@ -890,6 +901,7 @@ export class CursorCdpConnector {
   }
 
   async #timeout(active) {
+    if (active.terminalObservedAt) return;
     const current = await this.store.get(active.taskId);
     if (!current || TERMINAL.has(current.state)) return;
     await this.store.update(active.taskId, {
@@ -1024,6 +1036,7 @@ export class CursorCdpConnector {
       resultText: '',
       agentId,
       timeout: null,
+      terminalObservedAt: null,
       intentionalCleanup: false,
       recovered: true,
     };

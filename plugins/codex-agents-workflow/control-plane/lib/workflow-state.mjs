@@ -3,7 +3,6 @@ import { validateData } from './workflow-data-schema.mjs';
 import { approvalBinding, bindingContext } from './workflow-execution-envelope.mjs';
 import { requireValue } from './workflow-paths.mjs';
 
-export const NODE_STATES = new Set(['pending', 'ready', 'claimed', 'running', 'succeeded', 'failed', 'blocked', 'skipped', 'cancelled', 'interrupted']);
 export const FINISHED_NODES = new Set(['succeeded', 'failed', 'skipped', 'cancelled']);
 export const EXECUTOR_NODES = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
 

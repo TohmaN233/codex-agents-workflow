@@ -515,6 +515,8 @@ export async function handleRpc(request, {
 async function main() {
   const configPath = resolveConfigPath();
   const reader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const inFlight = new Set();
+  const failures = [];
   for await (const line of reader) {
     if (!line.trim()) continue;
     let request;
@@ -524,9 +526,20 @@ async function main() {
       process.stderr.write(`codex-agents-workflow invalid JSON-RPC input: ${error.message}\n`);
       continue;
     }
-    const response = await handleRpc(request, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
-    if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
+    // Keep the stdio transport responsive while a connector status or direct
+    // invocation waits. JSON-RPC IDs correlate out-of-order responses; Run and
+    // task stores provide their own durable ordering and ownership locks.
+    const task = handleRpc(request, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH })
+      .then((response) => { if (response) process.stdout.write(`${JSON.stringify(response)}\n`); })
+      .catch((error) => {
+        process.stderr.write(`codex-agents-workflow request failed: ${error.stack || error.message}\n`);
+        failures.push(error);
+      });
+    inFlight.add(task);
+    task.finally(() => inFlight.delete(task)).catch(() => {});
   }
+  await Promise.all(inFlight);
+  if (failures.length) throw failures[0];
   await stopConsole();
   await closeStrictManagers();
 }

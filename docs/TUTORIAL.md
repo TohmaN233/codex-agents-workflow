@@ -72,7 +72,7 @@ When `CODEX_HOME` is not set, the path is:
 ~/.codex/codex-agents-workflow/control-plane.json
 ```
 
-This is user-level global configuration, independent of the current repository and working directory. After you save it, other projects and new tasks read the same configuration. The top of the console explicitly shows **Global user configuration** and the actual file path. Only an explicitly configured absolute `SOL_CONTROL_CONFIG` path, or an override path passed by code for development/testing, is shown in red as **Override/test configuration**. An override does not modify the global configuration and should not be used as the normal entry point.
+This is user-level global configuration, independent of the current repository and working directory. After you save it, other projects and new tasks read the same configuration. The top of the console explicitly shows **Global user configuration** and the actual file path. Only an explicitly configured absolute `CODEX_WORKFLOW_CONFIG` path (or the legacy `SOL_CONTROL_CONFIG` alias), or an override path passed by code for development/testing, is shown in red as **Override/test configuration**. An override does not modify the global configuration and should not be used as the normal entry point.
 
 Console overview (the screenshot uses bundled defaults and contains no local tokens or private settings):
 
@@ -196,7 +196,7 @@ The test passes only if the specified file is the only changed path, `outside_pa
 
 - Turn off **Control plane enabled** in the console: no control-plane task is parsed.
 - Turn off an individual Provider: its configuration remains, but it cannot be selected.
-- Set `SOL_CONTROL_DISABLED=1` before starting Codex: this is an environment-level kill switch that the console cannot bypass.
+- Set `CODEX_WORKFLOW_DISABLED=1` before starting Codex: this is an environment-level kill switch that the console cannot bypass. The legacy `SOL_CONTROL_DISABLED` name remains accepted for compatibility.
 - Close the terminal running the one-click console or press `Ctrl+C`: this stops only the configuration webpage and does not change saved enablement state.
 
 The configuration webpage is only a policy editor. Actual calls are made by the control-plane skill and MCP tools in a new Codex task. The main agent owns requirements, verification and acceptance. The bundled reviewer defaults to Astra / medium; each node executes its pinned Provider configuration.

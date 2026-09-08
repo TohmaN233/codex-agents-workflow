@@ -72,7 +72,7 @@ export async function resolveSelection(args, {
   audit = true,
 } = {}) {
   const config = await loadConfig({ configPath, defaultConfigPath });
-  assert(!isEnvironmentDisabled(env), 'Codex Agents Workflow is disabled by SOL_CONTROL_DISABLED');
+  assert(!isEnvironmentDisabled(env), 'Codex Agents Workflow is disabled by CODEX_WORKFLOW_DISABLED');
   assert(config.global.enabled, 'Codex Agents Workflow is disabled in the user configuration');
 
   const taskTypeId = String(args?.task_type_id || '').trim();
@@ -171,7 +171,7 @@ export async function probeConnector(args, {
   registry = connectorRegistryFor({ configPath, env }),
 } = {}) {
   const config = await loadConfig({ configPath, defaultConfigPath });
-  assert(!isEnvironmentDisabled(env), 'Codex Agents Workflow is disabled by SOL_CONTROL_DISABLED');
+  assert(!isEnvironmentDisabled(env), 'Codex Agents Workflow is disabled by CODEX_WORKFLOW_DISABLED');
   assert(config.global.enabled, 'Codex Agents Workflow is disabled in the user configuration');
   const providerId = String(args?.provider_id || '').trim();
   assert(providerId, 'provider_id is required');

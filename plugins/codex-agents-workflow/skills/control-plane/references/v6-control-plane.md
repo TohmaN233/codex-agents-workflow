@@ -24,7 +24,8 @@ names, and console tokens.
 Do not open, grep, print, or rewrite the user configuration file. Only the human-owned
 loopback console may create, enable, disable, remap, or delete Providers and Task Types.
 Never auto-enable an external provider or built-in connector, never infer that an
-installed paid model should be called, and never bypass `SOL_CONTROL_DISABLED`.
+installed paid model should be called, and never bypass `CODEX_WORKFLOW_DISABLED` (the legacy
+`SOL_CONTROL_DISABLED` alias remains accepted for compatibility).
 
 If the control tools are absent, emit `CONTROL PLANE UNAVAILABLE`, report a plugin-activation
 error, and tell the user that tools are attached only when a task starts. Do not emit a

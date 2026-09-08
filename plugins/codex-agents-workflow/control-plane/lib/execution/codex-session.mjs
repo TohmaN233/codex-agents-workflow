@@ -55,7 +55,7 @@ export async function createStrictSession(options) {
       },
     });
     await recordProfileChild(profile, client.pid);
-    await client.call('initialize', { clientInfo: { name: 'sol_strict_workflow', version: '0.1.0' }, capabilities: { experimentalApi: true } }); client.initialized();
+    await client.call('initialize', { clientInfo: { name: 'codex_agents_workflow_strict', version: '0.1.0' }, capabilities: { experimentalApi: true } }); client.initialized();
     if (options.hostAuth) {
       const credentials = await options.hostAuth.credentials({ previousAccountId: authAccountId });
       authAccountId = credentials.chatgptAccountId;

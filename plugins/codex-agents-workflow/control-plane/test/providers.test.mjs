@@ -7,6 +7,7 @@ import test from 'node:test';
 
 import { loadConfig, saveConfig, validateEndpoint } from '../lib/config.mjs';
 import { invokeSelection } from '../lib/control.mjs';
+import { invokeOpenAICompatible } from '../lib/providers.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 
 test('endpoint validation requires HTTPS except loopback HTTP', () => {
@@ -62,7 +63,7 @@ test('direct OpenAI-compatible invocation is text-only and env-authenticated', a
   }, {
     configPath,
     defaultConfigPath: DEFAULT_CONFIG_PATH,
-    env: { SOL_CONTROL_CUSTOM_API_KEY: 'fixture-secret' },
+    env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
   });
 
   assert.equal(result.response.text, 'Advisory result');
@@ -93,8 +94,34 @@ test('direct API stays disabled until both provider and global switch allow it',
     }, {
       configPath,
       defaultConfigPath: DEFAULT_CONFIG_PATH,
-      env: { SOL_CONTROL_CUSTOM_API_KEY: 'fixture-secret' },
+      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
     }),
     /direct API invocation is disabled/,
   );
+});
+
+test('direct API deadline also bounds a response body that stalls after headers', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sol-control-provider-body-timeout-'));
+  const configPath = join(dir, 'control-plane.json');
+  const config = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  const provider = config.providers.find((item) => item.id === 'custom-openai-compatible');
+  provider.config.timeout_ms = 1000;
+  const body = {
+    getReader() {
+      return {
+        read: () => new Promise(() => {}),
+        cancel: async () => {},
+        releaseLock() {},
+      };
+    },
+  };
+  const started = Date.now();
+  await assert.rejects(
+    invokeOpenAICompatible(provider, 'body timeout', {
+      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
+      fetchImpl: async () => ({ ok: true, status: 200, headers: new Headers(), body }),
+    }),
+    /timed out after 1000ms/,
+  );
+  assert(Date.now() - started < 3000, `body timeout exceeded bound: ${Date.now() - started}ms`);
 });

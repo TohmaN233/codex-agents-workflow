@@ -120,13 +120,30 @@ function extractText(payload) {
   throw new Error('OpenAI-compatible response did not contain text content');
 }
 
-async function readBoundedBody(response) {
+function abortError() {
+  const error = new Error('provider response body read aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+function awaitWithAbort(value, signal) {
+  if (!signal) return Promise.resolve(value);
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => { cleanup(); reject(abortError()); };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    signal.addEventListener('abort', onAbort, { once: true });
+    Promise.resolve(value).then(result => { cleanup(); resolve(result); }, error => { cleanup(); reject(error); });
+  });
+}
+
+async function readBoundedBody(response, signal) {
   const declared = Number(response.headers.get('content-length') || '0');
   if (declared > MAX_RESPONSE_BYTES) {
     throw new Error(`provider response exceeds ${MAX_RESPONSE_BYTES} bytes`);
   }
   if (!response.body || typeof response.body.getReader !== 'function') {
-    const text = await response.text();
+    const text = await awaitWithAbort(response.text(), signal);
     if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) {
       throw new Error(`provider response exceeds ${MAX_RESPONSE_BYTES} bytes`);
     }
@@ -137,7 +154,7 @@ async function readBoundedBody(response) {
   let total = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await awaitWithAbort(reader.read(), signal);
       if (done) break;
       total += value.byteLength;
       if (total > MAX_RESPONSE_BYTES) {
@@ -195,30 +212,33 @@ export async function invokeOpenAICompatible(provider, prompt, {
       signal: controller.signal,
       redirect: 'error',
     });
+    // Keep the same abort signal active through body consumption. A provider
+    // that sends headers and then stalls must still be bounded by timeout_ms.
+    const raw = await readBoundedBody(response, controller.signal);
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`provider returned non-JSON response (${response.status}): ${error.message}`);
+    }
+    if (!response.ok) {
+      const detail = payload?.error?.message || payload?.message || `HTTP ${response.status}`;
+      throw new Error(`provider rejected request: ${detail}`);
+    }
+    return {
+      text: extractText(payload).trim(),
+      model: payload.model || config.model,
+      usage: payload.usage || null,
+      provider_response_id: payload.id || null,
+    };
   } catch (error) {
-    if (error?.name === 'AbortError') {
+    if (controller.signal.aborted || error?.name === 'AbortError') {
+      try { await response?.body?.cancel?.('provider request timed out'); } catch {}
       throw new Error(`provider request timed out after ${config.timeout_ms}ms`);
     }
-    throw new Error(`provider request failed: ${error.message}`);
+    if (!response) throw new Error(`provider request failed: ${error.message}`);
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
-
-  const raw = await readBoundedBody(response);
-  let payload;
-  try {
-    payload = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`provider returned non-JSON response (${response.status}): ${error.message}`);
-  }
-  if (!response.ok) {
-    const detail = payload?.error?.message || payload?.message || `HTTP ${response.status}`;
-    throw new Error(`provider rejected request: ${detail}`);
-  }
-  return {
-    text: extractText(payload).trim(),
-    model: payload.model || config.model,
-    usage: payload.usage || null,
-    provider_response_id: payload.id || null,
-  };
 }

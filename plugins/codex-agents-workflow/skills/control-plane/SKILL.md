@@ -15,7 +15,7 @@ Call `codex_agents_workflow_status` at most once for sanitized metadata. Never o
 rewrite the user's global configuration or prompt library. Provider creation,
 activation, remapping and configuration migration belong to the human console,
 opened with `codex_agents_workflow_console`. No paid or external Provider is enabled merely
-because it is installed. Respect global disable and `SOL_CONTROL_DISABLED`.
+because it is installed. Respect global disable and `CODEX_WORKFLOW_DISABLED`.
 
 If the control tools are absent, report `CONTROL PLANE UNAVAILABLE`. Do not emit
 `SELECTIVE ROUTE` as an activation-error fallback. Do not start a replacement

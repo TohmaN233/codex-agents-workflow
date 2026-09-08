@@ -167,7 +167,7 @@ export class WorkflowService {
       case 'restore_revision': return store.restore(args.workflow_id, args.revision_hash, args.expected_revision);
       case 'export': {
         const pack = await store.snapshot(args.workflow_id, args.revision_hash); const resources = await store.resources(args.workflow_id, pack.revision_hash);
-        return { format: 'sol-workflow-pack-v1', ...pack, resource_data: Object.fromEntries(Object.entries(resources).map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')])) };
+        return { format: 'codex-agents-workflow-pack-v1', ...pack, resource_data: Object.fromEntries(Object.entries(resources).map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')])) };
       }
       case 'start': {
         const request = resolveLegacyWorkflowRequest(config, args);

@@ -6,11 +6,12 @@ The plugin, source directory and local marketplace identity are renamed from
 
 Install `codex-agents-workflow@codex-agents-workflow` from the updated local marketplace. The new plugin uses
 `$CODEX_HOME/codex-agents-workflow`. On first start, an existing
-`$CODEX_HOME/sol-advisor` store is moved there as one atomic directory migration so
-configuration, Workflow Packs, revisions, Run journals, recovery identities and backups
-remain together. Do not run two active controllers against the same Run. Disable the old
-plugin when switching to the renamed installation, and start a fresh Codex task to load
-its tools and skills.
+`$CODEX_HOME/sol-advisor` store is moved there as one atomic directory migration when the
+canonical store does not already exist and no owned path-sensitive Git worktrees remain.
+If either condition is not met, migration fails closed so configuration, Workflow Packs,
+revisions, Run journals, recovery identities and backups cannot be silently split. Do not
+run two active controllers against the same Run. Disable the old plugin when switching to
+the renamed installation, and start a fresh Codex task to load its tools and skills.
 
 The `codex-agents-workflow` MCP identity, configuration path, Provider IDs and native
 role templates are canonical. The old directory is recognized only for this one-time

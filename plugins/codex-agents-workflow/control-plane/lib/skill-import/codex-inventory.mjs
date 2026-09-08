@@ -27,7 +27,7 @@ export async function discoverCodexSkills(workspace, { config, env = process.env
   const before = await configHash(); let client; let result; const errors = [];
   try {
     client = clientFactory(settings.codex_binary, { home: resolve(home), cwd: workspace, env });
-    await client.call('initialize', { clientInfo: { name: 'sol_skill_inventory', version: '0.1.0' }, capabilities: {} }); client.initialized();
+    await client.call('initialize', { clientInfo: { name: 'codex_agents_workflow_skill_inventory', version: '0.1.0' }, capabilities: {} }); client.initialized();
     const response = await client.call('skills/list', { cwds: [workspace], forceReload: true });
     requireValue(Array.isArray(response?.data) && response.data.length === 1 && skillPathKey(response.data[0].cwd) === skillPathKey(workspace), 'SKILL_DISCOVERY_SCHEMA', 'Codex returned another workspace or unsupported inventory schema');
     const entry = response.data[0];

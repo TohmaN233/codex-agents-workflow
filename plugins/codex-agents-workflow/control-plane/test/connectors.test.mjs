@@ -9,6 +9,7 @@ import test from 'node:test';
 
 import { loadConfig, saveConfig } from '../lib/config.mjs';
 import { ConnectorRegistry } from '../connectors/registry.mjs';
+import { ConnectorTaskStore } from '../connectors/task-store.mjs';
 import {
   cursorCreateAgentExpression,
   cursorProbeExpression,
@@ -19,6 +20,33 @@ import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const fakeSource = join(here, 'fixtures', 'fake-grok.mjs');
+
+test('independent connector stores merge durable task records under the cross-process lock', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'sol-task-store-lock-'));
+  t.after(async () => { await import('node:fs/promises').then(({ rm }) => rm(root, { recursive: true, force: true })); });
+  const path = join(root, 'connector-tasks.json');
+  const first = new ConnectorTaskStore({ statePath: path });
+  const second = new ConnectorTaskStore({ statePath: path });
+  await Promise.all([first.initialize(), second.initialize()]);
+  await first.create({ task_id: 'task-a', state: 'completed', workspace: 'workspace-a' });
+  await second.create({ task_id: 'task-b', state: 'completed', workspace: 'workspace-b' });
+  const stored = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(stored.tasks.map((task) => task.task_id).sort(), ['task-a', 'task-b']);
+  assert.equal((await first.get('task-b')).task_id, 'task-b');
+});
+
+test('connector task creation reserves one active workspace atomically', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'sol-task-store-reservation-'));
+  t.after(async () => { await import('node:fs/promises').then(({ rm }) => rm(root, { recursive: true, force: true })); });
+  const path = join(root, 'connector-tasks.json');
+  const first = new ConnectorTaskStore({ statePath: path });
+  const second = new ConnectorTaskStore({ statePath: path });
+  await first.create({ task_id: 'task-a', workspace: 'same-workspace' });
+  await assert.rejects(
+    second.create({ task_id: 'task-b', workspace: 'same-workspace' }),
+    { code: 'CONNECTOR_BUSY' },
+  );
+});
 
 test('Cursor profile emits valid browser JavaScript for a Windows workspace', () => {
   const workspace = String.raw`C:\Users\fixture\Documents\repo`;
@@ -156,6 +184,36 @@ test('permission is surfaced and only an exact returned option resumes the run',
   const done = await fx.registry.status(started.task_id, 5000);
   assert.equal(done.state, 'completed');
   assert.match(done.result.text, /approved fixture result/);
+});
+
+test('cancellation is processed while a permission request is still waiting', async () => {
+  const fx = await fixture();
+  const started = await start(fx, 'ASK_PERMISSION');
+  const waiting = await fx.registry.status(started.task_id, 5000);
+  assert.equal(waiting.state, 'needs_permission');
+  const cancelled = await fx.registry.control(started.task_id, {
+    action: 'cancel', confirm: true,
+    expected_session_id: started.remote_identity.session_id,
+    expected_run_id: started.remote_identity.run_id,
+  });
+  assert.equal(cancelled.state, 'cancelling');
+  const done = await fx.registry.status(started.task_id, 5000);
+  assert.equal(done.state, 'cancelled');
+});
+
+test('pending permission persistence failures reject the ACP request and fail the task visibly', async () => {
+  const fx = await fixture();
+  const originalUpdate = fx.registry.store.update.bind(fx.registry.store);
+  fx.registry.store.update = async (taskId, fields) => {
+    if (fields.state === 'needs_permission') {
+      throw Object.assign(new Error('synthetic pending persistence failure'), { code: 'SYNTHETIC_PENDING_PERSISTENCE' });
+    }
+    return originalUpdate(taskId, fields);
+  };
+  const started = await start(fx, 'ASK_PERMISSION');
+  const failed = await fx.registry.status(started.task_id, 5000);
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'ACP_PROMPT_FAILED');
 });
 
 

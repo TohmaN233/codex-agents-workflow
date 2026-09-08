@@ -20,6 +20,8 @@ publication and prevent prompt submission after an observed transport exit.
 Remote completion stops the Grok deadline before local scope verification and
 durable publication. Slow evidence persistence must not produce a false remote
 timeout; acceptance still waits for the full scope check and persisted result.
+Cursor stable reply observation likewise ends the remote deadline before local
+scope verification and durable publication.
 Default authentication reuses the existing official Codex login through a
 credential-only App Server and ephemeral chatgptAuthTokens RPCs. Never copy
 auth.json, refresh tokens, cookies or account config into node profiles; never
@@ -30,9 +32,10 @@ The bundled reviewer is `codex_workflow_reviewer` (GPT-6 Astra / medium).
 Existing user Provider settings and Run pins are not rewritten by installation.
 The public MCP service, configuration path, Provider IDs and native role templates use
 `codex-agents-workflow` names. A one-time startup migration recognizes the old
-`sol-advisor` directory and moves it as a whole; it does not copy or retain a second
-active store. See docs/PLUGIN_RENAME.md. Historical qualification records retain their
-original paths.
+`sol-advisor` directory and moves it as a whole when no owned path-sensitive Git
+worktrees are present; otherwise it refuses with an actionable diagnostic instead of
+stranding those worktrees. It does not copy or retain a second active store. See
+docs/PLUGIN_RENAME.md. Historical qualification records retain their original paths.
 Strict session UI derives terminal state from the current attempt's journal, fences
 cached snapshots by attempt ID, and preserves active-session error diagnostics.
 Skill credential scanning must distinguish literal values from code expressions,

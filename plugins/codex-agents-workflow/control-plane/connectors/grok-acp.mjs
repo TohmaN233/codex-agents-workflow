@@ -214,17 +214,10 @@ export class GrokAcpConnector {
       throw connectorError('WRITE_CAPABILITY_REQUIRED',
         `Provider ${provider.id} does not advertise bounded-write capability`);
     }
-    const conflicts = await this.store.activeForWorkspace(fullWorkspace);
-    if (conflicts.length > 0) {
-      throw connectorError('CONNECTOR_BUSY',
-        `Workspace already has an active connector task: ${conflicts[0].task_id}`,
-        { actionRequired: 'Reach a terminal or explicitly abandoned state before starting overlapping work.' });
-    }
     const binary = this.binaryFor(provider);
     await access(binary).catch(() => {
       throw connectorError('GROK_BINARY_MISSING', `Grok binary not found: ${binary}`);
     });
-    const baseline = await captureWorkspaceSnapshot(fullWorkspace);
     const boundedPrompt = accessEnvelope(prompt, fullWorkspace, readOnly, boundedPaths);
     const task = await this.store.create({
       ...(taskId ? { task_id: taskId } : {}),
@@ -236,7 +229,7 @@ export class GrokAcpConnector {
       read_only: readOnly,
       allowed_paths: boundedPaths,
       prompt_sha256: createHash('sha256').update(boundedPrompt).digest('hex'),
-      baseline_snapshot: baseline,
+      baseline_snapshot: null,
       deadline_at: new Date(Date.now() + provider.config.task_timeout_ms).toISOString(),
     });
     const runtimeRoot = join(dirname(this.configPath), 'grok-runtime');
@@ -248,6 +241,7 @@ export class GrokAcpConnector {
     let peer;
     let active = null;
     let scopeMonitor = null;
+    let baseline = null;
     let startupError = null;
     const observeProcessError = (processName) => (error) => {
       if (active) {
@@ -258,6 +252,11 @@ export class GrokAcpConnector {
       }
     };
     try {
+      // The task-store reservation is the workspace exclusion transaction. Capture
+      // the baseline only after that reservation is durable, so two connectors
+      // cannot both pass a check-before-create window.
+      baseline = await captureWorkspaceSnapshot(fullWorkspace);
+      await this.store.update(task.task_id, { baseline_snapshot: baseline });
       scopeMonitor = startWorkspaceScopeMonitor(fullWorkspace, {
         readOnly,
         allowedPaths: boundedPaths,
@@ -629,9 +628,12 @@ export class GrokAcpConnector {
       name: item.name,
       kind: item.kind,
     }));
-    return new Promise((resolve) => {
-      active.pendingRequest = { kind: 'permission', requestId, options, resolve };
-      this.store.update(active.taskId, {
+    const pending = { kind: 'permission', requestId, options, resolve: null, reject: null };
+    const waiting = new Promise((resolve, reject) => {
+      pending.resolve = resolve;
+      pending.reject = reject;
+      active.pendingRequest = pending;
+      void this.#persistPendingRequest(active, pending, {
         state: 'needs_permission',
         pending_request: {
           kind: 'permission', request_id: requestId,
@@ -640,8 +642,9 @@ export class GrokAcpConnector {
           write_like: intent.write_like,
           options,
         },
-      }).then(() => this.#signal(active.taskId));
+      });
     });
+    return waiting;
   }
 
   #onInput(active, params) {
@@ -652,19 +655,40 @@ export class GrokAcpConnector {
       throw connectorError('MULTIPLE_PENDING_REQUESTS', 'Grok issued overlapping permission/input requests');
     }
     const requestId = randomUUID();
-    return new Promise((resolve) => {
-      active.pendingRequest = {
-        kind: 'input', requestId, requestedSchema: params.requestedSchema || {}, resolve,
-      };
-      this.store.update(active.taskId, {
+    const pending = {
+      kind: 'input', requestId, requestedSchema: params.requestedSchema || {},
+      resolve: null, reject: null,
+    };
+    return new Promise((resolve, reject) => {
+      pending.resolve = resolve;
+      pending.reject = reject;
+      active.pendingRequest = pending;
+      void this.#persistPendingRequest(active, pending, {
         state: 'needs_input',
         pending_request: {
           kind: 'input', request_id: requestId,
           message: params.message || 'Grok needs input.',
           requested_schema: params.requestedSchema || null,
         },
-      }).then(() => this.#signal(active.taskId));
+      });
     });
+  }
+
+  async #persistPendingRequest(active, pending, fields) {
+    try {
+      await this.store.update(active.taskId, fields);
+      if (active.pendingRequest?.requestId === pending.requestId) this.#signal(active.taskId);
+    } catch (error) {
+      if (active.pendingRequest?.requestId === pending.requestId) {
+        active.pendingRequest = null;
+        pending.reject?.(error);
+      }
+      // Keep the failure on the normal connector lifecycle. The pending ACP
+      // request is rejected above; a second persistence failure is observable
+      // through the store's poisoned state rather than becoming an unhandled
+      // rejection.
+      await this.#fail(active, error).catch(() => {});
+    }
   }
 
   async #complete(active, result) {

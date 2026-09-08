@@ -31,7 +31,17 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
   }
   useEffect(() => { setState(null); setPack(null); setNodeId(''); setResult(null); setLogin(null); setMerge(null); setEvents([]); act(async () => { setPack(await api('run_definition', { run_id: runId })); await refresh(); }); }, [runId]);
   useEffect(() => { if (['succeeded','failed','cancelled'].includes(state?.status)) return; let stopped = false; let timer: ReturnType<typeof setTimeout>; const poll = async () => { if (stopped) return; try { await refresh(); } catch (error) { act(async () => { throw error; }); return; } if (!stopped) timer = setTimeout(poll, 2500); }; timer = setTimeout(poll, 2500); return () => { stopped = true; clearTimeout(timer); }; }, [runId, token, nodeId, lease?.attempt_id, pack?.revision_hash, state?.status]);
-  useEffect(() => { setResult(null); setLogin(null); setAccepted(false); setLive(null); setNodeDetails(null); if (nodeId) act(async () => setNodeDetails(await api('node_details', { run_id: runId, node_id: nodeId }))); }, [nodeId]);
+  useEffect(() => {
+    let current = true;
+    const selectedRunId = runId;
+    const selectedNodeId = nodeId;
+    setResult(null); setLogin(null); setAccepted(false); setLive(null); setNodeDetails(null);
+    if (selectedNodeId) act(async () => {
+      const details = await api('node_details', { run_id: selectedRunId, node_id: selectedNodeId });
+      if (current) setNodeDetails(details);
+    });
+    return () => { current = false; };
+  }, [runId, nodeId]);
   const call = (operation: string, extra: Json = {}) => act(async () => { if (!valid) throw new Error('请先修正 JSON 格式错误。'); const value = await api(operation, { ...args, ...extra }); if (value.child?.control_token) rememberRun(value.child); setResult(value); await refresh(); });
   const recover = (operation: string) => act(async () => { if (!valid) throw new Error('请先修正 JSON 格式错误。'); const value = await api(operation, { ...control, node_id: nodeId, attempt_id: state?.nodes[nodeId]?.attempts.at(-1)?.id, reconciliation }); leases.set(key, value.envelope); if (value.child?.control_token) rememberRun(value.child); setResult(value); await refresh(); });
   if (!state || !pack) return <section className="detail-page">读取固定 Run…</section>;

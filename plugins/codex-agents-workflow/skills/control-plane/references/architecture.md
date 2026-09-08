@@ -48,7 +48,8 @@ outside this plugin.
 
 The default configuration path is `$CODEX_HOME/codex-agents-workflow/control-plane.json`, or
 `~/.codex/codex-agents-workflow/control-plane.json` when `CODEX_HOME` is unset. An absolute
-`SOL_CONTROL_CONFIG` overrides it. Saves are validated, atomic, restrictive-permission,
+`CODEX_WORKFLOW_CONFIG` overrides it. `SOL_CONTROL_CONFIG` is accepted only as a legacy
+input alias and is translated into the canonical store. Saves are validated, atomic, restrictive-permission,
 and revision-checked.
 The default is user-global and independent of the repository or current working directory.
 The authenticated human console reports the active scope and path: normal launches are

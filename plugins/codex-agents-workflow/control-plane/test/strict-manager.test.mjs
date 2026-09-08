@@ -165,6 +165,21 @@ test('Strict dispatch runs pinned resources exactly once and keeps final accepta
   assert.equal((await f.service.call('collect_strict', { ...final, accepted: true })).idempotent, true);
 });
 
+test('settled Strict entries release heavyweight session references while retaining status', async t => {
+  const f = await fixture(t);
+  await f.service.call('dispatch', f.args);
+  await f.entry(f.args).job;
+  const entry = f.entry(f.args);
+  assert.equal(entry.status, 'succeeded');
+  assert.equal(entry.session, null);
+  assert.equal(entry.broker, null);
+  assert.equal(entry.envelope, null);
+  assert.equal(entry.prompt, null);
+  assert.equal(entry.runtime, null);
+  assert.equal(entry.job, null);
+  assert.equal((await f.service.call('strict_status', f.args)).status, 'succeeded');
+});
+
 test('pending managed authentication exposes status without URLs or dispatching a model; cancellation closes it', async t => {
   const f = await fixture(t, { authenticated: false }); await f.service.call('dispatch', f.args);
   assert.equal((await f.service.call('strict_status', f.args)).status, 'auth_required'); assert.equal(f.sessions[0].calls, 0);
@@ -200,13 +215,14 @@ test('a durable result survives completion failure and can be collected without 
   const entered = deferred(); const released = deferred();
   const f = await fixture(t, { turn: async () => { entered.resolve(); await released.promise; return { output: 'Preserved', thread_id: 't', turn_id: 'u', audit: {} }; } });
   await f.service.call('dispatch', f.args); await entered.promise;
+  const runsDirectory = f.entry(f.args).runtime.runs.directory(f.run.run_id);
   f.entry(f.args).runtime.completeNode = async () => { throw Object.assign(new Error('Synthetic commit fault'), { code: 'SYNTHETIC_COMMIT_FAULT' }); };
   released.resolve(); await f.entry(f.args).job;
   assert.equal((await f.service.call('strict_status', f.args)).status, 'result_commit_failed');
   const state = await f.service.call('collect_strict', f.args); assert.equal(state.nodes.work.status, 'succeeded');
   assert.equal(state.nodes.work.attempts.length, 1); assert.equal(f.sessions[0].calls, 1);
   const proposal = state.nodes.work.attempts[0].result_proposal;
-  await writeFile(join(f.entry(f.args).runtime.runs.directory(f.run.run_id), proposal.artifact), '{}');
+  await writeFile(join(runsDirectory, proposal.artifact), '{}');
   await assert.rejects(f.service.call('collect_strict', f.args), { code: 'EXECUTOR_RESULT_CORRUPT' });
 });
 

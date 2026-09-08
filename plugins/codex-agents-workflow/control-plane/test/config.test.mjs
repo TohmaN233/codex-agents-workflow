@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
   loadConfig,
+  ensureConfigFile,
   resolveConfigPath,
   sanitizeConfig,
   saveConfig,
@@ -31,6 +32,42 @@ test('default config path is user-global and independent of the project director
     resolveConfigPath({ CODEX_HOME: join(userHome, 'custom-codex-home') }, userHome),
     join(userHome, 'custom-codex-home', 'codex-agents-workflow', 'control-plane.json'),
   );
+});
+
+test('legacy SOL_CONTROL_CONFIG paths resolve into the canonical store', () => {
+  const userHome = join(tmpdir(), 'sol-control-legacy-path');
+  const legacy = join(userHome, '.codex', 'sol-advisor', 'control-plane.json');
+  assert.equal(
+    resolveConfigPath({ SOL_CONTROL_CONFIG: legacy }, userHome),
+    join(userHome, '.codex', 'codex-agents-workflow', 'control-plane.json'),
+  );
+});
+
+test('legacy store migration refuses to strand owned Git worktrees', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sol-control-worktree-'));
+  const legacy = join(root, 'sol-advisor');
+  const canonical = join(root, 'codex-agents-workflow', 'control-plane.json');
+  await mkdir(join(legacy, 'workflow-worktrees'), { recursive: true });
+  await writeFile(join(legacy, 'workflow-worktrees', 'owner-run.json'), '{}');
+  await assert.rejects(
+    ensureConfigFile({ configPath: canonical, defaultConfigPath: DEFAULT_CONFIG_PATH }),
+    /owned Git worktrees exist/,
+  );
+  await rm(root, { recursive: true, force: true });
+});
+
+test('legacy store migration refuses to split data when the canonical directory already exists', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sol-control-store-conflict-'));
+  const legacy = join(root, 'sol-advisor');
+  const canonical = join(root, 'codex-agents-workflow', 'control-plane.json');
+  await mkdir(legacy, { recursive: true });
+  await writeFile(join(legacy, 'control-plane.json'), '{}');
+  await mkdir(join(root, 'codex-agents-workflow'), { recursive: true });
+  await assert.rejects(
+    ensureConfigFile({ configPath: canonical, defaultConfigPath: DEFAULT_CONFIG_PATH }),
+    /canonical store already exists without its configuration/,
+  );
+  await rm(root, { recursive: true, force: true });
 });
 
 test('bundled defaults use delegate for light work and full for difficult work', async () => {
@@ -185,7 +222,7 @@ test('environment kill switch cannot be bypassed', async () => {
       defaultConfigPath: DEFAULT_CONFIG_PATH,
       env: { SOL_CONTROL_DISABLED: '1' },
     }),
-    /disabled by SOL_CONTROL_DISABLED/,
+    /disabled by CODEX_WORKFLOW_DISABLED/,
   );
 });
 
@@ -263,7 +300,7 @@ test('version-2 full route migrates disabled with a separate read-only reviewer'
   ]);
 });
 
-test('version-3 difficult default preserves a customized implementation while adding review', async () => {
+test('version-3 customized difficult implementation preserves its route without injecting a review binding', async () => {
   const { configPath, config } = await fixture();
   config.version = 3;
   const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
@@ -278,9 +315,7 @@ test('version-3 difficult default preserves a customized implementation while ad
   const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
   assert.equal(migrated.version, 6);
   assert.deepEqual(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change')
-    .stages.map((stage) => [stage.id, stage.provider_id]), [
-    ['implementation', 'native-terra'], ['review', 'native-reviewer'],
-  ]);
+    .stages.map((stage) => [stage.id, stage.provider_id]), [['implementation', 'native-terra']]);
   assert.match(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change')
     .stages[0].template, /CUSTOM IMPLEMENTATION/);
   assert.equal(migrated.task_types.find((taskType) => taskType.id === 'cross-review')
@@ -303,7 +338,7 @@ test('version-3 customized difficult Task Type keeps its user-owned workflow', a
     'delegate');
 });
 
-test('version-4 difficult workflow retries migration after the strict v3 migration skipped it', async () => {
+test('version-4 customized difficult workflow remains unchanged when it is not the pristine historical default', async () => {
   const { configPath, config } = await fixture();
   config.version = 4;
   const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
@@ -316,12 +351,31 @@ test('version-4 difficult workflow retries migration after the strict v3 migrati
   const migratedDifficult = migrated.task_types.find(
     (taskType) => taskType.id === 'judgment-heavy-change');
   assert.equal(migrated.version, 6);
-  assert.equal(migratedDifficult.route, 'full');
-  assert.deepEqual(migratedDifficult.stages.map((stage) => stage.id), ['implementation', 'review']);
+  assert.equal(migratedDifficult.route, 'delegate');
+  assert.deepEqual(migratedDifficult.stages.map((stage) => stage.id), ['implementation']);
   assert.match(migratedDifficult.stages[0].template, /PREVIOUSLY CUSTOMIZED/);
 });
 
-test('version-5 migration clears inherited bundled approval gates and preserves custom opt-ins', async () => {
+test('version-4 migration never injects a reviewer binding absent from a customized provider set', async () => {
+  const { configPath, config } = await fixture();
+  config.version = 4;
+  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  reviewer.id = 'my-reviewer';
+  for (const taskType of config.task_types) {
+    for (const stage of taskType.stages) {
+      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'my-reviewer';
+    }
+  }
+  const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
+  difficult.route = 'delegate';
+  difficult.stages = difficult.stages.slice(0, 1);
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  assert.equal(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change').route, 'delegate');
+  assert.equal(migrated.providers.some((provider) => provider.id === 'native-reviewer'), false);
+});
+
+test('version-5 migration preserves all persisted approval gates and custom opt-ins', async () => {
   const { configPath, config } = await fixture();
   config.version = 5;
   config.providers.find((provider) => provider.id === 'cursor-local').requires_user_approval = true;
@@ -342,9 +396,9 @@ test('version-5 migration clears inherited bundled approval gates and preserves 
   const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
   assert.equal(migrated.version, 6);
   assert.equal(migrated.providers.find((provider) => provider.id === 'cursor-local')
-    .requires_user_approval, false);
+    .requires_user_approval, true);
   assert.equal(migrated.task_types.find((taskType) => taskType.id === 'hard-path-web-advice')
-    .stages[0].requires_user_approval, false);
+    .stages[0].requires_user_approval, true);
   assert.equal(migrated.providers.find((provider) => provider.id === 'native-luna')
     .requires_user_approval, true);
   assert.equal(migrated.task_types.find((taskType) => taskType.id === 'custom-approval')

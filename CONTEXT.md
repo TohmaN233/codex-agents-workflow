@@ -12,7 +12,7 @@ exact identities, never latest or automatically resubmitted tasks.
 Read docs/V7_UPGRADE.md and the V7_*_CONTRACT documents for current definitions.
 The language below is retained only for v6 compatibility and the native-only skill.
 
-This context defines the control-plane language used to bind reusable work semantics to concrete auxiliary execution backends without giving Sol provider-selection authority.
+This context defines the control-plane language used to bind reusable work semantics to concrete auxiliary execution backends without giving the Workflow layer provider-selection authority.
 
 ## Language
 

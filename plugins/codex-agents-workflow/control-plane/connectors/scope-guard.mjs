@@ -371,18 +371,3 @@ export function startWorkspaceScopeMonitor(workspace, {
     },
   };
 }
-
-// Compatibility wrappers retained for older tests and callers.
-export async function captureReadOnlySnapshot(workspace) {
-  return captureWorkspaceSnapshot(workspace);
-}
-
-export async function verifyReadOnlySnapshot(workspace, baseline) {
-  const result = await verifyWorkspaceScope(workspace, baseline, { readOnly: true });
-  return {
-    unchanged: result.unchanged,
-    baseline_digest: result.baseline_digest,
-    observed_digest: result.observed_digest,
-    changed_paths: result.changed_paths,
-  };
-}

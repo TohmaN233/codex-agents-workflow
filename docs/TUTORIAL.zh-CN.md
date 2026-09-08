@@ -74,7 +74,7 @@ $CODEX_HOME/codex-agents-workflow/control-plane.json
 
 这是用户级全局配置，与当前仓库和工作目录无关；保存后，其他项目和新任务读取的是同一份配置。
 控制台顶部会明确显示 **Global user configuration** 和实际文件路径。只有开发或测试时显式设置
-绝对路径 `SOL_CONTROL_CONFIG`，或由代码传入覆盖路径，才会显示红色的
+绝对路径 `CODEX_WORKFLOW_CONFIG`（旧版别名 `SOL_CONTROL_CONFIG`），或由代码传入覆盖路径，才会显示红色的
 **Override/test configuration**；这种覆盖不会改写全局配置，不应作为日常入口使用。
 
 控制台概览（截图使用内置默认配置，不包含本机 token 或私人设置）：
@@ -204,7 +204,7 @@ Use $codex-agents-workflow:codex-agents-workflow.
 
 - 控制台中关闭 **Control plane enabled**：不再解析任何控制平面任务。
 - 关闭单个 Provider：保留其配置但禁止使用。
-- 启动 Codex 前设置 `SOL_CONTROL_DISABLED=1`：环境级 kill switch，控制台不能绕过。
+- 启动 Codex 前设置 `CODEX_WORKFLOW_DISABLED=1`：环境级 kill switch，控制台不能绕过。旧版 `SOL_CONTROL_DISABLED` 名称仍作为兼容别名接受。
 - 关闭一键控制台的终端或按 `Ctrl+C`：只停止配置网页，不会改变已经保存的启用状态。
 
 配置网页只是策略编辑器；真正的调用由新 Codex 任务中的 control-plane skill 和 MCP 工具执行。

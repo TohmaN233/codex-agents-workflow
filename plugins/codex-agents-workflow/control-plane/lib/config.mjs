@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access, chmod, lstat, mkdir, open, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { resourcePath } from './workflow-paths.mjs';
@@ -9,7 +9,6 @@ import { validateStrictConfig } from './execution/strict-config.mjs';
 
 export const CONFIG_VERSION = 6;
 export const PROVIDER_KINDS = new Set(['native_agent', 'builtin_connector', 'external_mcp', 'mcp_tool', 'web_review', 'openai_compatible']);
-export const ROUTES = new Set(['solo', 'delegate', 'audit', 'full']);
 export const STAGE_ROLES = new Set(['implementer', 'reviewer']);
 export const STAGE_ACCESS = new Set(['read_only', 'bounded_write']);
 export const ALLOWED_TEMPLATE_FIELDS = new Set([
@@ -89,7 +88,16 @@ export function resolveConfigPath(env = process.env, userHome = homedir()) {
   if (explicit) {
     const variable = env.CODEX_WORKFLOW_CONFIG ? 'CODEX_WORKFLOW_CONFIG' : 'SOL_CONTROL_CONFIG';
     assert(isAbsolute(explicit), `${variable} must be an absolute path`);
-    return resolve(explicit);
+    const resolved = resolve(explicit);
+    // Keep the old variable as an input-only compatibility alias. A path in
+    // the retired sol-advisor store is translated to the canonical store so it
+    // cannot silently select a second active configuration.
+    assert(env.CODEX_WORKFLOW_CONFIG ? basename(dirname(resolved)) !== 'sol-advisor' : true,
+      'CODEX_WORKFLOW_CONFIG cannot target the retired sol-advisor store; use the canonical codex-agents-workflow path');
+    if (!env.CODEX_WORKFLOW_CONFIG && basename(dirname(resolved)) === 'sol-advisor') {
+      return join(dirname(dirname(resolved)), 'codex-agents-workflow', basename(resolved));
+    }
+    return resolved;
   }
   const codexHome = env.CODEX_HOME
     ? (isAbsolute(env.CODEX_HOME) ? resolve(env.CODEX_HOME) : resolve(userHome, env.CODEX_HOME))
@@ -471,6 +479,7 @@ function isLegacyJudgmentHeavyDefault(taskType, bundledTaskType) {
   if (!object(taskType) || !object(bundledTaskType)) return false;
   const stage = Array.isArray(taskType.stages) && taskType.stages.length === 1
     ? taskType.stages[0] : null;
+  const bundledStage = bundledTaskType.stages?.find((item) => item?.id === 'implementation');
   return taskType.id === 'judgment-heavy-change'
     && taskType.name === bundledTaskType.name
     && taskType.enabled === bundledTaskType.enabled
@@ -478,8 +487,13 @@ function isLegacyJudgmentHeavyDefault(taskType, bundledTaskType) {
     && taskType.route === 'delegate'
     && sameStrings(taskType.tags, bundledTaskType.tags)
     && object(stage)
+    && object(bundledStage)
     && stage.id === 'implementation'
-    && stage.role === 'implementer';
+    && stage.role === 'implementer'
+    && stage.provider_id === bundledStage.provider_id
+    && stage.access === bundledStage.access
+    && stage.requires_user_approval === bundledStage.requires_user_approval
+    && stage.template === bundledStage.template;
 }
 
 function upgradeLegacyDifficultTask(migrated, bundledDefaults) {
@@ -488,6 +502,10 @@ function upgradeLegacyDifficultTask(migrated, bundledDefaults) {
   assert(bundledTaskType, 'bundled difficult Task Type is missing');
   const reviewStage = bundledTaskType.stages?.find((stage) => stage?.id === 'review');
   assert(reviewStage?.role === 'reviewer', 'bundled difficult review Stage is missing');
+  // A customized provider set may have renamed or removed the bundled reviewer.
+  // In that case preserving the user's one-stage route is safer than injecting
+  // a binding that validation cannot resolve.
+  if (!(migrated.providers || []).some((provider) => provider?.id === reviewStage.provider_id)) return;
   const index = migrated.task_types?.findIndex(
     (taskType) => taskType?.id === 'judgment-heavy-change') ?? -1;
   if (index < 0 || !isLegacyJudgmentHeavyDefault(migrated.task_types[index], bundledTaskType)) return;
@@ -518,33 +536,15 @@ export function migrateConfigV4(raw, bundledDefaults) {
   return migrated;
 }
 
-const LEGACY_DEFAULT_APPROVAL_PROVIDERS = new Set([
-  'cursor-local', 'grok-local', 'chatgpt-web-pro', 'custom-openai-compatible',
-]);
-const LEGACY_DEFAULT_APPROVAL_STAGES = new Set([
-  'bounded-code-change.implementation',
-  'judgment-heavy-change.implementation',
-  'implementation-with-review.implementation',
-  'hard-path-web-advice.review',
-]);
-
 export function migrateConfigV5(raw) {
   assert(object(raw), 'config must be an object');
   assert(raw.version === 5, 'migrateConfigV5 accepts only config.version=5');
   const migrated = jsonClone(raw, 'version-5 config');
   migrated.version = CONFIG_VERSION;
-  for (const provider of migrated.providers || []) {
-    if (LEGACY_DEFAULT_APPROVAL_PROVIDERS.has(provider?.id)) {
-      provider.requires_user_approval = false;
-    }
-  }
-  for (const taskType of migrated.task_types || []) {
-    for (const stage of taskType?.stages || []) {
-      if (LEGACY_DEFAULT_APPROVAL_STAGES.has(`${taskType.id}.${stage?.id}`)) {
-        stage.requires_user_approval = false;
-      }
-    }
-  }
+  // Approval booleans are policy, not derived metadata. A v5 file cannot tell
+  // whether a bundled-looking value was inherited or explicitly chosen, so
+  // migration must preserve the persisted value and leave any relaxation to an
+  // explicit human config edit.
   return migrated;
 }
 
@@ -625,13 +625,27 @@ async function assertRegularNoSymlink(path, label) {
   return file;
 }
 
+async function assertLegacyStoreRelocatable(legacyStore) {
+  const worktreeRoot = join(legacyStore, 'workflow-worktrees');
+  if (!(await exists(worktreeRoot))) return;
+  const entries = await readdir(worktreeRoot);
+  const owned = entries.filter((name) => name.startsWith('owner-') || name.startsWith('tree-'));
+  assert(!owned.length,
+    `cannot migrate legacy Codex Agents Workflow store while owned Git worktrees exist (${owned.join(', ')}); reconcile or clean those worktrees first`);
+}
+
 export async function ensureConfigFile({ configPath, defaultConfigPath }) {
   if (await exists(configPath)) return;
   const legacyStore = legacyStorePathFor(configPath);
   if (legacyStore && await exists(legacyStore)) {
-    await mkdir(dirname(dirname(configPath)), { recursive: true, mode: 0o700 });
+    await assertLegacyStoreRelocatable(legacyStore);
+    const targetStore = dirname(configPath);
+    await mkdir(dirname(targetStore), { recursive: true, mode: 0o700 });
+    if (await exists(targetStore)) {
+      throw new Error(`cannot migrate legacy Codex Agents Workflow store from ${legacyStore}: canonical store already exists without its configuration; reconcile the two stores before retrying`);
+    }
     try {
-      await rename(legacyStore, dirname(configPath));
+      await rename(legacyStore, targetStore);
     } catch (error) {
       throw new Error(`cannot migrate legacy Codex Agents Workflow store from ${legacyStore}: ${error.message}`);
     }
