@@ -398,6 +398,7 @@ test('Grok deliberate disconnect keeps the workspace reserved after prompt rejec
   assert.equal(task.state, 'needs_attention');
   assert.equal(task.error.code, 'DISCONNECTED_UNCONFIRMED');
   assert.equal((await fx.registry.store.activeForWorkspace(task.workspace)).length, 1);
+  await assert.rejects(fx.registry.store.create({ workspace: task.workspace }), { code: 'CONNECTOR_BUSY' });
 });
 
 
@@ -419,4 +420,5 @@ test('Grok unexpected ACP stream loss does not certify remote failure or release
   assert.equal(task.state, 'needs_attention');
   assert.equal(task.error.code, 'ACP_TERMINAL_UNCONFIRMED');
   assert.equal((await fx.registry.store.activeForWorkspace(task.workspace)).length, 1);
+  await assert.rejects(fx.registry.store.create({ workspace: task.workspace }), { code: 'CONNECTOR_BUSY' });
 });

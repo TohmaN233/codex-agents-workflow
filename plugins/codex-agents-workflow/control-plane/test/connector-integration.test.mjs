@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -707,4 +707,35 @@ test('Cursor poisoned terminal persistence closes its CDP resources without an u
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(fx.registry.cursor.active.size, 0);
   await assert.rejects(fx.registry.store.initialize(), /persistence failed/);
+});
+
+
+test('Cursor real filesystem store failure closes CDP and scope watchers and blocks new dispatch', { timeout: 15000 }, async t => {
+  const fx = await fixture(t);
+  const update = fx.registry.store.update.bind(fx.registry.store);
+  fx.registry.store.update = async (id, fields, options) => {
+    if (fields.state === 'completed') {
+      // The path belongs to this test's temporary registry, outside its workspace.
+      // Replacing the store file with a directory forces a real read failure.
+      const statePath = fx.registry.store.statePath;
+      assert.equal(dirname(statePath), fx.root);
+      await rename(statePath, statePath + '.fault-backup');
+      await mkdir(statePath);
+    }
+    return update(id, fields, options);
+  };
+  const started = await startScenario(fx, 'cursor-readonly-advice', 'CURSOR_NORMAL');
+  const active = fx.registry.cursor.active.get(started.task_id);
+  let scopeClosed = false, closed;
+  const clientClosed = new Promise(resolve => { closed = resolve; });
+  const closeClient = active.client.close.bind(active.client);
+  const closeScope = active.scopeMonitor.close.bind(active.scopeMonitor);
+  active.scopeMonitor.close = () => { closeScope(); scopeClosed = true; };
+  active.client.close = () => { closeClient(); closed(); };
+  await clientClosed;
+  assert.equal(fx.registry.cursor.active.size, 0);
+  assert.equal(scopeClosed, true);
+  assert(['EISDIR', 'EPERM', 'EACCES'].includes(fx.registry.store.persistenceError?.code));
+  await assert.rejects(fx.registry.store.initialize(), { code: 'CONNECTOR_STORE_FAILED' });
+  await assert.rejects(startScenario(fx, 'cursor-readonly-advice', 'MUST_NOT_DISPATCH'), { code: 'CONNECTOR_STORE_FAILED' });
 });
