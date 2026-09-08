@@ -430,6 +430,10 @@ export class GrokAcpConnector {
         `Connector task is already terminal: ${task.state}`);
     }
     if (action === 'respond_permission') {
+      if (task.state !== 'needs_permission') {
+        throw connectorError('DECISION_NOT_DELIVERED', 'The task is no longer waiting for this decision; reconcile its current state');
+      }
+      if (task.pending_request?.request_id !== args.request_id) throw connectorError('IDENTITY_MISMATCH', 'request_id does not match the durable pending request');
       if (!active?.pendingRequest || active.pendingRequest.kind !== 'permission') {
         throw connectorError('PERMISSION_NOT_PENDING', 'No permission request is pending for this task');
       }
@@ -451,6 +455,10 @@ export class GrokAcpConnector {
       return this.publicTask(committed);
     }
     if (action === 'respond_input') {
+      if (task.state !== 'needs_input') {
+        throw connectorError('DECISION_NOT_DELIVERED', 'The task is no longer waiting for this decision; reconcile its current state');
+      }
+      if (task.pending_request?.request_id !== args.request_id) throw connectorError('IDENTITY_MISMATCH', 'request_id does not match the durable pending request');
       if (!active?.pendingRequest || active.pendingRequest.kind !== 'input') {
         throw connectorError('INPUT_NOT_PENDING', 'No input request is pending for this task');
       }
@@ -985,9 +993,12 @@ export class GrokAcpConnector {
           committed_at: new Date().toISOString(), delivery: 'unconfirmed' },
       }, { guard: current => this.active.get(active.taskId) === active
         && !active.intentionalCleanup && active.pendingRequest === pending
-        && !RESULT_STATES.has(current.state) && current.pending_request?.request_id === pending.requestId });
+        && !active.processExit && !active.terminalObservedAt && !active.scopeViolationTriggered
+        && current.state === (pending.kind === 'permission' ? 'needs_permission' : 'needs_input')
+        && current.pending_request?.request_id === pending.requestId });
       if (committed.last_decision?.request_id !== pending.requestId
-        || active.intentionalCleanup || active.pendingRequest !== pending) {
+        || active.intentionalCleanup || active.processExit || active.terminalObservedAt
+        || active.scopeViolationTriggered || active.pendingRequest !== pending) {
         throw connectorError('DECISION_NOT_DELIVERED', 'Task ownership changed before decision delivery; reconcile the task');
       }
       active.pendingRequest = null;

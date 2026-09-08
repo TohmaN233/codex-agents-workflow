@@ -1,7 +1,7 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { api, JsonField, Details, Status, FormValidContext, pretty, type Json, uid } from './shared';
 import { Canvas } from './canvas';
-import { createRunRefresh } from './run-refresh.mjs';
+import { createRunRefresh, loadRunSnapshot } from './run-refresh.mjs';
 import { strictSessionPresentation } from './strict-session-view.mjs';
 export const controllers = new Map<string, string>();
 const leases = new Map<string, Json>();
@@ -25,8 +25,9 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
   const token = controllers.get(runId); const control = { run_id: runId, control_token: token };
   const key = runId + '/' + nodeId; const lease = leases.get(key); const args = { ...control, ...(lease ? { node_id: nodeId, attempt_id: lease.attempt_id, lease_token: lease.lease_token } : {}) };
   async function refresh() {
-    return refreshController.refresh(async () => {
-      const { state: s, next: n, events: nextEvents } = await api('run_snapshot', { run_id: runId, control_token: controllers.get(runId) });
+    return refreshController.refresh(async (previous: Json | null) => {
+      const batch = await loadRunSnapshot(api, runId, controllers.get(runId), previous);
+      const { state: s, next: n, events: nextEvents } = batch;
       let nextLive = null;
       if (lease && pack?.workflow.skill_policy.mode === 'strict' && ['claimed','running'].includes(s.nodes[nodeId]?.status) && s.nodes[nodeId]?.attempts.at(-1)?.dispatch?.receipt?.executor === 'codex-app-server') {
         try { nextLive = { attempt_id: lease.attempt_id, value: await api('strict_status', args) }; }
@@ -35,7 +36,7 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
           nextLive = { attempt_id: lease.attempt_id, value: { status: 'unavailable', error: (cause as any).detail } };
         }
       }
-      return { state: s, next: n, events: nextEvents, live: nextLive };
+      return { state: s, next: n, events: nextEvents, eventAuthority: batch.eventAuthority, live: nextLive };
     }, setSnapshot);
   }
   useEffect(() => {

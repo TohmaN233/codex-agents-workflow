@@ -218,6 +218,7 @@ test('Run snapshot shares one validated read and preserves event authorization',
   assert.equal(reads, 1);
   assert.equal(snapshot.state.sequence, snapshot.next.sequence);
   assert.equal(snapshot.events.at(-1).sequence, snapshot.state.sequence);
+  assert.deepEqual((await f.runtime.snapshot(run.run_id, { ...control(run), after_sequence: snapshot.state.sequence })).events, []);
   assert.deepEqual((await f.runtime.snapshot(run.run_id)).events, []);
   await assert.rejects(f.runtime.snapshot(run.run_id, { control_token: 'wrong' }), { code: 'RUN_AUTHORITY' });
   const record = await read(run.run_id);

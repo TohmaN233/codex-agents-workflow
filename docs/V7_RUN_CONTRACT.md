@@ -13,7 +13,8 @@ cancel/approve, dispatch intent/receipt, and metadata event cursors.
 - `events.jsonl` is authoritative. An fsynced state patch commits each transition;
   no redundant `run.json` cache is written or read. Legacy cache files are ignored.
   A UI snapshot shares one validated read for state, next actions and authorized
-  event metadata; it does not cache or skip integrity verification. Windows guarantees are limited
+  event metadata deltas after the last published UI cursor; it does not cache or
+  skip integrity verification. Windows guarantees are limited
   to process crashes, not power-loss durability of directory entries.
 - Store/Run writer locks reject concurrent owners. Explicit recovery only removes
   a confirmed-dead writer, preserves a torn uncommitted tail, validates complete

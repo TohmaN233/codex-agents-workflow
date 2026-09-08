@@ -827,3 +827,81 @@ test('Grok committed input metadata does not persist the accepted form content',
   assert.equal(record.last_decision.request_id, waiting.pending_request.request_id);
   assert.equal((await readFile(fx.registry.store.statePath, 'utf8')).includes(value), false);
 });
+
+
+for (const kind of ['permission', 'input']) {
+  test(`Grok stale ${kind} cannot revive a task after Leader exit`, { timeout: 15000 }, async t => {
+    const fx = await fixture(t);
+    const started = await startScenario(fx, kind === 'permission' ? 'grok-bounded-change' : 'grok-readonly-advice',
+      kind === 'permission' ? 'GROK_WRITE_ALLOWED' : 'ASK_INPUT', kind === 'permission' ? { allowedPaths: ['allowed/'] } : {});
+    const waiting = await fx.registry.status(started.task_id, 5000);
+    const active = fx.registry.grok.active.get(started.task_id);
+    const update = fx.registry.store.update.bind(fx.registry.store);
+    let observed;
+    const lost = new Promise(resolve => { observed = resolve; });
+    fx.registry.store.update = async (id, fields, options) => {
+      const result = await update(id, fields, options);
+      if (fields.error?.code === 'TRANSPORT_EXITED') observed();
+      return result;
+    };
+    active.leader.kill(); await lost;
+    assert.equal((await fx.registry.status(started.task_id)).state, 'needs_attention');
+    await assert.rejects(fx.registry.control(started.task_id, {
+      action: `respond_${kind}`, request_id: waiting.pending_request.request_id,
+      decision: kind === 'permission' ? 'select' : 'accept', option_id: 'allow-once', content: { value: 'stale' },
+    }), { code: 'DECISION_NOT_DELIVERED' });
+    const after = await fx.registry.status(started.task_id);
+    assert.equal(after.state, 'needs_attention');
+    assert.equal((await fx.registry.store.get(started.task_id)).last_decision, undefined);
+    await assert.rejects(stat(join(fx.workspace, 'allowed', 'grok.txt')), { code: 'ENOENT' });
+    assert.equal((await fx.registry.store.activeForWorkspace(after.workspace)).length, 1);
+  });
+}
+
+
+for (const kind of ['permission', 'input']) {
+  test(`Grok stale ${kind} cannot revive cancelling after remote cancel is unconfirmed`, { timeout: 15000 }, async t => {
+    const fx = await fixture(t, { envOverrides: { FAKE_GROK_IGNORE_CANCEL: '1' } });
+    const started = await startScenario(fx, kind === 'permission' ? 'grok-bounded-change' : 'grok-readonly-advice',
+      kind === 'permission' ? 'GROK_WRITE_ALLOWED' : 'ASK_INPUT', kind === 'permission' ? { allowedPaths: ['allowed/'] } : {});
+    const waiting = await fx.registry.status(started.task_id, 5000);
+    const cancelled = await fx.registry.control(started.task_id, { action: 'cancel', confirm: true,
+      expected_session_id: started.remote_identity.session_id, expected_run_id: started.remote_identity.run_id });
+    assert.equal(cancelled.state, 'cancelling');
+    await assert.rejects(fx.registry.control(started.task_id, { action: `respond_${kind}`,
+      request_id: waiting.pending_request.request_id, decision: kind === 'permission' ? 'select' : 'accept',
+      option_id: 'allow-once', content: { value: 'stale' } }), { code: 'DECISION_NOT_DELIVERED' });
+    assert.equal((await fx.registry.status(started.task_id)).state, 'cancelling');
+    assert.equal((await fx.registry.store.get(started.task_id)).last_decision, undefined);
+    await assert.rejects(stat(join(fx.workspace, 'allowed', 'grok.txt')), { code: 'ENOENT' });
+    await fx.registry.control(started.task_id, { action: 'disconnect', confirm: true });
+  });
+}
+
+
+test('Grok decision CAS rejects Leader loss after control precheck and rejects a concurrent decision', { timeout: 15000 }, async t => {
+  const fx = await fixture(t);
+  const started = await startScenario(fx, 'grok-bounded-change', 'GROK_WRITE_ALLOWED', { allowedPaths: ['allowed/'] });
+  const waiting = await fx.registry.status(started.task_id, 5000);
+  const active = fx.registry.grok.active.get(started.task_id);
+  const update = fx.registry.store.update.bind(fx.registry.store);
+  let release, entered, observed;
+  const gate = new Promise(resolve => { release = resolve; });
+  const reached = new Promise(resolve => { entered = resolve; });
+  const lost = new Promise(resolve => { observed = resolve; });
+  t.after(() => release());
+  fx.registry.store.update = async (id, fields, options) => {
+    if (fields.last_decision) { entered(); await gate; }
+    const result = await update(id, fields, options);
+    if (fields.error?.code === 'TRANSPORT_EXITED') observed();
+    return result;
+  };
+  const args = { action: 'respond_permission', request_id: waiting.pending_request.request_id, decision: 'select', option_id: 'allow-once' };
+  const first = assert.rejects(fx.registry.control(started.task_id, args), { code: 'DECISION_NOT_DELIVERED' });
+  await reached;
+  await assert.rejects(fx.registry.control(started.task_id, args), { code: 'CONTROL_IN_PROGRESS' });
+  active.leader.kill(); await lost; release(); await first;
+  const durable = await fx.registry.store.get(started.task_id);
+  assert.equal(durable.state, 'needs_attention'); assert.equal(durable.last_decision, undefined);
+  await assert.rejects(stat(join(fx.workspace, 'allowed', 'grok.txt')), { code: 'ENOENT' });
+});

@@ -247,10 +247,10 @@ export class WorkflowRuntime {
     return this.#nextFromRecord(runId, await this.runs.read(runId));
   }
 
-  async snapshot(runId, { control_token } = {}) {
+  async snapshot(runId, { control_token, after_sequence = 0 } = {}) {
     const record = await this.runs.read(runId);
     return { state: publicRun(record), next: await this.#nextFromRecord(runId, record),
-      events: control_token === undefined ? [] : this.#eventsFromRecord(record, { control_token }) };
+      events: control_token === undefined ? [] : this.#eventsFromRecord(record, { control_token, after_sequence }) };
   }
 
   async #nextFromRecord(runId, { state, pins, sequence }) {

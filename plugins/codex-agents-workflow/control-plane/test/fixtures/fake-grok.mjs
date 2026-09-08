@@ -99,6 +99,7 @@ if (args[0] === 'agent' && args[1] === 'leader') {
         complete();
       }
     } else if (msg.method === 'session/cancel') {
+      if (process.env.FAKE_GROK_IGNORE_CANCEL === '1') return;
       complete('cancelled fixture result', 'cancelled');
     }
   });

@@ -152,3 +152,9 @@ run_snapshot shares one verified record across public state, next actions and
 authorized events. Every poll still verifies pins/resources/journal integrity.
 
 Accepted form content remains transport-only; decision metadata must not persist it.
+
+Decision guards require the matching needs_permission/needs_input state and live
+process/scope ownership; stale approval cannot revive attention/cancelling tasks.
+
+Console event deltas advance from the last published refresh only; changing
+controller authority restarts the cursor. Rejected stale refreshes cannot advance it.
