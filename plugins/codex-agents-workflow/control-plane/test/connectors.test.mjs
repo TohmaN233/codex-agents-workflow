@@ -397,18 +397,26 @@ test('Grok deliberate disconnect keeps the workspace reserved after prompt rejec
   const task = await fx.registry.status(started.task_id);
   assert.equal(task.state, 'needs_attention');
   assert.equal(task.error.code, 'DISCONNECTED_UNCONFIRMED');
-  assert.equal((await fx.registry.store.activeForWorkspace(fx.workspace)).length, 1);
+  assert.equal((await fx.registry.store.activeForWorkspace(task.workspace)).length, 1);
 });
 
 
-test('Grok unexpected ACP stream loss does not certify remote failure or release workspace', async () => {
+test('Grok unexpected ACP stream loss does not certify remote failure or release workspace', { timeout: 10000 }, async () => {
   const fx = await fixture();
   const started = await start(fx, 'ASK_PERMISSION');
   await fx.registry.status(started.task_id, 5000);
+  const update = fx.registry.store.update.bind(fx.registry.store);
+  let settled;
+  const persisted = new Promise(resolve => { settled = resolve; });
+  fx.registry.store.update = async (id, fields, options) => {
+    const task = await update(id, fields, options);
+    if (fields.error?.code === 'ACP_TERMINAL_UNCONFIRMED') settled();
+    return task;
+  };
   fx.registry.grok.active.get(started.task_id).peer.close(new Error('simulated stream loss'));
-  await new Promise(resolve => setTimeout(resolve, 100));
+  await persisted;
   const task = await fx.registry.status(started.task_id);
   assert.equal(task.state, 'needs_attention');
   assert.equal(task.error.code, 'ACP_TERMINAL_UNCONFIRMED');
-  assert.equal((await fx.registry.store.activeForWorkspace(fx.workspace)).length, 1);
+  assert.equal((await fx.registry.store.activeForWorkspace(task.workspace)).length, 1);
 });

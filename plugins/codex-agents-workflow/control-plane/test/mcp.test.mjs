@@ -202,11 +202,31 @@ test('real stdio server keeps ping responsive and drains invocation before signa
   child.stdout.pause();
   release();
   await new Promise(resolve => setTimeout(resolve, 250));
-  assert.equal(child.exitCode, null, 'server must wait for stdout backpressure to drain');
+  // Windows may buffer the entire reply before the parent resumes; the exact
+  // received payload below is the portable delivery contract.
   child.stdout.resume();
   const response = await invocation;
   assert.equal(response.result.isError, undefined, JSON.stringify(response));
   assert.equal(JSON.parse(response.result.content[0].text).response.text, resultText);
   const [code, signal] = await exit; assert.equal(code, 0, stderr); assert.equal(signal, null);
   assert.match(await readFile(join(root, 'control-plane-audit.jsonl'), 'utf8'), /"outcome":"ok"/);
+});
+
+
+test('stdio scheduler shutdown waits for asynchronous response write completion', async () => {
+  let release, entered;
+  const writeGate = new Promise(resolve => { release = resolve; });
+  const writeStarted = new Promise(resolve => { entered = resolve; });
+  const scheduler = createStdioRequestScheduler({
+    handle: async request => ({ jsonrpc: '2.0', id: request.id, result: {} }),
+    write: () => { entered(); return writeGate; },
+  });
+  scheduler.submit({ id: 1, method: 'ping' });
+  await writeStarted;
+  let drained = false;
+  const shutdown = scheduler.shutdown().then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false);
+  release(); await shutdown;
+  assert.equal(drained, true);
 });
