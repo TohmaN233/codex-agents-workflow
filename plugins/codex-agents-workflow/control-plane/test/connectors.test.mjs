@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import test from 'node:test';
 import { loadConfig, saveConfig } from '../lib/config.mjs';
 import { ConnectorRegistry } from '../connectors/registry.mjs';
 import { ConnectorTaskStore } from '../connectors/task-store.mjs';
+import { captureWorkspaceSnapshot } from '../connectors/scope-guard.mjs';
 import {
   cursorCreateAgentExpression,
   cursorProbeExpression,
@@ -93,6 +94,17 @@ async function fixture() {
   await registry.initialize();
   return { root, workspace, configPath, env, registry };
 }
+
+test('read-only scope snapshots never refresh the Git index while inspecting metadata', async () => {
+  const fx = await fixture();
+  // Invalidate Git's cached stat data without changing the tracked content.
+  await utimes(join(fx.workspace, 'tracked.txt'), new Date('2020-01-01'), new Date('2020-01-01'));
+  const indexPath = join(fx.workspace, '.git', 'index');
+  const before = await readFile(indexPath);
+  const snapshot = await captureWorkspaceSnapshot(fx.workspace);
+  assert.deepEqual(snapshot.entries, {});
+  assert.deepEqual(await readFile(indexPath), before, 'scope observation must not write the index');
+});
 
 async function start(fx, task) {
   return startConnectorSelection({

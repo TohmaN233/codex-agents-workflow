@@ -17,7 +17,9 @@ const GLOB_RE = /[*?\[\]{}!]/;
 
 async function git(workspace, args, { encoding = 'utf8' } = {}) {
   try {
-    const result = await execFileAsync('git', ['-C', workspace, ...args], {
+    // Scope inspection is read-only. Git status otherwise refreshes the index
+    // concurrently with metadata readers, causing Windows sharing violations.
+    const result = await execFileAsync('git', ['--no-optional-locks', '-C', workspace, ...args], {
       encoding,
       windowsHide: true,
       timeout: 20_000,
