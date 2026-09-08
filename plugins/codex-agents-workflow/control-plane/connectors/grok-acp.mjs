@@ -245,7 +245,7 @@ export class GrokAcpConnector {
     let startupError = null;
     const observeProcessError = (processName) => (error) => {
       if (active) {
-        void this.#onProcessError(active, processName, error);
+        void this.#background(active, () => this.#onProcessError(active, processName, error));
       } else {
         startupError = connectorError('TRANSPORT_START_FAILED',
           `${processName} process could not start: ${redactDiagnostic(error?.message || error)}`);
@@ -260,7 +260,7 @@ export class GrokAcpConnector {
       scopeMonitor = startWorkspaceScopeMonitor(fullWorkspace, {
         readOnly,
         allowedPaths: boundedPaths,
-        onViolation: (attempt) => this.#runtimeScopeViolation(active, attempt),
+        onViolation: (attempt) => this.#background(active, () => this.#runtimeScopeViolation(active, attempt)),
       });
       leader = this.spawnImpl(binary, [
         'agent', 'leader', '--no-exit-on-disconnect', '--relay-on-demand', '--no-auto-update',
@@ -330,8 +330,8 @@ export class GrokAcpConnector {
       peer.onNotification('session/update', (params) => this.#onSessionUpdate(active, params));
       peer.onRequest('session/request_permission', (params) => this.#onPermission(active, params));
       peer.onRequest('elicitation/create', (params) => this.#onInput(active, params));
-      leader.once('exit', (code, signal) => this.#onProcessExit(active, 'leader', code, signal));
-      acp.once('exit', (code, signal) => this.#onProcessExit(active, 'acp', code, signal));
+      leader.once('exit', (code, signal) => this.#background(active, () => this.#onProcessExit(active, 'leader', code, signal)));
+      acp.once('exit', (code, signal) => this.#background(active, () => this.#onProcessExit(active, 'acp', code, signal)));
       const initialized = await peer.request('initialize', {
         protocolVersion: 1,
         clientCapabilities: { elicitation: { form: {} } },
@@ -371,13 +371,13 @@ export class GrokAcpConnector {
         return this.publicTask(await this.store.get(task.task_id));
       }
       this.#signal(task.task_id);
-      active.timeout = setTimeout(() => this.#timeout(active), provider.config.task_timeout_ms);
-      peer.request('session/prompt', {
+      active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), provider.config.task_timeout_ms);
+      void this.#background(active, () => peer.request('session/prompt', {
         sessionId,
         prompt: [{ type: 'text', text: boundedPrompt }],
       }, provider.config.task_timeout_ms + 60_000)
         .then((result) => this.#complete(active, result))
-        .catch((error) => this.#fail(active, error));
+        .catch((error) => this.#fail(active, error)));
       return this.publicTask(await this.store.get(task.task_id));
     } catch (error) {
       const safeError = typeof error?.code === 'string'
@@ -674,6 +674,20 @@ export class GrokAcpConnector {
     });
   }
 
+  async #background(active, operation) {
+    try { await operation(); }
+    catch (error) {
+      // An asynchronous lifecycle failure must remain visible, but must never
+      // leave an owned process/monitor running just because the store is down.
+      this.store.persistenceError ||= error;
+      process.stderr.write(`codex-agents-workflow Grok lifecycle failed (${active?.taskId || 'startup'}): ${redactDiagnostic(error?.message || error)}\n`);
+      if (active) {
+        this.#signal(active.taskId);
+        await this.#cleanup(active);
+      }
+    }
+  }
+
   async #persistPendingRequest(active, pending, fields) {
     try {
       await this.store.update(active.taskId, fields);
@@ -687,7 +701,7 @@ export class GrokAcpConnector {
       // request is rejected above; a second persistence failure is observable
       // through the store's poisoned state rather than becoming an unhandled
       // rejection.
-      await this.#fail(active, error).catch(() => {});
+      await this.#background(active, () => this.#fail(active, error));
     }
   }
 
@@ -736,39 +750,42 @@ export class GrokAcpConnector {
   }
 
   async #fail(active, error) {
-    const current = await this.store.get(active.taskId);
-    if (!current || RESULT_STATES.has(current.state)) return;
-    const scope = await verifyWorkspaceScope(active.workspace, active.baseline, {
-      readOnly: active.readOnly,
-      allowedPaths: active.allowedPaths,
-      preventedAttempts: active.preventedAttempts,
-      runtimeAttempts: active.scopeMonitor?.violations || [],
-    }).catch(() => null);
-    const state = scope && !scope.compliant ? 'scope_violation' : 'failed';
-    await this.store.update(active.taskId, {
-      state,
-      scope,
-      error: publicConnectorError(state === 'scope_violation'
-        ? connectorError('SCOPE_VIOLATION',
-          'Grok attempted or produced repository changes outside the declared connector scope.', {
-            details: {
-              changed_paths: scope.changed_paths,
-              outside_paths: scope.outside_paths,
-              prevented_attempts: scope.prevented_attempts,
-            },
-          })
-        : connectorError('ACP_PROMPT_FAILED', redactDiagnostic(error instanceof Error ? error.message : error), {
-          details: { stderr_tail: active.stderrTail.filter(Boolean).slice(-5) },
-        })),
-    });
-    this.#signal(active.taskId);
-    await this.#cleanup(active);
+    try {
+      const current = await this.store.get(active.taskId);
+      if (!current || RESULT_STATES.has(current.state)) return;
+      const scope = await verifyWorkspaceScope(active.workspace, active.baseline, {
+        readOnly: active.readOnly,
+        allowedPaths: active.allowedPaths,
+        preventedAttempts: active.preventedAttempts,
+        runtimeAttempts: active.scopeMonitor?.violations || [],
+      }).catch(() => null);
+      const state = scope && !scope.compliant ? 'scope_violation' : 'failed';
+      await this.store.update(active.taskId, {
+        state,
+        scope,
+        error: publicConnectorError(state === 'scope_violation'
+          ? connectorError('SCOPE_VIOLATION',
+            'Grok attempted or produced repository changes outside the declared connector scope.', {
+              details: {
+                changed_paths: scope.changed_paths,
+                outside_paths: scope.outside_paths,
+                prevented_attempts: scope.prevented_attempts,
+              },
+            })
+          : connectorError('ACP_PROMPT_FAILED', redactDiagnostic(error instanceof Error ? error.message : error), {
+            details: { stderr_tail: active.stderrTail.filter(Boolean).slice(-5) },
+          })),
+      });
+      this.#signal(active.taskId);
+    } finally {
+      await this.#cleanup(active);
+    }
   }
 
   async #runtimeScopeViolation(active, attempt) {
     if (!active || active.intentionalCleanup || active.scopeViolationTriggered) return;
     active.scopeViolationTriggered = true;
-    const current = await this.store.get(active.taskId).catch(() => null);
+    const current = await this.store.get(active.taskId);
     if (!current || RESULT_STATES.has(current.state)) return;
     let cancelSent = false;
     if (active.sessionId) {
@@ -798,7 +815,7 @@ export class GrokAcpConnector {
           details: { prevented_attempts: [attempt] },
           actionRequired: 'The connector requested exact session cancellation; inspect final scope evidence before acceptance.',
         })),
-    }).catch(() => {});
+    });
     this.#signal(active.taskId);
   }
 
@@ -881,7 +898,7 @@ export class GrokAcpConnector {
     const scopeMonitor = startWorkspaceScopeMonitor(task.workspace, {
       readOnly: task.read_only === true,
       allowedPaths: task.allowed_paths || [],
-      onViolation: (attempt) => this.#runtimeScopeViolation(recoveredActive, attempt),
+      onViolation: (attempt) => this.#background(recoveredActive, () => this.#runtimeScopeViolation(recoveredActive, attempt)),
     });
     const active = {
       taskId: task.task_id,
@@ -914,7 +931,7 @@ export class GrokAcpConnector {
     peer.onNotification('session/update', (params) => this.#onSessionUpdate(active, params));
     peer.onRequest('session/request_permission', (params) => this.#onPermission(active, params));
     peer.onRequest('elicitation/create', (params) => this.#onInput(active, params));
-    acp.once('exit', (code, signal) => this.#onProcessExit(active, 'acp', code, signal));
+    acp.once('exit', (code, signal) => this.#background(active, () => this.#onProcessExit(active, 'acp', code, signal)));
     try {
       const initialized = await peer.request('initialize', {
         protocolVersion: 1,

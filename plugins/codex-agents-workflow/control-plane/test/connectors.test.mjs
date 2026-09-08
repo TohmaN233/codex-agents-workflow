@@ -351,3 +351,25 @@ test('task persistence stores a prompt digest but not the prompt body', async ()
     reason: 'fixture cleanup',
   });
 });
+
+
+for (const request of ['ASK_PERMISSION', 'ASK_INPUT']) {
+  test(`poisoned pending ${request} store still closes owned Grok resources`, { timeout: 6000 }, async t => {
+    const fx = await fixture();
+    t.after(() => { for (const active of fx.registry.grok.active.values()) { active.intentionalCleanup=true; clearTimeout(active.timeout); active.scopeMonitor?.close(); active.peer?.close(); active.acp?.kill(); active.leader?.kill(); } });
+    const update = fx.registry.store.update.bind(fx.registry.store);
+    const failure = new Error('synthetic persistent disk failure');
+    fx.registry.store.update = async (id, fields) => {
+      if (['needs_permission','needs_input'].includes(fields.state)) {
+        fx.registry.store.persistenceError = failure;
+        throw failure;
+      }
+      return update(id, fields);
+    };
+    await start(fx, request).catch(error => assert.match(error.message, /persistent disk failure/));
+    const deadline = Date.now()+2000;
+    while (fx.registry.grok.active.size && Date.now()<deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(fx.registry.grok.active.size, 0, 'owned processes and monitors must close even when store reads/writes fail');
+    await assert.rejects(fx.registry.store.initialize(), /persistent disk failure/);
+  });
+}

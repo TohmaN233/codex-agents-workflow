@@ -79,14 +79,15 @@ snapshot_files() {
 write_legacy_roles() {
   target=$1
   mkdir -p "$target"
+  # Immutable historical migration fixtures: retain original Sol names and bytes.
   cat > "$target/$luna_file" <<'LEGACY_LUNA'
-name = "codex_workflow_luna_implementer"
-description = "Codex Agents Workflow's routine implementation lane for bounded, fully specified work."
+name = "sol_advisor_luna_implementer"
+description = "Sol Advisor's routine implementation lane for bounded, fully specified work."
 model = "gpt-5.6-luna"
 model_reasoning_effort = "max"
 
 developer_instructions = """
-You are Codex Agents Workflow's routine implementation worker. Execute the supplied five-part
+You are Sol Advisor's routine implementation worker. Execute the supplied five-part
 implementation specification exactly when it is bounded and largely determined by
 the contract. Preserve stated interfaces and constraints, make only the files you
 own, and adapt to concurrent edits instead of reverting work you do not own.
@@ -98,13 +99,13 @@ reasoning level; this installed custom-agent profile is the required routine lan
 """
 LEGACY_LUNA
   cat > "$target/$terra_file" <<'LEGACY_TERRA'
-name = "codex_workflow_terra_implementer"
-description = "Codex Agents Workflow's complex implementation lane for context-heavy or higher-risk work."
+name = "sol_advisor_terra_implementer"
+description = "Sol Advisor's complex implementation lane for context-heavy or higher-risk work."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "max"
 
 developer_instructions = """
-You are Codex Agents Workflow's complex implementation worker. Resolve difficult implementation
+You are Sol Advisor's complex implementation worker. Resolve difficult implementation
 details within the settled architecture, including context-heavy, higher-risk, or
 wider-blast-radius work. Preserve every stated interface and constraint, stay within
 the owned file set, and document material judgment calls.
@@ -125,13 +126,13 @@ write_v050_roles() {
   target=$1
   mkdir -p "$target"
   cat > "$target/$luna_file" <<'V050_LUNA'
-name = "codex_workflow_luna_implementer"
-description = "Codex Agents Workflow's default routine implementation lane for bounded, fully specified work."
+name = "sol_advisor_luna_implementer"
+description = "Sol Advisor's default routine implementation lane for bounded, fully specified work."
 model = "gpt-5.6-luna"
 model_reasoning_effort = "max"
 
 developer_instructions = """
-You are Codex Agents Workflow's default routine implementation worker. Execute the supplied
+You are Sol Advisor's default routine implementation worker. Execute the supplied
 five-part implementation specification when the work is bounded and largely
 determined by the contract. Preserve every stated interface and constraint, stay
 within the owned file set, and document material judgment calls.
@@ -146,13 +147,13 @@ level; this installed custom-agent profile is the required routine lane.
 """
 V050_LUNA
   cat > "$target/$terra_file" <<'V050_TERRA'
-name = "codex_workflow_terra_implementer"
-description = "Codex Agents Workflow's explicit high-complexity escalation lane for judgment-heavy or high-risk work."
+name = "sol_advisor_terra_implementer"
+description = "Sol Advisor's explicit high-complexity escalation lane for judgment-heavy or high-risk work."
 model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
 
 developer_instructions = """
-You are Codex Agents Workflow's explicit high-complexity escalation worker. Execute the
+You are Sol Advisor's explicit high-complexity escalation worker. Execute the
 supplied five-part implementation specification within the settled architecture when
 the parent identifies judgment-heavy, high-risk, or wider-blast-radius work, or when
 one corrected Luna attempt shows that routine routing was a misclassification.
