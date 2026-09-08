@@ -813,3 +813,17 @@ for (const kind of ['permission', 'input']) {
     await assert.rejects(restarted.create({ workspace: durable.workspace }), { code: 'CONNECTOR_BUSY' });
   });
 }
+
+
+test('Grok committed input metadata does not persist the accepted form content', { timeout: 15000 }, async t => {
+  const fx = await fixture(t);
+  const started = await startScenario(fx, 'grok-readonly-advice', 'ASK_INPUT');
+  const waiting = await fx.registry.status(started.task_id, 5000);
+  const value = 'private-fixture-input-never-persist';
+  await fx.registry.control(started.task_id, { action: 'respond_input', request_id: waiting.pending_request.request_id,
+    decision: 'accept', content: { value } });
+  const record = await fx.registry.store.get(started.task_id);
+  assert.equal(record.last_decision.decision, 'accept');
+  assert.equal(record.last_decision.request_id, waiting.pending_request.request_id);
+  assert.equal((await readFile(fx.registry.store.statePath, 'utf8')).includes(value), false);
+});

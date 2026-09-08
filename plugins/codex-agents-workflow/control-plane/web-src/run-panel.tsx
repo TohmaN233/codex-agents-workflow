@@ -26,9 +26,7 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
   const key = runId + '/' + nodeId; const lease = leases.get(key); const args = { ...control, ...(lease ? { node_id: nodeId, attempt_id: lease.attempt_id, lease_token: lease.lease_token } : {}) };
   async function refresh() {
     return refreshController.refresh(async () => {
-      const [s, n] = await Promise.all([api('get', { run_id: runId }), api('next', { run_id: runId })]);
-      const nextEvents = controllers.has(runId)
-        ? await api('events', { run_id: runId, control_token: controllers.get(runId), after_sequence: 0 }) : [];
+      const { state: s, next: n, events: nextEvents } = await api('run_snapshot', { run_id: runId, control_token: controllers.get(runId) });
       let nextLive = null;
       if (lease && pack?.workflow.skill_policy.mode === 'strict' && ['claimed','running'].includes(s.nodes[nodeId]?.status) && s.nodes[nodeId]?.attempts.at(-1)?.dispatch?.receipt?.executor === 'codex-app-server') {
         try { nextLive = { attempt_id: lease.attempt_id, value: await api('strict_status', args) }; }

@@ -980,7 +980,9 @@ export class GrokAcpConnector {
       const committed = await this.store.update(active.taskId, {
         state: 'running', pending_request: null,
         last_decision: { request_id: pending.requestId, kind: pending.kind,
-          response, committed_at: new Date().toISOString(), delivery: 'unconfirmed' },
+          decision: pending.kind === 'permission' ? response.outcome.outcome : response.action,
+          ...(pending.kind === 'permission' && response.outcome.optionId ? { option_id: response.outcome.optionId } : {}),
+          committed_at: new Date().toISOString(), delivery: 'unconfirmed' },
       }, { guard: current => this.active.get(active.taskId) === active
         && !active.intentionalCleanup && active.pendingRequest === pending
         && !RESULT_STATES.has(current.state) && current.pending_request?.request_id === pending.requestId });

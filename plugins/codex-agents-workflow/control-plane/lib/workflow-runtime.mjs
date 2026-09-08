@@ -244,7 +244,16 @@ export class WorkflowRuntime {
     return executionEnvelope(node, state, pins, attempt, lease_token, join(this.runs.directory(runId), 'objects'));
   }
   async next(runId) {
-    const { state, pins, sequence } = await this.runs.read(runId);
+    return this.#nextFromRecord(runId, await this.runs.read(runId));
+  }
+
+  async snapshot(runId, { control_token } = {}) {
+    const record = await this.runs.read(runId);
+    return { state: publicRun(record), next: await this.#nextFromRecord(runId, record),
+      events: control_token === undefined ? [] : this.#eventsFromRecord(record, { control_token }) };
+  }
+
+  async #nextFromRecord(runId, { state, pins, sequence }) {
     let parentBlock = null;
     try { await this.assertAncestors(pins); } catch (error) { if (!['PARENT_RUN_INACTIVE', 'PARENT_LEASE_INACTIVE'].includes(error.code)) throw error; parentBlock = { code: error.code, message: error.message }; }
     return {
@@ -443,7 +452,11 @@ export class WorkflowRuntime {
   }
 
   async events(runId, { after_sequence = 0, control_token }) {
-    const record = await this.runs.read(runId); authorize(record.state, control_token);
+    return this.#eventsFromRecord(await this.runs.read(runId), { after_sequence, control_token });
+  }
+
+  #eventsFromRecord(record, { after_sequence = 0, control_token }) {
+    authorize(record.state, control_token);
     requireValue(Number.isInteger(after_sequence) && after_sequence >= 0, 'EVENT_CURSOR', 'Event cursor must be a nonnegative sequence');
     return record.events.filter(event => event.sequence > after_sequence).map(event => ({ sequence: event.sequence, kind: event.kind, at: event.at, hash: event.hash, node_ids: Object.keys(event.payload.patch?.nodes ?? {}), run_status: event.payload.patch?.fields.status ?? event.payload.state?.status ?? null }));
   }

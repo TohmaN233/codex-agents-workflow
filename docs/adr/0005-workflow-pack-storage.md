@@ -15,8 +15,8 @@ revision-checked current pointer. Concurrent writes must compare the observed
 revision under a lock. A failed save must preserve the preceding committed pack.
 Directory scans, not an independently vulnerable index, enumerate committed packs.
 
-The fsynced Run event journal is authoritative; run.json is a reconstructable
-snapshot. Serialize writers and sequence events. Claims, approvals, completions
+The fsynced Run event journal is authoritative; the unused run.json snapshot
+write was removed during review. Legacy snapshots are ignored. Serialize writers and sequence events. Claims, approvals, completions
 and dispatch intent become durable before downstream work is released. Validate
 event integrity and explicitly recover a torn uncommitted tail; corruption cannot
 be ignored. Repeated completion requires an identical content fingerprint.

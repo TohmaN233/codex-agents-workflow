@@ -47,7 +47,7 @@ const STDIO_CONTROL_TOOLS = new Set([
   'codex_agents_workflow_connector_control',
 ]);
 const STDIO_CONTROL_OPERATIONS = new Set([
-  'status', 'get', 'next', 'events', 'pause', 'resume', 'cancel', 'approve',
+  'status', 'get', 'run_snapshot', 'next', 'events', 'pause', 'resume', 'cancel', 'approve',
   'control_connector', 'reconcile_connector', 'strict_status',
 ]);
 

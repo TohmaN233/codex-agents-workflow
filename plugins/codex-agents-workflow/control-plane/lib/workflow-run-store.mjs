@@ -104,7 +104,6 @@ export class WorkflowRunStore {
         }
         await writeDurableJSON(join(temporary, 'pins.json'), pins);
         const event = await appendEvent(join(temporary, 'events.jsonl'), [], 'started', { state });
-        await writeDurableJSON(join(temporary, 'run.json'), { sequence: 1, event_hash: event.hash, state });
         await syncDirectory(join(temporary, 'objects')); await syncDirectory(temporary);
         await rename(temporary, destination); await syncDirectory(this.root);
         return { state: structuredClone(state), pins: structuredClone(pins), sequence: 1, events: [event] };
@@ -150,8 +149,6 @@ export class WorkflowRunStore {
       const patch = statePatch(current.state, next);
       if (Object.values(patch).every(values => !Object.keys(values).length)) return { ...current, result, idempotent: true };
       const event = await appendEvent(join(root, 'events.jsonl'), current.events, kind, { patch });
-      try { await writeDurableJSON(join(root, 'run.json'), { sequence: event.sequence, event_hash: event.hash, state: next }); }
-      catch (error) { throw Object.assign(new Error(`Transition committed, but Run cache update failed: ${error.message}`), { code: 'RUN_CACHE_WRITE_FAILED', committed: true, sequence: event.sequence, cause: error }); }
       return { state: next, pins: current.pins, sequence: event.sequence, result, events: [...current.events, event] };
     });
   }
@@ -172,7 +169,6 @@ export class WorkflowRunStore {
       if (repaired.recovered || Object.values(patch).some(value => Object.keys(value).length)) {
         event = await appendEvent(join(root, 'events.jsonl'), current.events, 'recover', { patch, journal_recovery: repaired.recovered });
       }
-      await writeDurableJSON(join(root, 'run.json'), { sequence: event.sequence, event_hash: event.hash, state: next });
       return { state: next, pins: current.pins, sequence: event.sequence };
     });
     });

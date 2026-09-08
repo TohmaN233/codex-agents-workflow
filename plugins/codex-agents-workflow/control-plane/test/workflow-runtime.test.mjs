@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, rmdir, writeFile, readFile, appendFile, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, rmdir, writeFile, readFile, appendFile } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join, resolve } from 'node:path';
 import { WorkflowStore } from '../lib/workflow-store.mjs';
@@ -165,12 +165,12 @@ test('Run pins survive preset edit/delete and reject tampered resources', async 
   await writeFile(object, 'tampered'); await assert.rejects(f.runtime.get(run.run_id), { code: 'RUN_RESOURCE_CORRUPT' });
 });
 
-test('committed journal survives cache write failure; stale CAS and torn/corrupt journal fail closed', async t => {
+test('journal-only transitions ignore legacy cache; stale CAS and torn/corrupt journal fail closed', async t => {
   const f = await fixture(t); const run = await f.start(); const directory = f.runtime.runs.directory(run.run_id); const cache = join(directory, 'run.json');
-  await rename(cache, cache + '.saved'); await mkdir(cache);
-  await assert.rejects(claim(f, run, 'work'), error => error.code === 'RUN_CACHE_WRITE_FAILED' && error.committed === true);
+  await mkdir(cache); // An unusable legacy cache cannot break authoritative commits.
+  await claim(f, run, 'work');
   const repeated = await claim(f, run, 'work'); assert.equal(repeated.idempotent, true); assert.equal((await f.runtime.get(run.run_id)).nodes.work.status, 'claimed');
-  await rmdir(cache); await rename(cache + '.saved', cache);
+  await rmdir(cache);
   await assert.rejects(claim(f, run, 'work', { expected_sequence: 1 }), { code: 'RUN_SEQUENCE_CONFLICT' });
   const journal = join(directory, 'events.jsonl'); await appendFile(journal, '{"uncommitted":');
   await assert.rejects(f.runtime.get(run.run_id), { code: 'RUN_JOURNAL_TORN' });
@@ -207,4 +207,20 @@ test('input and output contracts validate actual data, bind final output and rej
   const result = await complete(f, run, await claim(f, run, 'final'), {}, { acceptance: { accepted: true } }); assert.deepEqual(result.output, { count: 3 });
   const bad = definition(); bad.inputs_schema = { type: 'object', patternProperties: {} };
   await assert.rejects(f.store.save('example', bad, { expected_revision: (await f.store.snapshot('example')).revision_hash }), error => error.code === 'WORKFLOW_NOT_READY');
+});
+
+
+test('Run snapshot shares one validated read and preserves event authorization', async t => {
+  const f = await fixture(t); const run = await f.start();
+  const read = f.runtime.runs.read.bind(f.runtime.runs); let reads = 0;
+  f.runtime.runs.read = async id => { reads++; return read(id); };
+  const snapshot = await f.runtime.snapshot(run.run_id, control(run));
+  assert.equal(reads, 1);
+  assert.equal(snapshot.state.sequence, snapshot.next.sequence);
+  assert.equal(snapshot.events.at(-1).sequence, snapshot.state.sequence);
+  assert.deepEqual((await f.runtime.snapshot(run.run_id)).events, []);
+  await assert.rejects(f.runtime.snapshot(run.run_id, { control_token: 'wrong' }), { code: 'RUN_AUTHORITY' });
+  const record = await read(run.run_id);
+  await writeFile(join(f.runtime.runs.directory(run.run_id), 'objects', record.pins.resources[0].sha256), 'tampered');
+  await assert.rejects(f.runtime.snapshot(run.run_id, control(run)), { code: 'RUN_RESOURCE_CORRUPT' });
 });

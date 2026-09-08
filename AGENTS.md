@@ -143,6 +143,12 @@ fatal rather than successful delivery. Exercise large responses under backpressu
 
 Cursor synchronous start/control/reconcile failures must release local CDP and scope
 monitor ownership when persistence fails, while retaining remote uncertainty and
-workspace reservation. Grok human decisions commit request identity and response
+workspace reservation. Grok human decisions commit request identity and decision metadata
 before resolving ACP requests; poisoned decision writes must never deliver approval.
 Concurrent decision attempts are rejected while one decision is committing.
+
+Run state is journal-only; do not reintroduce a write-only run.json cache. Console
+run_snapshot shares one verified record across public state, next actions and
+authorized events. Every poll still verifies pins/resources/journal integrity.
+
+Accepted form content remains transport-only; decision metadata must not persist it.

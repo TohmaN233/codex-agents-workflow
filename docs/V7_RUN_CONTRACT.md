@@ -11,8 +11,9 @@ cancel/approve, dispatch intent/receipt, and metadata event cursors.
   resource bytes and the event chain. The transitive child/Skill closure is pinned
   before publication and existing Runs never reread linked sources or library heads.
 - `events.jsonl` is authoritative. An fsynced state patch commits each transition;
-  `run.json` is reconstructable. Cache failure returns `committed: true` and never
-  releases another node through the failed call. Windows guarantees are limited
+  no redundant `run.json` cache is written or read. Legacy cache files are ignored.
+  A UI snapshot shares one validated read for state, next actions and authorized
+  event metadata; it does not cache or skip integrity verification. Windows guarantees are limited
   to process crashes, not power-loss durability of directory entries.
 - Store/Run writer locks reject concurrent owners. Explicit recovery only removes
   a confirmed-dead writer, preserves a torn uncommitted tail, validates complete

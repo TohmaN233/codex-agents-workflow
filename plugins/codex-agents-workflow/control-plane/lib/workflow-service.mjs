@@ -175,6 +175,7 @@ export class WorkflowService {
       }
       case 'runs': return runtime.runs.list();
       case 'get': return runtime.get(args.run_id);
+      case 'run_snapshot': return runtime.snapshot(args.run_id, args);
       case 'run_definition': return (await runtime.runs.read(args.run_id)).pins.root;
       case 'node_details': {
         const { state, pins } = await runtime.runs.read(args.run_id); const node = pins.root.workflow.nodes.find(item => item.id === args.node_id);
