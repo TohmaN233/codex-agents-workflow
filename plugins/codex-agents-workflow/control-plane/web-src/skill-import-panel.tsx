@@ -15,8 +15,8 @@ export function SkillImportPanel({act, busy, providers, imported}: {act:(work:()
     <p>默认扫描当前用户的 Codex 技能目录和插件缓存（通常位于 C:\Users\用户名\.codex）。也可以指定自己的文件夹。这里只发现可导入文件，不代表这些 Skill 已启用或获得执行权限。</p>
     <Field label="其他 Skill 文件夹（可选，绝对路径）" value={folder} onChange={value=>{setFolder(value);generation.current++;setInventory(null);}}/>
     <button disabled={busy>0} onClick={()=>scan(folder)}>扫描文件夹</button><button disabled={busy>0} onClick={()=>{setFolder('');scan('');}}>扫描默认 Codex 目录</button>
-    <p>初始 Draft 可以先交给 Main；进入审查页后，用 skill2workflow 规则为展开节点分别选择 Provider。</p>
-    <ProviderField providers={providers} value={provider} onChange={setProvider}/>
+    <details><summary>高级导入设置</summary><p>初始草稿执行者。自动生成时会按规则为各步骤分别选择执行者。</p>
+    <ProviderField providers={providers} value={provider} onChange={setProvider}/></details>
     {inventory && <><Details title="扫描范围与错误（缓存可能包含多个版本）" value={{...inventory,entries:undefined}}/>{inventory.entries.map((item:Json)=><article className="history-row" key={item.id}><div><strong>{item.name}</strong><p>{item.path}</p><small>{item.source_hash}</small></div><button disabled={!provider || busy>0} onClick={()=>act(async()=>imported(await api('import_skill',{discovery:'folders',...(inventory.folder?{folder:inventory.folder}:{}),skill_id:item.id,workflow_id:uid('import'),...(provider==='$main'?{}:{provider_id:provider})})))}>导入此版本</button></article>)}</>}
   </main>;
 }

@@ -164,3 +164,9 @@ process/scope ownership; stale approval cannot revive attention/cancelling tasks
 
 Console event deltas advance from the last published refresh only; changing
 controller authority restarts the cursor. Rejected stale refreshes cannot advance it.
+
+The human console offers one-click Skill generation: managed read-only planning
+workspace and planner defaults, bounded journal-backed claim/dispatch advancement,
+and visible progress. Never auto-accept the final review or silently retry failed
+work. Explicit human acceptance applies the exact source-revision Draft; detailed
+Provider, workspace, and recovery controls remain in advanced options.

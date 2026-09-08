@@ -15,6 +15,66 @@ import { importCoarseSkill } from '../lib/skill-import/coarse-compiler.mjs';
 import { digest } from '../lib/workflow-revisions.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+
+test('one-click generation prepares workspace and advances only to explicit human acceptance', async t => {
+  let proposal;
+  const f = await fixture(t,{turn:async()=>({output:JSON.stringify(proposal),thread_id:'generation-test',turn_id:'turn',audit:{}})});
+  const source = join(f.root,'generate-source'); await mkdir(source);
+  await writeFile(join(source,'SKILL.md'),'---\nname: generate\ndescription: Review\n---\nReview a result.');
+  const {store} = await f.service.open();
+  const pack = await importCoarseSkill(store,join(source,'SKILL.md'),{id:'one-click-source'});
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+  proposal={source_revision:pack.revision_hash,nodes:[{id:'check',type:'agent',prompt_template:'Review',task_type:'review',routing_reason:'Independent review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  const start={workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'one-click'};
+  await assert.rejects(f.service.call('start_generation',start),{code:'HUMAN_GENERATION'});
+  const run=await f.service.call('start_generation',start,{human:true});
+  const control={run_id:run.run_id,control_token:run.control_token};
+  const stateBefore=await f.service.call('get',control);
+  assert(stateBefore.permissions.workspace.includes('skill-generation-workspaces'));
+  await assert.rejects(f.service.call('accept_generation',{...control,accepted:true},{human:true}),{code:'GENERATION_NOT_READY'});
+  for(const phase of ['generating','reviewing']) {
+    const progress=await f.service.call('advance_generation',control,{human:true}); assert.equal(progress.phase,phase);
+    await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));
+  }
+  const preview=await f.service.call('advance_generation',control,{human:true});
+  assert.equal(preview.phase,'review_required');
+  assert.equal(preview.validation.valid,true);
+  assert.equal(preview.workflow.finalization.required,true);
+  assert.equal(preview.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.equal((await store.snapshot(pack.workflow.id)).revision_hash,pack.revision_hash);
+  await assert.rejects(f.service.call('accept_generation',{...control,accepted:false},{human:true}),{code:'GENERATION_ACCEPTANCE'});
+  const saved=await f.service.call('accept_generation',{...control,accepted:true},{human:true});
+  assert.equal(saved.workflow.status,'draft'); assert.notEqual(saved.revision_hash,pack.revision_hash);
+  assert.equal(f.sessions.length,2);
+});
+test('one-click generation exposes managed login without silently starting a model', async t => {
+  const f = await fixture(t,{authenticated:false});
+  const source=join(f.root,'login-source'); await mkdir(source);
+  await writeFile(join(source,'SKILL.md'),'---\nname: login\ndescription: Review\n---\nReview a result.');
+  const {store}=await f.service.open();
+  const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'login-source'});
+  const run=await f.service.call('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'login-generation'},{human:true});
+  const control={run_id:run.run_id,control_token:run.control_token};
+  await f.service.call('advance_generation',control,{human:true});
+  const progress=await f.service.call('advance_generation',control,{human:true});
+  assert.equal(progress.phase,'authentication_required');
+  assert.equal(progress.live.status,'auth_required');
+  assert.equal(f.sessions[0].calls,0);
+  await assert.rejects(f.service.call('login_generation',control),{code:'HUMAN_AUTHENTICATION_REQUIRED'});
+  await assert.rejects(f.service.call('login_generation',{...control,control_token:'wrong'},{human:true}));
+  const session=f.sessions[0];
+  session.login=async()=>({login_id:'test-login',auth_url:'https://auth.openai.com/test-only'});
+  session.client.waitFor=async(predicate)=>{
+    const event=[{method:'account/login/completed',params:{loginId:'test-login',success:true}},{method:'account/updated',params:{authMode:'chatgpt'}}].find(predicate);
+    session.client.events.push(event);return event;
+  };
+  session.turn=async()=>{throw new Error('Synthetic stop after successful login handoff');};
+  const login=await f.service.call('login_generation',control,{human:true});
+  assert.equal(login.auth_url,'https://auth.openai.com/test-only');
+  assert.equal(login.status,'auth_pending');
+
+  await f.service.call('cancel',control);
+});
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'strict-manager-')); const workspace = join(root, 'workspace'); await mkdir(workspace);
   const configPath = join(root, 'control-plane.json'); let service; const sessions = [];

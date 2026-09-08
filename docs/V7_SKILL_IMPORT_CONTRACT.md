@@ -98,3 +98,15 @@ dependency observations remain visible. The human-only `review_import` operation
 must confirm the exact conversion; a separate per-node blocker prevents blanket
 summary removal from bypassing review. Functional independence still needs actual
 execution evidence. SubWorkflow authority and output rules are in V7_RUN_CONTRACT.
+
+## One-click console generation
+
+The default import review action prepares a managed planning workspace and selects
+the planning route from saved rules. The console advances normal claims/dispatch
+automatically, one bounded transition at a time, while displaying progress. Provider
+gates still require a human decision. A final proposed result and structural graph
+validation are shown before explicit acceptance applies the exact source Draft.
+There is no implicit retry, Ready publication, approval waiver or guarantee that
+arbitrary generated workflows have no bugs. Closing the page stops further UI
+advancement, not a model call already dispatched; Run details preserve cancellation
+and recovery controls. Workspace/Provider/rules remain editable in advanced options.

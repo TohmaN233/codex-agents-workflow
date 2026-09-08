@@ -1,3 +1,4 @@
+import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
 import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
 import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
@@ -9,7 +10,7 @@ import { validateWorkflowGraph } from './workflow-validator.mjs';
 import { migrateV6OnDisk, restoreV6Backup } from './workflow-migration-v6.mjs';
 import { resolveLegacyWorkflowRequest } from './legacy-control-adapter.mjs';
 import { connectorRegistryFor } from '../connectors/registry.mjs';
-import { requireValue, insideRoot, noSymlinks } from './workflow-paths.mjs';
+import { requireValue, insideRoot, noSymlinks, ensureDirectory, workflowId } from './workflow-paths.mjs';
 import { importCoarseSkill, verifyCoarseRelocation } from './skill-import/coarse-compiler.mjs';
 import { expansionPacket, applyExpansion } from './skill-import/semantic-expander.mjs';
 import { buildProviderAdapter } from './providers.mjs';
@@ -89,6 +90,27 @@ export class WorkflowService {
     const { config, context, store, runtime, executor } = await this.open();
     if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
+      case 'start_generation': {
+        requireValue(human,'HUMAN_GENERATION','Start automatic generation from the console');
+        requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
+        const rules = args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const runId = workflowId(args.run_id);
+        const workspace = args.workspace || await ensureDirectory(join(dirname(this.configPath),'skill-generation-workspaces','job-'+runId));
+        return this.call('create_expansion_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.routes.planning.provider_id,routing_rules:rules,main_actor:'human-console'});
+      }
+      case 'advance_generation': {
+        requireValue(human,'HUMAN_GENERATION','Automatic generation belongs to its console controller');
+        requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
+        return advanceGeneration(this,runtime,executor,args,{store,context});
+      }
+      case 'login_generation': {
+        requireValue(human,'HUMAN_AUTHENTICATION_REQUIRED','Generation login belongs to the authenticated human console');
+        return loginGeneration(this,runtime,args);
+      }
+      case 'accept_generation': {
+        requireValue(human,'HUMAN_GENERATION','Generation acceptance belongs to the human console');
+        return acceptGeneration(this,runtime,args);
+      }
       case 'capabilities': {
         let strict;
         try { await qualifiedStrictSettings(config, this.env); strict = { available: true }; }
