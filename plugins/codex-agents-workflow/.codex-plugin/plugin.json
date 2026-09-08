@@ -1,0 +1,39 @@
+{
+  "name": "codex-agents-workflow",
+  "version": "0.8.0+codex.20260907114212",
+  "description": "Versioned visual Workflows, explicit Skill imports, journal-backed Runs and pinned Provider execution.",
+  "author": {
+    "name": "TohmaN233",
+    "url": "https://github.com/TohmaN233"
+  },
+  "homepage": "https://github.com/TohmaN233/codex-agents-workflow#readme",
+  "repository": "https://github.com/TohmaN233/codex-agents-workflow",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "orchestration",
+    "multi-agent",
+    "control-plane",
+    "external-models",
+    "workflow",
+    "skill-to-workflow"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Codex Agents Workflow",
+    "shortDescription": "Build and run versioned Workflows with pinned Providers and main-agent acceptance.",
+    "longDescription": "Codex Agents Workflow keeps the primary agent responsible for requirements, verification and acceptance. The user owns a versioned Workflow graph with pinned Providers, Skill policies, resources, permissions and main final acceptance. Ready definition validity is separate from launch capability. Imported Skills become Strict Drafts with visible dependencies and human review; source files are never edited. Strict fails closed unless the exact Windows x64 Codex 0.145.0 binary and supported catalog, explicit input and broker boundary qualify. It is not an OS filesystem sandbox. Non-native Providers and Strict default off. Parallel writers use owned Git worktrees with reviewed integration. A durable Run journal fences stale leases and supports exact recovery without automatic resubmission. The legacy v6 and native-only SELECTIVE ROUTE remain compatible: delegate is the default; full combines implementation then review for difficult work. Route is derived from those Stages rather than configured independently. Configuration migration is explicit and backed up.",
+    "developerName": "TohmaN233",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/TohmaN233/codex-agents-workflow",
+    "defaultPrompt": [
+      "Use $codex-agents-workflow:workflow-control-plane; run a pinned Workflow and retain main-agent verification and acceptance.",
+      "Keep external Providers off unless explicitly enabled and bound to the selected Workflow."
+    ]
+  }
+}

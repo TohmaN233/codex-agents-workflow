@@ -1,0 +1,125 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from './physical-tempdir.mjs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import readline from 'node:readline';
+import test from 'node:test';
+
+const controlDir = dirname(dirname(fileURLToPath(import.meta.url)));
+const pluginDir = dirname(controlDir);
+const serverPath = join(controlDir, 'server.mjs');
+
+test('plugin MCP launches from the installed plugin root with the global Codex environment', async () => {
+  const manifest = JSON.parse(await readFile(join(pluginDir, '.mcp.json'), 'utf8'));
+  const server = manifest.mcpServers['codex-agents-workflow'];
+  assert.equal(server.enabled, true);
+  assert.equal(server.cwd, '.');
+  assert.deepEqual(server.args, ['./control-plane/server.mjs']);
+  assert.ok(server.env_vars.includes('CODEX_HOME'));
+  assert.ok(server.env_vars.includes('USERPROFILE'));
+});
+
+test('routing policy leaves the primary model to the host and never auto-falls back', async () => {
+  const controlSkill = await readFile(join(pluginDir, 'skills', 'control-plane', 'SKILL.md'), 'utf8');
+  const nativeSkill = await readFile(join(pluginDir, 'skills', 'orchestration', 'SKILL.md'), 'utf8');
+  const legacySkill = await readFile(join(pluginDir, 'skills', 'control-plane', 'references', 'v6-control-plane.md'), 'utf8');
+  assert.doesNotMatch(controlSkill, /use the native[\s\S]{0,100}workflow or stay solo/i);
+  assert.match(controlSkill, /request\s+permission[\s\S]{0,100}retry once/i);
+  assert.doesNotMatch(nativeSkill, /ask the user to confirm[\s\S]{0,80}stop[\s\S]{0,40}until confirmed/i);
+  for (const skill of [controlSkill, nativeSkill, legacySkill]) {
+    assert.doesNotMatch(skill, /recommended primary|qualifying primary|confirm the primary session|GPT-5\.6 Luna never qualifies/i);
+  }
+  assert.match(legacySkill, /delegate is the default/i);
+  assert.match(legacySkill, /full[\s\S]{0,120}(difficult|high-risk)/i);
+  assert.match(controlSkill, /version: 6[\s\S]{0,100}v6-control-plane.md/);
+  for (const operation of ['workflow_start', 'workflow_claim_node', 'workflow_dispatch', 'workflow_complete_node', 'workflow_reattach_connector']) assert(controlSkill.includes(operation));
+  assert.match(controlSkill, /CONTROL PLANE UNAVAILABLE/);
+  const unavailableSection = controlSkill.match(/If the control tools are absent[\s\S]*?(?=\n## )/i)?.[0] || '';
+  assert.match(unavailableSection, /Do not emit[\s\S]{0,40}`SELECTIVE ROUTE`/i);
+  assert.doesNotMatch(unavailableSection, /~~~text[\s\S]*SELECTIVE ROUTE/i);
+  assert.match(nativeSkill, /delegate is the default/i);
+});
+
+function makeClient(child) {
+  const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
+  const pending = new Map();
+  lines.on('line', (line) => {
+    const message = JSON.parse(line);
+    const resolver = pending.get(message.id);
+    if (resolver) {
+      pending.delete(message.id);
+      resolver(message);
+    }
+  });
+  return {
+    request(message) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(message.id);
+          reject(new Error(`timeout waiting for ${message.id}`));
+        }, 5000);
+        pending.set(message.id, (response) => {
+          clearTimeout(timer);
+          resolve(response);
+        });
+        child.stdin.write(`${JSON.stringify(message)}\n`);
+      });
+    },
+  };
+}
+
+test('stdio MCP lists control tools and returns sanitized status', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'sol-control-mcp-'));
+  const child = spawn(process.execPath, [serverPath], {
+    env: { ...process.env, SOL_CONTROL_CONFIG: join(dir, 'control-plane.json') },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  t.after(() => {
+    child.stdin.end();
+    child.kill('SIGTERM');
+  });
+  const client = makeClient(child);
+  const discovered = await client.request({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} });
+  assert.equal(discovered.result.protocolVersion, '2026-07-28');
+  assert.equal(discovered.result.serverInfo.name, 'codex-agents-workflow');
+
+  const initialized = await client.request({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
+  assert.equal(initialized.result.protocolVersion, '2025-11-25');
+
+  const listed = await client.request({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+  const names = listed.result.tools.map((tool) => tool.name);
+  assert.deepEqual(names.filter(name => name.startsWith('codex_agents_workflow_')), ['codex_agents_workflow_status', 'codex_agents_workflow_console', 'codex_agents_workflow_resolve', 'codex_agents_workflow_connector_probe', 'codex_agents_workflow_connector_start', 'codex_agents_workflow_connector_status', 'codex_agents_workflow_connector_control', 'codex_agents_workflow_invoke']);
+  assert.equal(names.some(name => name.startsWith('sol_')), false);
+  for (const name of ['workflow_start', 'workflow_claim_node', 'workflow_complete_node', 'workflow_resume', 'workflow_dispatch']) assert(names.includes(name));
+  const consoleTool = listed.result.tools.find((tool) => tool.name === 'codex_agents_workflow_console');
+  assert.equal(consoleTool.inputSchema.properties.port.default, 58712);
+  const resolveTool = listed.result.tools.find((tool) => tool.name === 'codex_agents_workflow_resolve');
+  assert.deepEqual(resolveTool.inputSchema.required, ['task_type_id', 'task']);
+  assert.equal('scenario_id' in resolveTool.inputSchema.properties, false);
+  const startTool = listed.result.tools.find((tool) => tool.name === 'codex_agents_workflow_connector_start');
+  assert.ok(startTool.inputSchema.required.includes('stage_id'));
+
+  const statusResponse = await client.request({
+    jsonrpc: '2.0',
+    id: 4,
+    method: 'tools/call',
+    params: { name: 'codex_agents_workflow_status', arguments: {} },
+  });
+  const status = JSON.parse(statusResponse.result.content[0].text);
+  assert.equal(status.effective_enabled, true);
+  assert.ok(status.task_types.some((taskType) => taskType.id === 'bounded-code-change'));
+  assert.doesNotMatch(statusResponse.result.content[0].text, /CONSTRAINTS AND OWNERSHIP/);
+  assert.doesNotMatch(statusResponse.result.content[0].text, /example\.invalid/);
+
+  const connectorError = await client.request({
+    jsonrpc: '2.0', id: 5, method: 'tools/call', params: {
+      name: 'codex_agents_workflow_connector_status', arguments: { task_id: 'missing-task' },
+    },
+  });
+  assert.equal(connectorError.result.isError, true);
+  const errorPayload = JSON.parse(connectorError.result.content[0].text);
+  assert.equal(errorPayload.code, 'TASK_NOT_FOUND');
+  assert.match(errorPayload.error, /Unknown connector task/);
+});

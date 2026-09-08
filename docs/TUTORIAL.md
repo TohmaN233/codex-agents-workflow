@@ -1,0 +1,202 @@
+# Codex Agents Workflow Tutorial
+
+[中文版本](TUTORIAL.zh-CN.md)
+
+## Will installation automatically call subagents?
+
+No. Installing and enabling the plugin does not automatically call subagents in every conversation. It only makes the `$codex-agents-workflow:codex-agents-workflow` skill and the control-plane tools discoverable to Codex in **new tasks**. If you create a task from the plugin card's default prompt, that prompt already references the skill. For other tasks, it is recommended to explicitly include this in the first message:
+
+```text
+Use $codex-agents-workflow:codex-agents-workflow. Keep the primary agent in charge, read metadata once,
+select one matching Task Type, and verify every auxiliary claim.
+```
+
+After the skill is activated, the primary agent reads sanitized configuration metadata once, before its first repository or task-tool call, and selects a route:
+
+- `solo`: the primary agent works alone only when primary-only work was explicitly requested.
+- `delegate`: the default for light or ordinary work; execute one implementation or analysis Stage.
+- `audit`: the primary agent does the main work, followed by a read-only review Stage.
+- `full`: use for difficult, high-risk, or broad work; run implementation and independent review in sequence.
+
+A subagent can be called only when all of the following are true:
+
+1. The current task has activated the control-plane skill.
+2. An enabled Task Type matches the semantics of the current task.
+3. Each selected Stage is pinned to one enabled Provider with the required capabilities.
+4. If either the selected Provider or Stage approval gate is enabled, the user explicitly approves it **in the current task**.
+5. A write task supplies non-empty, minimal, repository-relative `allowed_paths`.
+
+Enabling a Provider by itself does not trigger a call, incur a charge, or start anything in the background. The primary agent cannot swap Providers on the fly or silently fall back after a failure.
+
+## Install and validate the native roles
+
+The native Luna, Terra, and reviewer role files are installed by one cross-platform Node
+entry. PowerShell does not need Git Bash, WSL, `sh`, `jq`, `find`, or `grep`:
+
+```powershell
+$plugin = (codex plugin list --json | ConvertFrom-Json).installed |
+  Where-Object pluginId -eq 'codex-agents-workflow@codex-agents-workflow'
+if (-not $plugin) { throw 'codex-agents-workflow is not installed' }
+$installer = Join-Path $plugin.source.path 'scripts\install-agents.mjs'
+if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'native role installer is missing' }
+node $installer
+node $installer --check
+```
+
+Linux and macOS use the same Node entry. The shipped `.sh` file is only a compatibility
+wrapper:
+
+```sh
+plugin_dir="$(codex plugin list --json | jq -r '.installed[] | select(.pluginId == "codex-agents-workflow@codex-agents-workflow") | .source.path')"
+test -n "$plugin_dir" && test "$plugin_dir" != null || { echo 'codex-agents-workflow is not installed' >&2; exit 1; }
+node "$plugin_dir/scripts/install-agents.mjs"
+node "$plugin_dir/scripts/install-agents.mjs" --check
+```
+
+If the optional checker or runtime inspector cannot be found or executed, the skill
+reports `ROLE VALIDATION UNAVAILABLE`, identifies the unverified evidence, and continues
+the task. It does not pretend the check passed. An executed check that returns an
+explicit role, model, or effort mismatch still stops that native lane.
+
+## Open the real configuration console with one command
+
+The following scripts use the real user configuration:
+
+```text
+$CODEX_HOME/sol-advisor/control-plane.json
+```
+
+When `CODEX_HOME` is not set, the path is:
+
+```text
+~/.codex/sol-advisor/control-plane.json
+```
+
+This is user-level global configuration, independent of the current repository and working directory. After you save it, other projects and new tasks read the same configuration. The top of the console explicitly shows **Global user configuration** and the actual file path. Only an explicitly configured absolute `SOL_CONTROL_CONFIG` path, or an override path passed by code for development/testing, is shown in red as **Override/test configuration**. An override does not modify the global configuration and should not be used as the normal entry point.
+
+Console overview (the screenshot uses bundled defaults and contains no local tokens or private settings):
+
+![Codex Agents Workflow console overview](assets/sol-subagent-control-console.png)
+
+Task Type presets, custom entry points, and the Stage list:
+
+![Task Type and Stage configuration](assets/sol-subagent-task-types.png)
+
+### Windows
+
+After installation, you can double-click the following file in the plugin directory:
+
+```text
+scripts\open-control-console.cmd
+```
+
+You can also locate and run it from PowerShell with one command:
+
+```powershell
+$plugin = (codex plugin list --json | ConvertFrom-Json).installed |
+  Where-Object pluginId -eq 'codex-agents-workflow@codex-agents-workflow'
+if (-not $plugin) { throw 'codex-agents-workflow is not installed' }
+& "$($plugin.source.path)\scripts\open-control-console.cmd"
+```
+
+### Linux / macOS / Git Bash
+
+```sh
+plugin_dir="$(codex plugin list --json | jq -r '.installed[] | select(.pluginId == "codex-agents-workflow@codex-agents-workflow") | .source.path')"
+test -n "$plugin_dir" && test "$plugin_dir" != null || { echo 'codex-agents-workflow is not installed' >&2; exit 1; }
+sh "$plugin_dir/scripts/open-control-console.sh"
+```
+
+The script binds to the stable loopback port `127.0.0.1:58712` and opens the browser. Keep the terminal running; pressing `Ctrl+C` stops the local service. Do not share a local URL that may contain the console token. Use `--port 0` only when you explicitly want a random free port, or choose another fixed port, for example:
+
+```powershell
+& "$($plugin.source.path)\scripts\open-control-console.cmd" --port 58046
+```
+
+```sh
+sh "$plugin_dir/scripts/open-control-console.sh" --port 58046
+```
+
+In a Codex conversation, saying “Open the Codex Agents Workflow configuration console” is still the equivalent recommended entry point.
+
+If a task cannot see the `codex_agents_workflow_*` tools, the plugin MCP server was not attached when that task started; this does not mean that the configuration reverted to defaults. Existing tasks do not gain newly installed tools. Do not start the server manually or declare a successful solo fallback. Reload or update the plugin, then create a new task. If reading the global configuration fails only with `EPERM` or `EACCES`, approve access to the global configuration directory above and retry once.
+
+## Configure Task Types, Stages, and Providers
+
+A Provider describes “who does the work and through which connection”; a Task Type describes “what kind of task this is and which steps it follows.”
+
+1. In **Providers**, enable the Providers you are ready to use.
+2. In **Task Types and stages**, use a bundled preset, copy an existing task, or create a blank task. A new Task Type starts as delegate.
+3. Enable **Independent review stage** when difficult work should use full. The displayed workflow is derived from the Stages; there is no separate Route selector.
+4. Select exactly one **Pinned provider** inside each Stage.
+5. Select `read_only` for read-only work or `bounded_write` for repository changes. Approval gates default off; enable one only when you want an extra per-task confirmation.
+6. Save the configuration.
+
+Bundled presets are starting points, not a closed list. You can delete, restore, copy, rename, or edit them, change their templates, or create entirely custom Task Types. Cursor, Grok, web review, and native agents are Providers; they should not be encoded into Task Type names.
+
+When upgrading an earlier configuration, a legacy judgment-heavy preset with the standard task identity gains an independent review Stage while preserving its customized implementation Stage. If you changed the Task Type's name, description, tags, or broader semantics, its workflow is preserved instead.
+
+### Example: translation with independent proofreading
+
+Translation is a useful custom Task Type because producing the target text and accepting its quality are separate responsibilities:
+
+1. Copy **Implementation with independent review**, rename it `translation-with-review`, and enable it.
+2. Pin the implementation Stage to a translation-capable Provider. Use `bounded_write` and limit `allowed_paths` to the target-language files. Leave approval off unless an extra confirmation is desired.
+3. In its template, require the Provider to preserve line order and count, placeholders, tags, and control codes; follow the supplied glossary and character notes; and report uncertain terms instead of silently guessing.
+4. Pin the review Stage to a separate read-only Reviewer. Require a source/target comparison for omissions, mistranslations, inconsistent names or terminology, tone drift, and damaged placeholders. The Reviewer reports findings but does not rewrite its own findings.
+5. Keep final acceptance with the primary agent: run structural validation, inspect the actual diff, and resolve every blocking review finding.
+
+For example:
+
+```text
+Use $codex-agents-workflow:codex-agents-workflow.
+Select my translation-with-review Task Type to translate localization/source.txt into localization/zh-CN.txt.
+I approve only localization/zh-CN.txt for writes. Preserve one output line per source line, all placeholders/tags/control codes, and the supplied glossary.
+After the translation Stage, run the pinned independent read-only review Stage. Do not accept the result until structural checks and every blocking finding are resolved.
+```
+
+## First real-world test
+
+Use a disposable Git repository for the first test, and enable only one Provider at a time.
+
+### 1. Probe the connection
+
+```text
+Use $codex-agents-workflow:codex-agents-workflow.
+Read metadata once; call codex_agents_workflow_connector_probe for grok-local, using the current Git repository root as the workspace.
+Do not send a task, and do not treat a successful probe as task completion.
+```
+
+### 2. Read-only task
+
+Create a `read_only` Task Type Stage and pin it to `grok-local` or `cursor-local`, then say:
+
+```text
+Use $codex-agents-workflow:codex-agents-workflow.
+Select the read-only test Task Type I configured and have it read the first heading in README.
+Wait for completion, report the real remote identity, and verify that Git status is completely unchanged.
+```
+
+Cursor should return `task_id`, `agent_id`, and `target_id`. Grok should return `task_id`, `session_id`, and `run_id`.
+
+### 3. Bounded write task
+
+Create a `bounded_write` Stage, pin it to the Provider under test, and leave both approval gates off to test normal no-extra-prompt execution. Then authorize one minimal path in the task:
+
+```text
+Use $codex-agents-workflow:codex-agents-workflow.
+I explicitly approve calling grok-local for this task, and it may modify only smoke/grok.txt.
+Select the bounded-write test Task Type I configured; allowed_paths must be exactly ["smoke/grok.txt"].
+After completion, inspect the real diff, changed_paths, outside_paths, and Git status. Do not rely only on the subagent's text result.
+```
+
+The test passes only if the specified file is the only changed path, `outside_paths` is empty, task identity remains continuous, and the primary agent completes independent verification.
+
+## Temporarily disable the control plane
+
+- Turn off **Control plane enabled** in the console: no control-plane task is parsed.
+- Turn off an individual Provider: its configuration remains, but it cannot be selected.
+- Set `SOL_CONTROL_DISABLED=1` before starting Codex: this is an environment-level kill switch that the console cannot bypass.
+- Close the terminal running the one-click console or press `Ctrl+C`: this stops only the configuration webpage and does not change saved enablement state.
+
+The configuration webpage is only a policy editor. Actual calls are made by the control-plane skill and MCP tools in a new Codex task. The main agent owns requirements, verification and acceptance. The bundled reviewer defaults to Astra / medium; each node executes its pinned Provider configuration.
