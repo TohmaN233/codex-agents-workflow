@@ -204,3 +204,23 @@ source/snapshot hashes. Configuration templates .env.example/.env.template pass
 through the same credential scanner instead of being excluded by filename; real
 credential files remain excluded. Known system paths (/usr,/opt,/etc) describe the
 runtime environment, not a dependency on the original imported directory.
+
+## Deterministic review contract v2
+
+New automatic Runs pin version 2 and the checklist output schema. The shared
+conversion contract contains fourteen stable IDs, with separate parallelism,
+main/subagent, human-intervention and model-selection checks. Review outputs only
+checks: each has pass/fail/not_applicable, evidence, proposed node/edge IDs and
+pinned source spans. Code rejects missing/duplicate/unknown rules, blank evidence,
+invalid references, unsupported not-applicable declarations and incomplete
+source-support node/edge coverage. Only conversation_inputs, human_confirmation
+(with no gate), and conditional_dependencies permit not_applicable with explanation.
+Code computes approved from the complete set; the model cannot supply that flag.
+This establishes evidence integrity and coverage, not semantic truth.
+
+A malformed review/schema retries only the reviewer, preserving the generated
+proposal; semantic failures rewind generation. Both use the existing pinned bounded
+attempt limits and retain closed sessions, approval gates and journal evidence.
+The user acceptance path and result-application path both validate checklist evidence.
+Unversioned historical generation jobs keep their original immutable contract.
+Current host limitations must not be baked into generated artifact instructions.

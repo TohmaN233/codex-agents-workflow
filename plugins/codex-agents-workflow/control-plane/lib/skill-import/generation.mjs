@@ -1,3 +1,4 @@
+import { evaluateReview } from './review-checklist.mjs';
 import { repairGeneration } from './generation-repair.mjs';
 import { generationProgress } from './generation-progress.mjs';
 import { compileExpansion } from './semantic-expander.mjs';
@@ -16,7 +17,7 @@ export async function advanceGeneration(service, runtime, executor, args, {store
   if (state.status==='blocked') {const next=await runtime.next(args.run_id);if(next.approvals.length) return {phase:'approval',approvals:next.approvals};}
   if (state.status !== 'running') {
     const failed = Object.values(state.nodes).find(n=>n.status==='failed');
-    if (state.status==='failed' && pins.generation?.settings && ['STRICT_OUTPUT_JSON','DATA_INVALID'].includes(failed?.error?.code)) return repairGeneration(runtime,args,record,{code:failed.error.code,message:'Return valid JSON matching the exact schema.'});
+    if (state.status==='failed' && pins.generation?.settings && ['STRICT_OUTPUT_JSON','DATA_INVALID'].includes(failed?.error?.code)) return repairGeneration(runtime,args,record,{code:failed.error.code,message:'Return valid JSON matching the exact schema.'},{reviewOnly:pins.root.provenance.review_contract_version===2 && failed===state.nodes.final});
     const error=failed?.error ?? state.error;
     return {phase:'attention',status:state.status,error,models:pins.generation?.settings,diagnostics:failed?.attempts.at(-1)?.executor_events?.filter(e=>['model_catalog','session_state'].includes(e.kind))};
   }
@@ -46,12 +47,14 @@ export async function advanceGeneration(service, runtime, executor, args, {store
     }
     if (nodeId==='final' && attempt.result_proposal) {
       const result = await service.strictManager.collect(runtime,args.run_id,{...lease,accepted:false});
-      const review=result.completion.structured_output;
-      if(pins.generation?.settings && (review.approved!==true || review.findings.length)) return repairGeneration(runtime,args,record,{code:'GENERATION_REVIEW_FINDINGS',findings:review.findings});
       const pack = await store.snapshot(source.workflow_id,source.expected_revision);
       const resources = await store.resources(source.workflow_id,pack.revision_hash);
+      let review;
+      try {review=pins.root.provenance.review_contract_version===2?evaluateReview(result.completion.structured_output,state.nodes.expand.output,resources):result.completion.structured_output;}
+      catch(error){if(error.code!=='GENERATION_CHECKLIST_INVALID')throw error;return repairGeneration(runtime,args,record,{code:error.code,message:error.message},{reviewOnly:true});}
+      if(pins.generation?.settings && (review.approved!==true || review.findings.length)) return repairGeneration(runtime,args,record,{code:'GENERATION_REVIEW_FINDINGS',findings:review.findings});
       const compiled = compileExpansion(pack,resources,state.nodes.expand.output,{...context,routing_rules:pins.root.provenance.routing_rules,routing_catalog:pins.root.provenance.routing_catalog});
-      return {phase:'review_required',source,proposal:state.nodes.expand.output,workflow:compiled.workflow,validation:compiled.validation,review:result.completion};
+      return {phase:'review_required',source,proposal:state.nodes.expand.output,workflow:compiled.workflow,validation:compiled.validation,review:{...result.completion,structured_output:review}};
     }
     const live = await service.strictManager.status(runtime,args.run_id,lease);
     return {phase:['auth_required','auth_pending'].includes(live.status)?'authentication_required':nodeId==='expand'?'generating':'reviewing',live,progress:generationProgress(record,nodeId)};
@@ -71,7 +74,14 @@ export async function acceptGeneration(service, runtime, args) {
   if (observation.phase==='review_required') {
     const {state} = await runtime.runs.read(args.run_id);
     const attempt = state.nodes.final.attempts.find(a=>a.id===state.nodes.final.active_attempt_id);
-    if(record.pins.generation) {const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);requireValue(completion.structured_output.approved===true && completion.structured_output.findings.length===0,'GENERATION_REVIEW_BLOCKED','Review must pass before acceptance');}
+    if(record.pins.generation) {
+      const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);
+      const {store}=await service.open();const resources=await store.resources(provenance.source_workflow_id,provenance.source_revision);
+      let review;
+      try {review=provenance.review_contract_version===2?evaluateReview(completion.structured_output,record.state.nodes.expand.output,resources):completion.structured_output;}
+      catch(error){requireValue(false,'GENERATION_REVIEW_BLOCKED',error.message);}
+      requireValue(review.approved===true && review.findings.length===0,'GENERATION_REVIEW_BLOCKED','Every required review check must pass before acceptance');
+    }
     await service.strictManager.collect(runtime,args.run_id,{...args,node_id:'final',attempt_id:attempt.id,lease_token:leaseToken(args.control_token,args.run_id,'final',attempt.id,attempt.lease_generation ?? 0),accepted:true});
   }
   return service.call('apply_expansion_result',{...args,...observation.source,confirm_inferences:true},{human:true});

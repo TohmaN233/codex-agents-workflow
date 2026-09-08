@@ -1,3 +1,4 @@
+import { REVIEW_IDS } from '../lib/skill-import/review-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
@@ -16,6 +17,10 @@ import { digest } from '../lib/workflow-revisions.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 
+function checklist(proposal, failure='') {
+  return {checks:REVIEW_IDS.map(id=>({id,status:failure && id==='hard_rules'?'fail':'pass',evidence:failure && id==='hard_rules'?failure:'Verified source and proposed graph for '+id,node_ids:proposal.nodes.map(n=>n.id),edge_ids:proposal.edges.map(e=>e.id),source_spans:[proposal.nodes[0].source_span]}))};
+}
+
 test('explicit blocked model results fail durably rather than advancing success edges',async t=>{
   for(const schema of [{},{type:'object',required:['ok'],properties:{ok:{type:'boolean'}}}]) {
     const f=await fixture(t,{schema,turn:async()=>({output:JSON.stringify({$workflow_blocked:'Required footage and briefing are missing.'}),thread_id:'blocked',turn_id:'blocked',audit:{}})});
@@ -28,7 +33,7 @@ test('explicit blocked model results fail durably rather than advancing success 
 
 test('generation accepts a non-reviewer registered native model with read-only review and shared prompt contract',async t=>{
   let proposal;
-  const f=await fixture(t,{turn:async(settings)=>{const read=await settings.toolBroker.call('read_workflow_resource_range',{path:'source/SKILL.md',start_line:5,end_line:5},'range-read');assert.equal(JSON.parse(read.contentItems[0].text).text,'5: Review result.');return {output:JSON.stringify(settings.model==='gpt-5.6-luna'?{approved:true,findings:[]}:proposal),thread_id:'selectable-review',turn_id:'turn',audit:{}};}});
+  const f=await fixture(t,{turn:async(settings)=>{const read=await settings.toolBroker.call('read_workflow_resource_range',{path:'source/SKILL.md',start_line:5,end_line:5},'range-read');assert.equal(JSON.parse(read.contentItems[0].text).text,'5: Review result.');return {output:JSON.stringify(settings.model==='gpt-5.6-luna'?checklist(proposal):proposal),thread_id:'selectable-review',turn_id:'turn',audit:{}};}});
   const source=join(f.root,'selectable-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: selectable\ndescription: test\n---\nReview result.');
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'selectable-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
@@ -47,7 +52,7 @@ test('generation accepts a non-reviewer registered native model with read-only r
 
 test('one-click generation prepares workspace and advances only to explicit human acceptance', async t => {
   let proposal;
-  const f = await fixture(t,{turn:async(settings)=>({output:JSON.stringify(settings.model==='gpt-5.6-sol'?{approved:true,findings:[]}:proposal),thread_id:'generation-test',turn_id:'turn',audit:{}})});
+  const f = await fixture(t,{turn:async(settings)=>({output:JSON.stringify(settings.model==='gpt-5.6-sol'?checklist(proposal):proposal),thread_id:'generation-test',turn_id:'turn',audit:{}})});
   const source = join(f.root,'generate-source'); await mkdir(source);
   await writeFile(join(source,'SKILL.md'),'---\nname: generate\ndescription: Review\n---\nReview a result.');
   const {store} = await f.service.open();
@@ -86,7 +91,7 @@ test('one-click generation prepares workspace and advances only to explicit huma
 test('an invented automatic Provider is repaired before review without an endless error state',async t=>{
   let proposal;let generated=0;
   const f=await fixture(t,{turn:async settings=>{
-    const value=settings.model==='gpt-5.6-sol'?{approved:true,findings:[]}:structuredClone(proposal);
+    const value=settings.model==='gpt-5.6-sol'?checklist(proposal):structuredClone(proposal);
     if(value.nodes && generated++===0)value.nodes[0].provider_choice='invented-provider';
     return {output:JSON.stringify(value),thread_id:'routing-repair',turn_id:'turn',audit:{}};
   }});
@@ -100,6 +105,42 @@ test('an invented automatic Provider is repaired before review without an endles
     await Promise.all([...f.manager.entries.values()].map(e=>e.job));
   }
   assert.equal(generated,2);await f.service.call('cancel',control);
+});
+test('an invalid review checklist retries only the reviewer and preserves the generated graph',async t=>{
+  let proposal;let generated=0;let reviews=0;
+  const f=await fixture(t,{turn:async settings=>{
+    const value=settings.model==='gpt-5.6-sol'?checklist(proposal):structuredClone(proposal);
+    if(value.nodes)generated++;else if(reviews++===0)value.checks[1].id=value.checks[0].id;
+    return {output:JSON.stringify(value),thread_id:'routing-repair',turn_id:'turn',audit:{}};
+  }});
+  const source=join(f.root,'routing-repair');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: routing-repair\ndescription: Review\n---\nReview a result.');
+  const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'routing-repair'});
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+  proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  const run=await f.service.call('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  for(const phase of ['generating','reviewing','repairing','reviewing','review_required']){
+    assert.equal((await f.service.call('advance_generation',control,{human:true})).phase,phase);
+    await Promise.all([...f.manager.entries.values()].map(e=>e.job));
+  }
+  assert.equal(generated,1);assert.equal(reviews,2);const state=await f.service.call('get',control);assert.equal(state.nodes.expand.attempts.length,1);assert.equal(state.nodes.final.attempts.length,2);await f.service.call('cancel',control);
+});
+test('a schema-invalid review retries only the reviewer after the failed session closes',async t=>{
+  let proposal;let generated=0;let reviews=0;
+  const f=await fixture(t,{turn:async settings=>{
+    const value=settings.model==='gpt-5.6-sol'?checklist(proposal):structuredClone(proposal);
+    if(value.nodes)generated++;else if(reviews++===0)value.checks.pop();
+    return {output:JSON.stringify(value),thread_id:'routing-repair',turn_id:'turn',audit:{}};
+  }});
+  const source=join(f.root,'routing-repair');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: routing-repair\ndescription: Review\n---\nReview a result.');
+  const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'routing-repair'});
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+  proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  const run=await f.service.call('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  for(const phase of ['generating','reviewing','repairing','reviewing','review_required']){
+    assert.equal((await f.service.call('advance_generation',control,{human:true})).phase,phase);
+    await Promise.all([...f.manager.entries.values()].map(e=>e.job));
+  }
+  assert.equal(generated,1);assert.equal(reviews,2);const state=await f.service.call('get',control);assert.equal(state.nodes.expand.attempts.length,1);assert.equal(state.nodes.final.attempts.length,2);await f.service.call('cancel',control);
 });
 test('one-click generation exposes managed login without silently starting a model', async t => {
   const f = await fixture(t,{authenticated:false});
@@ -131,7 +172,7 @@ test('one-click generation exposes managed login without silently starting a mod
 });
 test('generation repairs review findings with pinned providers and preserves rejected attempts', async t => {
   let proposal, reviews=0; const prompts=[];
-  const f=await fixture(t,{turn:async(settings,session)=>{prompts.push(session.prompt);return {output:JSON.stringify(settings.model==='gpt-5.6-sol'?{approved:++reviews>1,findings:reviews>1?[]:['Clarify the review deliverable.']}:proposal),thread_id:'repair',turn_id:'round',audit:{}};}});
+  const f=await fixture(t,{turn:async(settings,session)=>{prompts.push(session.prompt);return {output:JSON.stringify(settings.model==='gpt-5.6-sol'?checklist(proposal,++reviews>1?'':'Clarify the review deliverable.'):proposal),thread_id:'repair',turn_id:'round',audit:{}};}});
   const config=await f.service.config();config.providers.find(p=>p.id==='native-generation-reviewer').requires_user_approval=true;await saveConfig(config,{configPath:f.configPath});
   const source=join(f.root,'repair-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: repair\ndescription: Review\n---\nReview result.');
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'repair-source'});

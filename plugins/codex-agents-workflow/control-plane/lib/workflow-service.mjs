@@ -1,3 +1,4 @@
+import { evaluateReview } from './skill-import/review-checklist.mjs';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
 import { readFile } from 'node:fs/promises';
 import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
@@ -197,6 +198,13 @@ export class WorkflowService {
         const { pins } = await runtime.runs.read(args.run_id); const provenance = pins.root.provenance;
         requireValue(provenance?.kind === 'skill_expansion_job' && provenance.source_workflow_id === args.workflow_id && provenance.source_revision === args.expected_revision,
           'EXPANSION_RESULT_IDENTITY', 'Expansion result belongs to a different source Workflow revision');
+        if(provenance.review_contract_version===2){
+          const final=state.nodes.final;const attempt=final.attempts.find(a=>a.id===final.active_attempt_id);
+          requireValue(attempt?.result_proposal,'GENERATION_REVIEW_BLOCKED','A persisted checklist review is required');
+          const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);
+          const review=evaluateReview(completion.structured_output,state.nodes.expand.output,await store.resources(args.workflow_id,args.expected_revision));
+          requireValue(review.approved,'GENERATION_REVIEW_BLOCKED','Checklist findings remain unresolved');
+        }
         return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null });
       }
       case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: args.routing_rules } });

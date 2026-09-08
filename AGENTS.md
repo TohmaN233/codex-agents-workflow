@@ -223,3 +223,11 @@ not malformed definitions. Environment availability checks occur only at Run sta
 Missing, redacted, unsafe and source-linked resources remain conversion blockers.
 .env.example/.env.template are data templates scanned for literal credentials; real
 credential files remain excluded. System /usr,/opt,/etc paths are runtime references.
+
+New automatic generation Runs pin review_contract_version=2. Generation and review
+share fourteen stable rule IDs. Review reports checks/evidence only; code computes
+the verdict and validates source ranges and graph-ID coverage. Checklist-only
+failures retry only the closed reviewer session within the pinned budget, preserving
+the accepted generator output. Semantic findings repair the graph. Both human
+acceptance and result application revalidate the checklist. Historical unversioned
+Runs retain their original approval contract; never reinterpret existing pins.

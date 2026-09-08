@@ -8,6 +8,7 @@ const files = [
   'config.test.mjs',
   'local-client-discovery.test.mjs',
   'generation-progress.test.mjs',
+  'review-checklist.test.mjs',
   'connector-integration.test.mjs',
   'connectors.test.mjs',
   'connector-process.test.mjs',
