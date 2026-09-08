@@ -161,3 +161,15 @@ remain unsupported by the current automatic conversion executor, visibly rather 
 being silently substituted. Prompt preview is non-dispatching and shows the shared
 request, stage instructions and schemas; runtime additionally supplies exact upstream
 results and repair feedback.
+
+
+A generated node must reserve success for its actual required deliverable. Strict
+execution recognizes the reserved exact response `{"$workflow_blocked":"reason"}`
+(1–2000 characters) before success-schema validation. It closes the session and
+fails the node with `WORKFLOW_NODE_BLOCKED`, retaining the reason in the Run error;
+it never publishes a success proposal or advances success edges. Invalid marker
+shapes fail with `STRICT_BLOCKER_SCHEMA`. Ordinary unstructured text remains valid.
+This supplies an executable failure mechanism rather than relying on a prompt to
+call a nonexistent fail tool. Planning itself does not require media execution.
+Briefing and continuation decisions are explicit future Run inputs; approval gates
+remain approval-only, and missing answers produce a blocked result for a later Run.

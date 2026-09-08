@@ -16,6 +16,16 @@ import { digest } from '../lib/workflow-revisions.mjs';
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 
+test('explicit blocked model results fail durably rather than advancing success edges',async t=>{
+  for(const schema of [{},{type:'object',required:['ok'],properties:{ok:{type:'boolean'}}}]) {
+    const f=await fixture(t,{schema,turn:async()=>({output:JSON.stringify({$workflow_blocked:'Required footage and briefing are missing.'}),thread_id:'blocked',turn_id:'blocked',audit:{}})});
+    await f.service.call('dispatch',f.args);await f.entry(f.args).job;
+    const state=await f.service.call('get',f.args);
+    assert.equal(state.status,'failed');assert.equal(state.nodes.work.status,'failed');assert.equal(state.nodes.work.error.code,'WORKFLOW_NODE_BLOCKED');assert.equal(state.nodes.work.error.message,'Required footage and briefing are missing.');
+    assert.notEqual(state.nodes.final.status,'ready');assert.equal(state.nodes.work.output,null);assert.equal(state.nodes.work.attempts[0].result_proposal,undefined);assert.equal(f.sessions[0].closed,true);
+  }
+});
+
 test('generation accepts a non-reviewer registered native model with read-only review and shared prompt contract',async t=>{
   let proposal;
   const f=await fixture(t,{turn:async(settings)=>{const read=await settings.toolBroker.call('read_workflow_resource_range',{path:'source/SKILL.md',start_line:5,end_line:5},'range-read');assert.equal(JSON.parse(read.contentItems[0].text).text,'5: Review result.');return {output:JSON.stringify(settings.model==='gpt-5.6-luna'?{approved:true,findings:[]}:proposal),thread_id:'selectable-review',turn_id:'turn',audit:{}};}});

@@ -202,3 +202,11 @@ Generation planner defaults may be independent of planning-node routing via
 generation.planner_provider_id; absent means the prior planning route default.
 Any enabled native read-capable Provider can perform generation review regardless
 of its original role/model name. The finalizer remains read-only and human-accepted.
+
+Strict model output reserves the exact top-level {"$workflow_blocked":"reason"}
+response for missing prerequisites, capabilities or required answers. Validate the
+bounded reason before schema checking, close the session, fail the node durably
+with WORKFLOW_NODE_BLOCKED and never publish a success proposal. This applies to
+structured and unstructured results; it is not an automatic repair trigger.
+Conversion prompts require actual successful producers before downstream gates,
+and move interactive briefing/continuation answers into later explicit Run tasks.
