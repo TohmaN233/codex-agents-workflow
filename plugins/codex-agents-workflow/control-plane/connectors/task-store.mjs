@@ -107,12 +107,13 @@ export class ConnectorTaskStore {
     return task ? clone(task) : null;
   }
 
-  async update(taskId, patch) {
+  async update(taskId, patch, { guard } = {}) {
     await this.initialize();
     return this.#enqueue(async () => this.#withLock(async () => {
       const tasks = (await this.#readCommitted()).tasks;
       const current = tasks.get(String(taskId));
       if (!current) throw new Error(`unknown connector task: ${taskId}`);
+      if (guard && !guard(clone(current))) return clone(current);
       const next = { ...current, ...clone(patch), updated_at: new Date().toISOString() };
       if (TERMINAL_STATES.has(next.state) && !next.finished_at) next.finished_at = next.updated_at;
       tasks.set(String(taskId), next);
@@ -218,10 +219,13 @@ export class ConnectorTaskStore {
           if (Date.now() - owner.mtimeMs > STALE_LOCK_MS) {
             let pid = null;
             try { pid = Number.parseInt((await readFile(this.lockPath, 'utf8')).split(/\s+/u)[0], 10); } catch {}
-            // Only reclaim an old lock when its recorded owner is gone. An
-            // active operation may legitimately exceed the stale age while
-            // blocked on a slow filesystem; stealing it would reintroduce C1.
-            if (!ownerAlive(pid)) await unlink(this.lockPath);
+            // Never unlink from a read-then-delete path: two reclaimers could
+            // delete a newly acquired lock and admit simultaneous writers.
+            if (!ownerAlive(pid)) {
+              throw Object.assign(new Error(`Orphaned connector store lock: ${this.lockPath}. Stop all control-plane processes, inspect persisted tasks, then remove this lock before restarting.`), {
+                code: 'CONNECTOR_STORE_ORPHANED_LOCK',
+              });
+            }
           }
         } catch (statError) {
           if (statError?.code !== 'ENOENT') throw statError;

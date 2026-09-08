@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { fork } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import { tmpdir } from './physical-tempdir.mjs';
@@ -41,3 +41,23 @@ for (const pair of [['grok_acp', 'grok_acp'], ['cursor_cdp', 'cursor_cdp'], ['gr
     assert.equal(stored.tasks[0].task_id, replies.find(r => r.ok).task.task_id);
   });
 }
+
+
+test('independent contenders preserve an orphan lock instead of stealing a replacement', { timeout: 10000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'workflow-orphan-lock-'));
+  const statePath = join(root, 'tasks.json');
+  const owner = spawn(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
+  await once(owner, 'exit');
+  const lock = `${owner.pid}\n${Date.now() - 120000}\n`;
+  await writeFile(statePath + '.lock', lock);
+  const old = new Date(Date.now() - 120000);
+  await utimes(statePath + '.lock', old, old);
+  const children = [0, 1].map(() => fork(new URL('./fixtures/store-process.mjs', import.meta.url), [statePath], { silent: true, windowsHide: true }));
+  t.after(() => { for (const child of children) if (child.exitCode === null) child.kill(); });
+  const exits = children.map(child => once(child, 'exit'));
+  const replies = await Promise.all(children.map(child => once(child, 'message').then(([m]) => m)));
+  assert(replies.every(reply => reply.code === 'CONNECTOR_STORE_ORPHANED_LOCK'), JSON.stringify(replies));
+  for (const [code] of await Promise.all(exits)) assert.equal(code, 0);
+  assert.equal(await readFile(statePath + '.lock', 'utf8'), lock);
+  await assert.rejects(readFile(statePath), { code: 'ENOENT' });
+});

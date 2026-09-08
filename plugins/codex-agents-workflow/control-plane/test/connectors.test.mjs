@@ -373,3 +373,16 @@ for (const request of ['ASK_PERMISSION', 'ASK_INPUT']) {
     await assert.rejects(fx.registry.store.initialize(), /persistent disk failure/);
   });
 }
+
+
+test('conditional task update observes the committed state inside the mutation lock', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'workflow-conditional-update-'));
+  const store = new ConnectorTaskStore({ statePath: join(root, 'tasks.json') });
+  await store.create({ task_id: 'conditional', state: 'running' });
+  const completion = store.update('conditional', { state: 'completed' });
+  const staleTimeout = store.update('conditional', { state: 'needs_attention' }, {
+    guard: current => current.state === 'running',
+  });
+  await Promise.all([completion, staleTimeout]);
+  assert.equal((await store.get('conditional')).state, 'completed');
+});

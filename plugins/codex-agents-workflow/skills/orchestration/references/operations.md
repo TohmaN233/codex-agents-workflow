@@ -203,7 +203,19 @@ On Linux, also run the full compatibility wrapper suite:
 sh plugins/codex-agents-workflow/scripts/verify.sh
 ~~~
 
-The verifier covers the v0.7.11 manifest, exact three-role TOMLs, selective-routing
+The verifier covers the v0.8.0 manifest, exact three-role TOMLs, selective-routing
 contracts, concise README journey, absence of retired workflow references, installer
 safety fixtures, Luna runtime evidence, JSON/TOML validity, Node syntax, and Linux
 wrapper compatibility.
+
+
+## Connector store recovery
+
+`CONNECTOR_STORE_ORPHANED_LOCK` means an old lock's recorded process is gone.
+Automatic unlink-based reclamation is unsafe when multiple processes recover
+concurrently, so the store preserves the lock and refuses new operations.
+Stop all control-plane processes, inspect `connector-tasks.json` for unfinished
+remote work, remove only the lock path named by the diagnostic, then restart and
+reconcile those exact remote sessions before submitting overlapping work.
+A persistence failure likewise blocks dispatch; owned Grok resources are closed
+and a redacted lifecycle error is written to stderr even when durable updates fail.

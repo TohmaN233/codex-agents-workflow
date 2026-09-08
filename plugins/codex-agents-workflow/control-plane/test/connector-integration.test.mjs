@@ -662,3 +662,29 @@ test('Cursor stable reply outlives its remote deadline during gated terminal per
   assert.equal(done.terminal_evidence.kind, 'stable_cursor_reply');
   assert.equal(done.scope.unchanged, true);
 });
+
+
+test('Cursor timeout already waiting on storage cannot overwrite a later stable completion', { timeout: 15000 }, async t => {
+  const fx = await fixture(t);
+  const started = await startScenario(fx, 'cursor-readonly-advice', 'CURSOR_NORMAL');
+  const active = fx.registry.cursor.active.get(started.task_id);
+  const get = fx.registry.store.get.bind(fx.registry.store);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const reached = new Promise(resolve => { entered = resolve; });
+  let gateNext = true;
+  fx.registry.store.get = async id => {
+    const snapshot = await get(id);
+    if (gateNext) { gateNext = false; entered(); await gate; }
+    return snapshot;
+  };
+  t.after(() => release());
+  // Invoke the registered deadline callback while the remote reply is pending.
+  const timeout = active.timeout._onTimeout();
+  await reached;
+  const done = await fx.registry.status(started.task_id, 5000);
+  assert.equal(done.state, 'completed');
+  release();
+  await timeout;
+  assert.equal((await fx.registry.status(started.task_id)).state, 'completed');
+});

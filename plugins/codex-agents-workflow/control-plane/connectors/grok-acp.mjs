@@ -829,7 +829,7 @@ export class GrokAcpConnector {
         'The Grok task exceeded its deadline without a confirmed terminal state.', {
           actionRequired: 'Inspect or cancel the exact session/run; do not resubmit automatically.',
         })),
-    });
+    }, { guard: current => !active.terminalObservedAt && !RESULT_STATES.has(current.state) });
     this.#signal(active.taskId);
   }
 

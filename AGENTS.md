@@ -125,3 +125,10 @@ The stdio drain process test uses an OS SIGTERM on POSIX. On Windows it injects
 SIGTERM into the actual child listener over test-only IPC because child.kill on
 Windows forcibly terminates Node without dispatching a JavaScript signal handler.
 Do not describe that Windows test as an OS graceful-termination qualification.
+
+Connector deadlines must recheck terminal observation after asynchronous reads and
+inside the durable mutation lock. Poisoned Grok persistence must still close owned
+resources and emit a redacted lifecycle diagnostic. Orphaned connector store locks
+fail closed with CONNECTOR_STORE_ORPHANED_LOCK; never race automatic unlink-based
+reclamation. Recovery requires stopping all control-plane processes, inspecting
+persisted tasks, removing the reported orphan lock, and restarting/reconciling.

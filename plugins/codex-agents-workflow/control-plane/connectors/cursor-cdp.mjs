@@ -903,14 +903,14 @@ export class CursorCdpConnector {
   async #timeout(active) {
     if (active.terminalObservedAt) return;
     const current = await this.store.get(active.taskId);
-    if (!current || TERMINAL.has(current.state)) return;
+    if (!current || TERMINAL.has(current.state) || active.terminalObservedAt) return;
     await this.store.update(active.taskId, {
       state: 'needs_attention',
       error: publicConnectorError(connectorError('TIMEOUT_UNCONFIRMED',
         'The Cursor task exceeded its deadline without a confirmed terminal state.', {
           actionRequired: 'Inspect, reconcile, or cancel the exact Agent; do not resubmit automatically.',
         })),
-    });
+    }, { guard: current => !active.terminalObservedAt && !TERMINAL.has(current.state) });
     this.#signal(active.taskId);
   }
 
