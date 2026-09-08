@@ -688,3 +688,23 @@ test('Cursor timeout already waiting on storage cannot overwrite a later stable 
   await timeout;
   assert.equal((await fx.registry.status(started.task_id)).state, 'completed');
 });
+
+
+test('Cursor poisoned terminal persistence closes its CDP resources without an unhandled rejection', { timeout: 10000 }, async t => {
+  const fx = await fixture(t);
+  const update = fx.registry.store.update.bind(fx.registry.store);
+  let entered;
+  const reached = new Promise(resolve => { entered = resolve; });
+  fx.registry.store.update = async (id, fields, options) => {
+    if (fields.state === 'completed') {
+      const failure = new Error('synthetic Cursor durable failure');
+      fx.registry.store.persistenceError = failure; entered(); throw failure;
+    }
+    return update(id, fields, options);
+  };
+  await startScenario(fx, 'cursor-readonly-advice', 'CURSOR_NORMAL');
+  await reached;
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(fx.registry.cursor.active.size, 0);
+  await assert.rejects(fx.registry.store.initialize(), /persistence failed/);
+});

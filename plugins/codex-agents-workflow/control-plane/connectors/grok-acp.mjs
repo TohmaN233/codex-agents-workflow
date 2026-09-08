@@ -706,6 +706,7 @@ export class GrokAcpConnector {
   }
 
   async #complete(active, result) {
+    if (active.intentionalCleanup || this.active.get(active.taskId) !== active) return;
     // The remote deadline ends when its result arrives. Scope verification and
     // durable publication still gate acceptance, but are not a remote timeout.
     active.terminalObservedAt = new Date().toISOString();
@@ -744,13 +745,14 @@ export class GrokAcpConnector {
             },
           }))
         : null,
-    });
+    }, { guard: current => !active.intentionalCleanup && this.active.get(active.taskId) === active && !RESULT_STATES.has(current.state) });
     this.#signal(active.taskId);
     await this.#cleanup(active);
   }
 
   async #fail(active, error) {
     try {
+      if (active.intentionalCleanup || this.active.get(active.taskId) !== active) return;
       const current = await this.store.get(active.taskId);
       if (!current || RESULT_STATES.has(current.state)) return;
       const scope = await verifyWorkspaceScope(active.workspace, active.baseline, {
@@ -759,7 +761,8 @@ export class GrokAcpConnector {
         preventedAttempts: active.preventedAttempts,
         runtimeAttempts: active.scopeMonitor?.violations || [],
       }).catch(() => null);
-      const state = scope && !scope.compliant ? 'scope_violation' : 'failed';
+      const unconfirmed = ['ACP_TRANSPORT_CLOSED', 'ACP_REQUEST_TIMEOUT'].includes(error?.code);
+      const state = scope && !scope.compliant ? 'scope_violation' : unconfirmed ? 'needs_attention' : 'failed';
       await this.store.update(active.taskId, {
         state,
         scope,
@@ -772,10 +775,11 @@ export class GrokAcpConnector {
                 prevented_attempts: scope.prevented_attempts,
               },
             })
-          : connectorError('ACP_PROMPT_FAILED', redactDiagnostic(error instanceof Error ? error.message : error), {
+          : connectorError(unconfirmed ? 'ACP_TERMINAL_UNCONFIRMED' : 'ACP_PROMPT_FAILED', redactDiagnostic(error instanceof Error ? error.message : error), {
+            ...(unconfirmed ? { actionRequired: 'Reconcile the exact remote session before abandoning or starting overlapping work.' } : {}),
             details: { stderr_tail: active.stderrTail.filter(Boolean).slice(-5) },
           })),
-      });
+      }, { guard: current => !active.intentionalCleanup && this.active.get(active.taskId) === active && !RESULT_STATES.has(current.state) });
       this.#signal(active.taskId);
     } finally {
       await this.#cleanup(active);
@@ -970,7 +974,7 @@ export class GrokAcpConnector {
   }
 
   async #cleanup(active) {
-    if (!this.active.has(active.taskId)) return;
+    if (this.active.get(active.taskId) !== active) return;
     active.intentionalCleanup = true;
     clearTimeout(active.timeout);
     active.scopeMonitor?.close();

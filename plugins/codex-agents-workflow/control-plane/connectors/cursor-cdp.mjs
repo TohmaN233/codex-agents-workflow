@@ -269,7 +269,7 @@ export class CursorCdpConnector {
       scopeMonitor = startWorkspaceScopeMonitor(fullWorkspace, {
         readOnly,
         allowedPaths: boundedPaths,
-        onViolation: (attempt) => this.#runtimeScopeViolation(active, attempt),
+        onViolation: (attempt) => this.#background(active, () => this.#runtimeScopeViolation(active, attempt)),
       });
       transport = await this.#attach(provider, fullWorkspace, { launch: true });
       active = {
@@ -427,10 +427,10 @@ export class CursorCdpConnector {
         },
       });
       this.#signal(task.task_id);
-      active.timeout = setTimeout(() => this.#timeout(active), provider.config.task_timeout_ms);
+      active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), provider.config.task_timeout_ms);
       active.monitorReady = true;
       if (scopeMonitor.violations.length) await this.#runtimeScopeViolation(active, scopeMonitor.violations[0]);
-      void this.#monitor(active, baselineMessageCount);
+      void this.#background(active, () => this.#monitor(active, baselineMessageCount));
       return this.publicTask(await this.store.get(task.task_id));
     } catch (error) {
       const safeError = typeof error?.code === 'string'
@@ -459,8 +459,8 @@ export class CursorCdpConnector {
             error: publicConnectorError(uncertain),
           });
           this.#signal(task.task_id);
-          active.timeout = setTimeout(() => this.#timeout(active), provider.config.task_timeout_ms);
-          void this.#monitor(active, baselineMessageCount);
+          active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), provider.config.task_timeout_ms);
+          void this.#background(active, () => this.#monitor(active, baselineMessageCount));
           return this.publicTask(await this.store.get(task.task_id));
         } catch {
           // The durable task already exists in starting state; restart recovery will
@@ -725,6 +725,15 @@ export class CursorCdpConnector {
       await sleep(150);
     }
     throw lastError || connectorError('CURSOR_AGENT_ADAPTER_UNAVAILABLE', 'Cursor Agent history did not become available');
+  }
+
+  async #background(active, operation) {
+    try { await operation(); }
+    catch (error) {
+      this.store.persistenceError ||= error;
+      process.stderr.write(`codex-agents-workflow Cursor lifecycle failed (${active?.taskId || 'startup'}): ${redact(error?.message || error)}\n`);
+      if (active) { this.#signal(active.taskId); await this.#cleanup(active); }
+    }
   }
 
   async #monitor(active, baselineMessageCount) {
@@ -1016,7 +1025,7 @@ export class CursorCdpConnector {
     const scopeMonitor = startWorkspaceScopeMonitor(task.workspace, {
       readOnly: task.read_only === true,
       allowedPaths: task.allowed_paths || [],
-      onViolation: (attempt) => this.#runtimeScopeViolation(recoveredActive, attempt),
+      onViolation: (attempt) => this.#background(recoveredActive, () => this.#runtimeScopeViolation(recoveredActive, attempt)),
     });
     const active = {
       taskId: task.task_id,
@@ -1088,7 +1097,7 @@ export class CursorCdpConnector {
       });
       active.monitorReady = true;
       if (scopeMonitor.violations.length) await this.#runtimeScopeViolation(active, scopeMonitor.violations[0]);
-      void this.#monitor(active, 0);
+      void this.#background(active, () => this.#monitor(active, 0));
     } else {
       await this.store.update(task.task_id, {
         state: 'needs_attention',
@@ -1119,7 +1128,7 @@ export class CursorCdpConnector {
   }
 
   async #cleanup(active) {
-    if (!this.active.has(active.taskId)) return;
+    if (this.active.get(active.taskId) !== active) return;
     active.intentionalCleanup = true;
     clearTimeout(active.timeout);
     active.scopeMonitor?.close();

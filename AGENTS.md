@@ -132,3 +132,11 @@ resources and emit a redacted lifecycle diagnostic. Orphaned connector store loc
 fail closed with CONNECTOR_STORE_ORPHANED_LOCK; never race automatic unlink-based
 reclamation. Recovery requires stopping all control-plane processes, inspecting
 persisted tasks, removing the reported orphan lock, and restarting/reconciling.
+
+Grok intentional disconnect/reconcile cleanup invalidates old callbacks; local ACP
+stream loss or request timeout does not certify remote terminal failure. Preserve
+workspace reservation until exact reconciliation or explicit abandonment. Both
+connector background lifecycles observe failures and close their owned resources
+without depending on persistence recovery. Stdio shutdown awaits response write
+callbacks (including rejection responses) before exiting, and write failures are
+fatal rather than successful delivery. Exercise large responses under backpressure.

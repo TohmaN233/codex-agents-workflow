@@ -170,10 +170,11 @@ test('real stdio server keeps ping responsive and drains invocation before signa
   let release, entered;
   const gate = new Promise(resolve => { release = resolve; });
   const reached = new Promise(resolve => { entered = resolve; });
+  const resultText = 'drained result:' + 'x'.repeat(1536 * 1024);
   const http = createServer(async (req, res) => {
     req.resume(); entered(); await gate;
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ choices: [{message:{content:'drained result'}}] }));
+    res.end(JSON.stringify({ choices: [{message:{content:resultText}}] }));
   });
   http.listen(0, '127.0.0.1'); await once(http, 'listening');
   t.after(() => { release(); http.closeAllConnections(); http.close(); });
@@ -198,10 +199,14 @@ test('real stdio server keeps ping responsive and drains invocation before signa
   await new Promise(resolve => setTimeout(resolve, 150));
   assert.equal(child.exitCode, null, stderr);
   assert.equal(child.signalCode, null, stderr);
+  child.stdout.pause();
   release();
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(child.exitCode, null, 'server must wait for stdout backpressure to drain');
+  child.stdout.resume();
   const response = await invocation;
   assert.equal(response.result.isError, undefined, JSON.stringify(response));
-  assert.match(response.result.content[0].text, /drained result/);
+  assert.equal(JSON.parse(response.result.content[0].text).response.text, resultText);
   const [code, signal] = await exit; assert.equal(code, 0, stderr); assert.equal(signal, null);
   assert.match(await readFile(join(root, 'control-plane-audit.jsonl'), 'utf8'), /"outcome":"ok"/);
 });

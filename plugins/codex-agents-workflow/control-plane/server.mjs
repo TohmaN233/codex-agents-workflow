@@ -565,7 +565,7 @@ export function createStdioRequestScheduler({
     active[lane] += 1;
     const task = Promise.resolve()
       .then(() => handle(request))
-      .then((response) => { if (response) write(response); })
+      .then((response) => response ? write(response) : undefined)
       .catch((error) => {
         onUnexpectedError(error, request);
       });
@@ -624,6 +624,20 @@ async function main() {
   const configPath = resolveConfigPath();
   const reader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   const failures = [];
+  const pendingWrites = new Set();
+  let outputFailure = null;
+  process.stdout.on('error', error => { outputFailure ||= error; });
+  const writeResponse = response => {
+    const pending = new Promise((resolve, reject) => {
+      process.stdout.write(`${JSON.stringify(response)}\n`, error => error ? reject(error) : resolve());
+    });
+    pendingWrites.add(pending);
+    pending.then(() => pendingWrites.delete(pending), error => {
+      outputFailure ||= error;
+      pendingWrites.delete(pending);
+    });
+    return pending;
+  };
   let shutdownPromise = null;
   let scheduler;
   const requestShutdown = () => {
@@ -631,14 +645,17 @@ async function main() {
     reader.close();
     shutdownPromise = (async () => {
       await scheduler.shutdown();
+      await Promise.allSettled([...pendingWrites]);
       await stopConsole();
       await closeStrictManagers();
+      if (outputFailure) throw outputFailure;
+      if (failures.length) throw failures[0];
     })();
     return shutdownPromise;
   };
   scheduler = createStdioRequestScheduler({
     handle: (request) => handleRpc(request, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH }),
-    write: (response) => process.stdout.write(`${JSON.stringify(response)}\n`),
+    write: writeResponse,
     onUnexpectedError: (error) => {
       process.stderr.write(`codex-agents-workflow request failed: ${error.stack || error.message}\n`);
       failures.push(error);

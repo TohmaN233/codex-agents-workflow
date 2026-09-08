@@ -41,12 +41,12 @@ export class JsonRpcPeer {
   }
 
   request(method, params = {}, timeoutMs = this.defaultTimeoutMs) {
-    if (this.closed) return Promise.reject(new Error('ACP peer is closed'));
+    if (this.closed) return Promise.reject(Object.assign(new Error('ACP peer is closed'), { code: 'ACP_TRANSPORT_CLOSED' }));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`ACP request timed out: ${method}`));
+        reject(Object.assign(new Error(`ACP request timed out: ${method}`), { code: 'ACP_REQUEST_TIMEOUT' }));
       }, Math.max(1, Number(timeoutMs) || this.defaultTimeoutMs));
       this.pending.set(id, { resolve, reject, timer, method });
       this.#send({ jsonrpc: '2.0', id, method, params });
@@ -118,7 +118,7 @@ export class JsonRpcPeer {
     this.reader.close();
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(error);
+      pending.reject(Object.assign(new Error(error?.message || 'ACP transport closed'), { code: 'ACP_TRANSPORT_CLOSED', cause: error }));
     }
     this.pending.clear();
   }
