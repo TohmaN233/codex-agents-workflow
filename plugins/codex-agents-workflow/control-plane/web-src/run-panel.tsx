@@ -1,6 +1,7 @@
-import { useContext, useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
 import { api, JsonField, Details, Status, FormValidContext, pretty, type Json, uid } from './shared';
 import { Canvas } from './canvas';
+import { createRunRefresh } from './run-refresh.mjs';
 import { strictSessionPresentation } from './strict-session-view.mjs';
 export const controllers = new Map<string, string>();
 const leases = new Map<string, Json>();
@@ -13,46 +14,50 @@ export function rememberRun(run: Json) {
   return run.run_id as string;
 }
 export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () => Promise<any>) => void, onRun: (id: string) => void }) {
-  const [state, setState] = useState<Json | null>(null); const [pack, setPack] = useState<Json | null>(null); const [next, setNext] = useState<Json>({}); const [events, setEvents] = useState<Json[]>([]);
+  const [snapshot, setSnapshot] = useState<Json | null>(null); const [pack, setPack] = useState<Json | null>(null);
+  const state = snapshot?.state; const next = snapshot?.next ?? {}; const events = snapshot?.events ?? []; const liveSnapshot = snapshot?.live ?? null;
   const [nodeId, setNodeId] = useState(''); const [result, setResult] = useState<Json | null>(null); const [login, setLogin] = useState<Json | null>(null);
-  const [nodeDetails, setNodeDetails] = useState<Json | null>(null); const [liveSnapshot, setLive] = useState<Json | null>(null);
+  const [nodeDetails, setNodeDetails] = useState<Json | null>(null);
   const [receipt, setReceipt] = useState<Json>({}); const [completion, setCompletion] = useState<Json>({ status: 'succeeded', summary: '', structured_output: {}, artifacts: [], evidence: [], changed_paths: [], outside_paths: [] });
-  const refreshGeneration = useRef(0);
+  const refreshController = useMemo(() => createRunRefresh(), [runId]);
   const valid = useContext(FormValidContext);
   const [accepted, setAccepted] = useState(false); const [merge, setMerge] = useState<Json | null>(null); const [reconciliation, setReconciliation] = useState<Json>({}); const [connectorControl, setConnectorControl] = useState<Json>({});
   const token = controllers.get(runId); const control = { run_id: runId, control_token: token };
   const key = runId + '/' + nodeId; const lease = leases.get(key); const args = { ...control, ...(lease ? { node_id: nodeId, attempt_id: lease.attempt_id, lease_token: lease.lease_token } : {}) };
   async function refresh() {
-    const generation = ++refreshGeneration.current;
-    const current = () => generation === refreshGeneration.current;
-    const [s, n] = await Promise.all([api('get', { run_id: runId }), api('next', { run_id: runId })]);
-    if (!current()) return;
-    setState(s); setNext(n);
-    if (controllers.has(runId)) {
-      const nextEvents = await api('events', { run_id: runId, control_token: controllers.get(runId), after_sequence: 0 });
-      if (!current()) return;
-      setEvents(nextEvents);
-    }
-    if (lease && pack?.workflow.skill_policy.mode === 'strict' && ['claimed','running'].includes(s.nodes[nodeId]?.status) && s.nodes[nodeId]?.attempts.at(-1)?.dispatch?.receipt?.executor === 'codex-app-server') {
-      try {
-        const nextLive = await api('strict_status', args);
-        if (!current()) return;
-        setLive({ attempt_id: lease.attempt_id, value: nextLive });
+    return refreshController.refresh(async () => {
+      const [s, n] = await Promise.all([api('get', { run_id: runId }), api('next', { run_id: runId })]);
+      const nextEvents = controllers.has(runId)
+        ? await api('events', { run_id: runId, control_token: controllers.get(runId), after_sequence: 0 }) : [];
+      let nextLive = null;
+      if (lease && pack?.workflow.skill_policy.mode === 'strict' && ['claimed','running'].includes(s.nodes[nodeId]?.status) && s.nodes[nodeId]?.attempts.at(-1)?.dispatch?.receipt?.executor === 'codex-app-server') {
+        try { nextLive = { attempt_id: lease.attempt_id, value: await api('strict_status', args) }; }
+        catch (cause) {
+          if ((cause as any).detail?.code !== 'STRICT_SESSION_UNAVAILABLE') throw cause;
+          nextLive = { attempt_id: lease.attempt_id, value: { status: 'unavailable', error: (cause as any).detail } };
+        }
       }
-      catch (cause) {
-        if ((cause as any).detail?.code === 'STRICT_SESSION_UNAVAILABLE') {
-          if (current()) setLive({ attempt_id: lease.attempt_id, value: { status: 'unavailable', error: (cause as any).detail } });
-        } else throw cause;
-      }
-    }
+      return { state: s, next: n, events: nextEvents, live: nextLive };
+    }, setSnapshot);
   }
-  useEffect(() => { refreshGeneration.current += 1; setState(null); setPack(null); setNodeId(''); setResult(null); setLogin(null); setMerge(null); setEvents([]); act(async () => { setPack(await api('run_definition', { run_id: runId })); await refresh(); }); return () => { refreshGeneration.current += 1; }; }, [runId]);
+  useEffect(() => {
+    let current = true;
+    refreshController.activate();
+    setSnapshot(null); setPack(null); setNodeId(''); setResult(null); setLogin(null); setMerge(null);
+    act(async () => {
+      const definition = await api('run_definition', { run_id: runId });
+      if (!current) return;
+      setPack(definition); await refresh();
+    });
+    return () => { current = false; refreshController.dispose(); };
+  }, [runId]);
   useEffect(() => { if (['succeeded','failed','cancelled'].includes(state?.status)) return; let stopped = false; let timer: ReturnType<typeof setTimeout>; const poll = async () => { if (stopped) return; try { await refresh(); } catch (error) { act(async () => { throw error; }); return; } if (!stopped) timer = setTimeout(poll, 2500); }; timer = setTimeout(poll, 2500); return () => { stopped = true; clearTimeout(timer); }; }, [runId, token, nodeId, lease?.attempt_id, pack?.revision_hash, state?.status]);
   useEffect(() => {
     let current = true;
     const selectedRunId = runId;
     const selectedNodeId = nodeId;
-    setResult(null); setLogin(null); setAccepted(false); setLive(null); setNodeDetails(null);
+    refreshController.invalidate();
+    setResult(null); setLogin(null); setAccepted(false); setSnapshot(value => value ? { ...value, live: null } : value); setNodeDetails(null);
     if (selectedNodeId) act(async () => {
       const details = await api('node_details', { run_id: selectedRunId, node_id: selectedNodeId });
       if (current) setNodeDetails(details);

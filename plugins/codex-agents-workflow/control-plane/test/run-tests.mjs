@@ -8,6 +8,8 @@ const files = [
   'config.test.mjs',
   'connector-integration.test.mjs',
   'connectors.test.mjs',
+  'connector-process.test.mjs',
+  'run-refresh.test.mjs',
   'console.test.mjs',
   'mcp.test.mjs',
   'open-console.test.mjs',

@@ -636,3 +636,29 @@ test('connector probe is non-dispatching and workspace-aware for both providers'
   assert.equal(cursorReady.ready, true);
   assert.equal(cursorReady.observed.workspace, fx.workspace);
 });
+
+
+test('Cursor stable reply outlives its remote deadline during gated terminal persistence', { timeout: 15000 }, async t => {
+  const fx = await fixture(t);
+  const update = fx.registry.store.update.bind(fx.registry.store);
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const reached = new Promise(resolve => { entered = resolve; });
+  fx.registry.store.update = async (id, fields) => {
+    if (fields.state === 'completed') { entered(); await gate; }
+    return update(id, fields);
+  };
+  t.after(() => release());
+  const started = await startScenario(fx, 'cursor-readonly-advice', 'CURSOR_NORMAL');
+  await reached;
+  try {
+    await new Promise(resolve => setTimeout(resolve, 5200));
+    const pending = await fx.registry.status(started.task_id);
+    assert.equal(pending.state, 'running', JSON.stringify(pending.error));
+    assert.equal(pending.result, null);
+  } finally { release(); }
+  const done = await fx.registry.status(started.task_id, 5000);
+  assert.equal(done.state, 'completed');
+  assert.equal(done.terminal_evidence.kind, 'stable_cursor_reply');
+  assert.equal(done.scope.unchanged, true);
+});

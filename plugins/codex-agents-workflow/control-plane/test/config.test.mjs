@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { GitWorktrees } from '../lib/parallel/git-worktrees.mjs';
 
 import {
   loadConfig,
@@ -543,4 +544,25 @@ test('version-1 migration preserves an existing Grok write capability policy', a
   await writeFile(configPath, `${JSON.stringify(legacy, null, 2)}\n`);
   const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
   assert.equal(migrated.providers.find((provider) => provider.id === 'grok-local').capabilities.write, false);
+});
+
+
+test('legacy relocation refuses real manager-owned Git worktrees before changing registrations', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'workflow-real-relocation-'));
+  const workspace = join(root, 'repo'); await mkdir(workspace);
+  const legacy = join(root, 'sol-advisor');
+  const manager = await new GitWorktrees(join(legacy, 'workflow-worktrees')).initialize();
+  await manager.git(workspace, ['init', '-b', 'main']);
+  await writeFile(join(workspace, 'file.txt'), 'baseline');
+  await manager.git(workspace, ['add', '--all']);
+  await manager.git(workspace, ['commit', '-m', 'Fixture']);
+  const base = await manager.inspect(workspace);
+  const owned = await manager.create(base, 'relocation-fixture');
+  t.after(async () => { await manager.remove(owned); await rm(root, { recursive: true }); });
+  const before = await manager.git(workspace, ['worktree', 'list', '--porcelain']);
+  const registration = await readFile(join(owned.workspace, '.git'), 'utf8');
+  await assert.rejects(ensureConfigFile({ configPath: join(root, 'codex-agents-workflow', 'control-plane.json'), defaultConfigPath: DEFAULT_CONFIG_PATH }), /owned Git worktrees exist/);
+  assert.deepEqual(await manager.git(workspace, ['worktree', 'list', '--porcelain']), before);
+  assert.equal(await readFile(join(owned.workspace, '.git'), 'utf8'), registration);
+  await manager.verify(owned);
 });

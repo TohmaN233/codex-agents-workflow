@@ -116,3 +116,12 @@ Also run both repository verify scripts and the Windows/Linux/macOS core/console
 CI matrix. Real Codex probes are opt-in bounded tests outside the runtime package;
 never use real credentials without existing authorization. Consult V7_WORK_LOG for
 observed failures/fixes and distinguish actual platform evidence from emulation.
+
+Review regression evidence must use actual independent OS processes for connector
+store contention, and real manager-created worktrees for relocation checks.
+RunPanel refresh publishes state/next/events/live as one generation-fenced snapshot;
+Run sequence cannot regress and disposed Run callbacks cannot restart refreshes.
+The stdio drain process test uses an OS SIGTERM on POSIX. On Windows it injects
+SIGTERM into the actual child listener over test-only IPC because child.kill on
+Windows forcibly terminates Node without dispatching a JavaScript signal handler.
+Do not describe that Windows test as an OS graceful-termination qualification.

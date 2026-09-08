@@ -216,6 +216,21 @@ test('pending permission persistence failures reject the ACP request and fail th
   assert.equal(failed.error.code, 'ACP_PROMPT_FAILED');
 });
 
+test('pending input persistence failures reject the ACP request and fail the task visibly', async () => {
+  const fx = await fixture();
+  const originalUpdate = fx.registry.store.update.bind(fx.registry.store);
+  fx.registry.store.update = async (taskId, fields) => {
+    if (fields.state === 'needs_input') {
+      throw Object.assign(new Error('synthetic pending persistence failure'), { code: 'SYNTHETIC_PENDING_PERSISTENCE' });
+    }
+    return originalUpdate(taskId, fields);
+  };
+  const started = await start(fx, 'ASK_INPUT');
+  const failed = await fx.registry.status(started.task_id, 5000);
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'ACP_PROMPT_FAILED');
+});
+
 
 test('input elicitation validates the returned schema before resuming', async () => {
   const fx = await fixture();

@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline';
 import test from 'node:test';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import { createStdioRequestScheduler } from '../server.mjs';
 
 const controlDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -158,4 +161,46 @@ test('stdio MCP lists control tools and returns sanitized status', async (t) => 
   const errorPayload = JSON.parse(connectorError.result.content[0].text);
   assert.equal(errorPayload.code, 'TASK_NOT_FOUND');
   assert.match(errorPayload.error, /Unknown connector task/);
+});
+
+
+test('real stdio server keeps ping responsive and drains invocation before signal cleanup', { timeout: 15000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'workflow-stdio-drain-'));
+  let release, entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const reached = new Promise(resolve => { entered = resolve; });
+  const http = createServer(async (req, res) => {
+    req.resume(); entered(); await gate;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{message:{content:'drained result'}}] }));
+  });
+  http.listen(0, '127.0.0.1'); await once(http, 'listening');
+  t.after(() => { release(); http.closeAllConnections(); http.close(); });
+  const config = JSON.parse(await readFile(join(controlDir, 'default-config.json'), 'utf8'));
+  config.global.allow_direct_api = true;
+  const provider = config.providers.find(p => p.id === 'custom-openai-compatible');
+  provider.enabled = true; provider.config.auth_type = 'none'; provider.config.timeout_ms = 10000;
+  provider.config.endpoint = `http://127.0.0.1:${http.address().port}/chat`;
+  config.task_types.push({ id:'drain-test', name:'Drain test', enabled:true, route:'audit', stages:[{id:'review', role:'reviewer', provider_id:provider.id, access:'read_only', template:'{{task}}'}] });
+  const configPath = join(root, 'control-plane.json'); await writeFile(configPath, JSON.stringify(config));
+  const args = process.platform === 'win32' ? ['--import', pathToFileURL(join(controlDir, 'test/fixtures/windows-signal.mjs')).href, serverPath] : [serverPath];
+  const child = spawn(process.execPath, args, { env: {...process.env, CODEX_WORKFLOW_CONFIG:configPath, CODEX_WORKFLOW_DISABLED:'0', SOL_CONTROL_DISABLED:'0'}, stdio:['pipe','pipe','pipe','ipc'], windowsHide:true });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  let stderr = ''; child.stderr.on('data', data => { stderr += data; });
+  const exit = once(child, 'exit');
+  const client = makeClient(child);
+  const invocation = client.request({jsonrpc:'2.0', id:101, method:'tools/call', params:{name:'codex_agents_workflow_invoke', arguments:{task_type_id:'drain-test', stage_id:'review', task:'Wait for test gate'}}});
+  // Surface early rejection instead of waiting silently for an unreachable gate.
+  await Promise.race([reached, invocation.then(value => { throw new Error(JSON.stringify(value)); })]);
+  assert.deepEqual((await client.request({jsonrpc:'2.0',id:102,method:'ping'})).result, {});
+  if (process.platform === 'win32') child.send('emit-sigterm'); else child.kill('SIGTERM');
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(child.exitCode, null, stderr);
+  assert.equal(child.signalCode, null, stderr);
+  release();
+  const response = await invocation;
+  assert.equal(response.result.isError, undefined, JSON.stringify(response));
+  assert.match(response.result.content[0].text, /drained result/);
+  const [code, signal] = await exit; assert.equal(code, 0, stderr); assert.equal(signal, null);
+  assert.match(await readFile(join(root, 'control-plane-audit.jsonl'), 'utf8'), /"outcome":"ok"/);
 });

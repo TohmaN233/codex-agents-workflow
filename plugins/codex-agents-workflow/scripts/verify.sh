@@ -247,9 +247,9 @@ selective_target=$tmp_dir/selective
 sh "$installer" --target-dir "$selective_target"
 printf '%s\n' modified >> "$selective_target/$terra_file"
 before=$(snapshot_files "$selective_target")
-sh "$installer" --target-dir "$selective_target" --check --check-role luna --check-role sol
+sh "$installer" --target-dir "$selective_target" --check --check-role luna --check-role reviewer
 after=$(snapshot_files "$selective_target")
-[ "$before" = "$after" ] || fail "selective Luna/Sol check mutated conflicting Terra target"
+[ "$before" = "$after" ] || fail "selective Luna/reviewer check mutated conflicting Terra target"
 if sh "$installer" --target-dir "$selective_target" --check --check-role terra >/dev/null 2>&1; then
   fail "selective Terra check accepted conflicting Terra target"
 fi
@@ -266,15 +266,15 @@ if sh "$installer" --target-dir "$selective_target" --check-role unknown >/dev/n
 fi
 after=$(snapshot_files "$selective_target")
 [ "$before" = "$after" ] || fail "invalid selective check mutated target"
-pass "selective Luna/Sol check, Terra refusal, all-role compatibility, and invalid-role refusal"
+pass "selective Luna/reviewer check, Terra refusal, all-role compatibility, and invalid-role refusal"
 
 upfront_terra_target=$tmp_dir/upfront-terra
 sh "$installer" --target-dir "$upfront_terra_target"
 printf '%s\n' modified >> "$upfront_terra_target/$luna_file"
 before=$(snapshot_files "$upfront_terra_target")
-sh "$installer" --target-dir "$upfront_terra_target" --check --check-role terra --check-role sol
+sh "$installer" --target-dir "$upfront_terra_target" --check --check-role terra --check-role reviewer
 after=$(snapshot_files "$upfront_terra_target")
-[ "$before" = "$after" ] || fail "selective Terra/Sol check mutated conflicting Luna target"
+[ "$before" = "$after" ] || fail "selective Terra/reviewer check mutated conflicting Luna target"
 if sh "$installer" --target-dir "$upfront_terra_target" --check --check-role luna >/dev/null 2>&1; then
   fail "selective Luna check accepted conflicting Luna target"
 fi
@@ -285,7 +285,7 @@ if sh "$installer" --target-dir "$upfront_terra_target" --check >/dev/null 2>&1;
 fi
 after=$(snapshot_files "$upfront_terra_target")
 [ "$before" = "$after" ] || fail "all-role Luna refusal mutated target"
-pass "selective Terra/Sol up-front path, Luna refusal, and all-role compatibility"
+pass "selective Terra/reviewer up-front path, Luna refusal, and all-role compatibility"
 
 missing_target=$tmp_dir/missing
 if sh "$installer" --target-dir "$missing_target" --check; then fail "--check accepted missing target"; fi
