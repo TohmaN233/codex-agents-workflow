@@ -553,7 +553,7 @@ export function createStdioRequestScheduler({
 
   const sendError = (request, code, message) => {
     if (request?.id === undefined || request?.id === null) return;
-    write({ jsonrpc: '2.0', id: request.id, error: { code, message } });
+    write({ jsonrpc: '2.0', id: request.id, error: { code: code === 'SERVER_BUSY' ? -32000 : -32001, message, data: { code } } });
   };
 
   const pump = () => {

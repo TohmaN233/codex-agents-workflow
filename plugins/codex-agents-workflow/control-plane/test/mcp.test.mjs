@@ -97,11 +97,12 @@ test('stdio scheduler bounds work, keeps a control lane, and drains in-flight re
   const shutdown = scheduler.shutdown();
   assert.equal(scheduler.snapshot().accepting, false);
   assert.equal(scheduler.snapshot().pending, 0);
-  assert.equal(writes.find((response) => response.id === 3)?.error?.code, 'SERVER_SHUTTING_DOWN');
-  assert.equal(writes.find((response) => response.id === 5)?.error?.code, 'SERVER_SHUTTING_DOWN');
-  assert.equal(writes.find((response) => response.id === 6)?.error?.code, 'SERVER_BUSY');
+  assert.equal(writes.find((response) => response.id === 3)?.error?.data?.code, 'SERVER_SHUTTING_DOWN');
+  assert.equal(writes.find((response) => response.id === 5)?.error?.data?.code, 'SERVER_SHUTTING_DOWN');
+  assert.equal(writes.find((response) => response.id === 6)?.error?.data?.code, 'SERVER_BUSY');
   assert.equal(scheduler.submit({ id: 7, method: 'ping' }), false);
-  assert.equal(writes.find((response) => response.id === 7)?.error?.code, 'SERVER_SHUTTING_DOWN');
+  assert.equal(writes.find((response) => response.id === 7)?.error?.data?.code, 'SERVER_SHUTTING_DOWN');
+  assert(writes.every(response => Number.isInteger(response.error.code)));
   assert.equal(scheduler.snapshot().in_flight, 3);
 
   for (const resolve of resolvers.values()) resolve({ jsonrpc: '2.0', id: 0, result: {} });
