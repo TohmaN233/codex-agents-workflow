@@ -3,8 +3,8 @@ import { requireValue } from '../workflow-paths.mjs';
 import { canonicalJSON } from '../workflow-revisions.mjs';
 import { expansionPacket } from './semantic-expander.mjs';
 
-export function expansionRunPack(pack, resources, provider, id) {
-  const packet = expansionPacket(pack, resources, provider);
+export function expansionRunPack(pack, resources, provider, id, routingRules) {
+  const packet = expansionPacket(pack, resources, provider, routingRules);
   requireValue(provider.kind === 'native_agent', 'EXPANSION_EXECUTOR_UNAVAILABLE', 'Managed expansion currently requires a user-selected native Provider with qualified Strict execution');
   const workflow = { ...createDraft(id, 'Expansion: ' + pack.workflow.name.slice(0, 220)), status: 'ready',
     description: 'Read-only planning job for an immutable imported Draft. Its output remains an unreviewed Draft.',
@@ -23,6 +23,6 @@ export function expansionRunPack(pack, resources, provider, id) {
   workflow.edges = [['start', 'expand'], ['expand', 'final'], ['final', 'end']].map(([source, target]) => ({ id: source + '-' + target, source, target }));
   workflow.requirements = { providers: [provider.id], tools: ['read_workflow_resource'], mcp_servers: [], executables: [] };
   return { workflow, resources: planningResources,
-    provenance: { kind: 'skill_expansion_job', source_workflow_id: pack.workflow.id, source_revision: pack.revision_hash, selected_provider_id: provider.id },
+    provenance: { kind: 'skill_expansion_job', source_workflow_id: pack.workflow.id, source_revision: pack.revision_hash, selected_provider_id: provider.id, ...(routingRules ? { routing_rules: structuredClone(routingRules) } : {}) },
     import_report: null };
 }

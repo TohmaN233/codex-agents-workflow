@@ -8,6 +8,41 @@ import { WorkflowService } from '../lib/workflow-service.mjs';
 import { ConnectorTaskStore } from '../connectors/task-store.mjs';
 import { DEFAULT_CONFIG_PATH, handleRpc, startConsole, stopConsole } from '../server.mjs';
 import { SkillInventory } from '../lib/skill-import/inventory.mjs';
+import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';
+
+test('explicit host discovery never falls back to folder scanning for inventory or import', async t => {
+  const f = await fixture(t); await f.migrate();
+  f.service.skillInventory = {list:async path=>({adapter:'host',path})};
+  f.service.folderInventory = {list:async path=>({adapter:'folders',path})};
+  for (const operation of ['skill_inventory','import_skill']) {
+    await assert.rejects(f.service.call(operation,{discovery:'host'}),{code:'SKILL_DISCOVERY_WORKSPACE'});
+    await assert.rejects(f.service.call(operation,{discovery:'unknown'}),{code:'SKILL_DISCOVERY_MODE'});
+  }
+  assert.equal((await f.service.call('skill_inventory',{workspace:f.workspace})).adapter,'host');
+  assert.equal((await f.service.call('skill_inventory',{})).adapter,'folders');
+  assert.equal((await f.service.call('skill_inventory',{discovery:'folders',workspace:f.workspace})).adapter,'folders');
+});
+
+test('folder import and prepare/apply preserve routing for Main and Provider coarse drafts', async t => {
+  const f = await fixture(t); await f.migrate();
+  const source = join(f.root,'skill-folder'); await mkdir(source);
+  await writeFile(join(source,'SKILL.md'),'---\nname: routing-test\ndescription: Review results\n---\nReview the result.');
+  const inventory = await f.service.call('skill_inventory',{discovery:'folders',folder:source});
+  assert.equal(inventory.entries.length,1);
+  assert(workflowToolDefinitions().find(t=>t.name==='workflow_prepare_expansion').inputSchema.properties.routing_rules);
+  for (const provider_id of [undefined,'native-luna']) {
+    const pack = await f.service.call('import_skill',{discovery:'folders',folder:source,skill_id:inventory.entries[0].id,workflow_id:provider_id?'provider-import':'main-import',provider_id});
+    const packet = await f.service.call('prepare_expansion',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,provider_id:'native-terra'});
+    assert.equal(packet.routing_rules.routes.review.provider_id,'native-reviewer');
+    const origin = {confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+    const proposal = {source_revision:pack.revision_hash,nodes:[{id:'check',type:'agent',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+    const args = {workflow_id:pack.workflow.id,expected_revision:pack.revision_hash,proposal};
+    await assert.rejects(f.service.call('apply_expansion',args),{code:'ROUTING_RULES_REQUIRED'});
+    const applied = await f.service.call('apply_expansion',{...args,routing_rules:packet.routing_rules});
+    assert.equal(applied.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+    assert.equal(applied.import_report.expansion.routing[0].reason,'Independent review');
+  }
+});
 
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'workflow-service-')); const workspace = join(root, 'workspace'); await mkdir(workspace);

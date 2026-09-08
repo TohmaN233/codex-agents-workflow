@@ -7,6 +7,10 @@ thread creation; anonymous built-in catalogs cannot establish account availabili
 Skill expansion prompts must carry the exact compiler field contract and finite
 condition syntax. Keep inferred graphs acyclic; names/output schemas are data,
 while Provider, role, permissions and acceptance remain compiler-owned.
+New Skill expansion planning pins editable skill2workflow routing rules. AI classifies
+node responsibilities; the compiler maps them to enabled user-configured Providers.
+Never inherit the planning Provider for every execution node. Missing eligible routes
+fail visibly before replacing the coarse Draft. Final Main acceptance stays fixed.
 Expansion packets include the future Run input convention, actual coarse input
 schema/resource binding and Strict execution limitations. Standalone tool nodes
 are rejected for Strict expansion; bounded resource reads belong inside agents.
@@ -75,7 +79,9 @@ old current-thread adapter as imported Strict or copy shared auth into profiles.
 Actual local and three synthetic official-login qualification cases are recorded
 under docs/baselines/v7-strict-2026-09-04. A fixture pass is not new qualification.
 
-Skill discovery uses actual configured-profile metadata RPCs. Imports retain complete
+Skill import discovery defaults to bounded scans of CODEX_HOME/skills and plugins/cache,
+with optional user-provided folders. This is not an executor enabled-Skill inventory.
+Explicit host discovery still uses actual configured-profile metadata RPCs. Imports retain complete
 bounded resources and visible dependencies; source paths are never edited. AI
 expansion uses a selected native Provider and its own read-only planning Run. It
 requires main acceptance and exact-source CAS before another unreviewed Draft.

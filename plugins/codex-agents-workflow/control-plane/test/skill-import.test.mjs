@@ -12,6 +12,67 @@ import { SkillInventory } from '../lib/skill-import/inventory.mjs';
 import { expansionPacket, applyExpansion, compileExpansion, EXPANSION_CONTRACT } from '../lib/skill-import/semantic-expander.mjs';
 import { importReviewPacket, reviewImportedDraft } from '../lib/skill-import/review-import.mjs';
 import { discoverCodexSkills } from '../lib/skill-import/codex-inventory.mjs';
+import { discoverFolderSkills } from '../lib/skill-import/folder-inventory.mjs';
+import { defaultRoutingRules } from '../lib/skill-import/routing-rules.mjs';
+import { expansionRunPack } from '../lib/skill-import/expansion-run.mjs';
+
+test('folder discovery scans default Codex roots without a binary and reselects custom folders by source hash', async t => {
+  const f = await fixture(t);
+  const home = join(f.root,'codex');
+  await mkdir(join(home,'skills','demo'),{recursive:true});
+  await mkdir(join(home,'plugins','cache'),{recursive:true});
+  await writeFile(join(home,'skills','demo','SKILL.md'),await readFile(f.source));
+  const inventory = new SkillInventory(folder=>discoverFolderSkills(folder,{env:{CODEX_HOME:home}}));
+  const found = await inventory.list();
+  assert.equal(found.entries.length,1); assert.equal(found.complete,true);
+  assert.equal(found.model_invocations,0); assert.equal(found.entries[0].enabled,false);
+  const custom = await inventory.list(f.sourceRoot);
+  assert.equal(custom.entries.length,1);
+  await writeFile(f.source,(await readFile(f.source,'utf8'))+'\nChanged');
+  await assert.rejects(inventory.select(f.sourceRoot,custom.entries[0].id),{code:'SKILL_SELECTION_STALE'});
+  const absent = await inventory.list(join(f.root,'absent'));
+  assert.equal(absent.complete,false); assert.equal(absent.errors[0].code,'ENOENT');
+  await assert.rejects(inventory.list('relative'),{code:'SKILL_DISCOVERY_FOLDER'});
+});
+
+test('routed expansion assigns each responsibility independently and pins editable planning rules', async t => {
+  const f = await fixture(t,'Implement a result.\nReview the result.');
+  const providers = [
+    {id:'native-luna',enabled:true,kind:'native_agent',capabilities:{read:true,write:true},config:{role:'implementer'}},
+    {id:'native-terra',enabled:true,kind:'native_agent',capabilities:{read:true,write:true},config:{role:'implementer'}},
+    {id:'native-reviewer',enabled:true,kind:'native_agent',capabilities:{read:true,write:false},config:{role:'reviewer'}},
+  ];
+  const pack = await importCoarseSkill(f.store,f.source,{id:'routed'});
+  const resources = await f.store.resources('routed');
+  const rules = defaultRoutingRules(providers);
+  const span = {resource:'source/SKILL.md',start_line:10,end_line:10};
+  const proposal = {source_revision:pack.revision_hash,nodes:[
+    {id:'build',type:'agent',task_type:'implementation',routing_reason:'Routine production',prompt_template:'Implement',confidence:0.9,source_span:span},
+    {id:'check',type:'agent',task_type:'review',routing_reason:'Independent checking',prompt_template:'Review',confidence:0.9,source_span:span},
+  ],edges:[['start','build'],['build','check'],['check','final']].map(([source,target])=>({id:source+'-'+target,source,target,confidence:0.9,source_span:span}))};
+  const packet = expansionPacket(pack,resources,providers[1],rules);
+  assert.deepEqual(packet.routing_rules,rules);
+  assert.throws(()=>compileExpansion(pack,resources,proposal,{providers}),{code:'ROUTING_RULES_REQUIRED'});
+  const result = compileExpansion(pack,resources,proposal,{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']});
+  const boundPack = structuredClone(pack); boundPack.workflow.nodes.find(n=>n.id==='instructions').executor={kind:'provider',provider_id:'native-luna'};
+  assert.throws(()=>compileExpansion(boundPack,resources,proposal,{providers}),{code:'ROUTING_RULES_REQUIRED'});
+  const bound = compileExpansion(boundPack,resources,proposal,{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']});
+  assert.equal(bound.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.equal(result.workflow.nodes.find(n=>n.id==='build').executor.provider_id,'native-luna');
+  assert.equal(result.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.equal(result.workflow.nodes.find(n=>n.id==='final').executor.kind,'main');
+  assert.equal(result.workflow.status,'draft');
+  const job = expansionRunPack(pack,resources,providers[1],'planning-job',rules);
+  rules.routes.implementation.provider_id='native-terra';
+  assert.equal(job.provenance.routing_rules.routes.implementation.provider_id,'native-luna');
+  assert.match(job.resources['analysis/request.txt'],/task_type/);
+  const disabled = providers.map(p=>p.id==='native-reviewer'?{...p,enabled:false}:p);
+  assert.throws(()=>compileExpansion(pack,resources,proposal,{providers:disabled,routing_rules:rules}),{code:'ROUTING_PROVIDER_UNAVAILABLE'});
+  const invalid = structuredClone(proposal); invalid.nodes[0].task_type='invented';
+  assert.throws(()=>compileExpansion(pack,resources,invalid,{providers,routing_rules:rules}),{code:'ROUTING_CLASSIFICATION'});
+  const forged = structuredClone(proposal); forged.nodes[0].executor={kind:'main'};
+  assert.throws(()=>compileExpansion(pack,resources,forged,{providers,routing_rules:rules}),{code:'EXPANSION_AUTHORITY'});
+});
 
 async function fixture(t, body = 'Read [the guide](references/guide.md) and return a result.') {
   const root = await mkdtemp(join(tmpdir(), 'skill-import-')); t.after(() => rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 }));

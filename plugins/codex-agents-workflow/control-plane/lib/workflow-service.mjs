@@ -1,4 +1,6 @@
-import { dirname, join, resolve } from 'node:path';
+import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
+import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
+import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { loadConfig, isEnvironmentDisabled } from './config.mjs';
 import { WorkflowStore } from './workflow-store.mjs';
 import { WorkflowRuntime } from './workflow-runtime.mjs';
@@ -29,12 +31,23 @@ import { effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { nodeWorkspace } from './parallel/workspace.mjs';
 import { skillSourceStatus } from './skill-import/source-status.mjs';
 
+function inventorySelection(service, args) {
+  requireValue(args.discovery === undefined || ['folders','host'].includes(args.discovery), 'SKILL_DISCOVERY_MODE', 'Discovery mode must be folders or host');
+  const mode = args.discovery ?? (args.workspace ? 'host' : 'folders');
+  if (mode === 'host') {
+    requireValue(typeof args.workspace === 'string' && isAbsolute(args.workspace), 'SKILL_DISCOVERY_WORKSPACE', 'Host discovery requires an absolute workspace');
+    return {inventory:service.skillInventory, path:args.workspace};
+  }
+  return {inventory:service.folderInventory,path:args.folder};
+}
+
 export class WorkflowService {
   constructor({ configPath, defaultConfigPath, env = process.env, fetchImpl = globalThis.fetch, registry, capabilities = {} }) {
     this.configPath = resolve(configPath); this.defaultConfigPath = defaultConfigPath; this.env = env; this.fetchImpl = fetchImpl;
     this.registry = registry ?? connectorRegistryFor({ configPath: this.configPath, env }); this.capabilities = capabilities;
     this.strictManager = capabilities.strictManager ?? strictManagerFor({ configPath: this.configPath, getConfig: () => this.config(), env });
     this.parallelManager = capabilities.parallelManager ?? parallelManagerFor({ configPath: this.configPath, env });
+    this.folderInventory = new SkillInventory(folder => discoverFolderSkills(folder, {env}));
     this.skillInventory = capabilities.skillInventory ?? new SkillInventory(async workspace => discoverCodexSkills(workspace, { config: await this.config(), env }));
   }
   async config() { return loadConfig({ configPath: this.configPath, defaultConfigPath: this.defaultConfigPath }); }
@@ -83,11 +96,18 @@ export class WorkflowService {
         return { strict: { ...strict, qualification: QUALIFIED_CODEX, authentication: config.strict_executor.authentication.mode },
           tools: context.tools, mcp_servers: context.mcp_servers ?? [], executables: context.executables ?? [], parallel_write: 'qualified Strict broker with Git worktrees', boundary: 'application catalog, explicit Skill input and broker; not an OS ACL' };
       }
+      case 'routing_defaults': return loadRoutingSettings(dirname(this.configPath),config.providers);
+      case 'save_routing_rules': {
+        requireValue(human, 'HUMAN_CONFIGURATION_REQUIRED', 'Shared routing rules are edited in the human console');
+        return saveRoutingSettings(dirname(this.configPath),config.providers,store,args.routing_rules,args.expected_rules);
+      }
       case 'skill_inventory': {
-        return this.skillInventory.list(args.workspace);
+        const selection = inventorySelection(this,args);
+        return selection.inventory.list(selection.path);
       }
       case 'import_skill': {
-        const selected = await this.skillInventory.select(args.workspace, args.skill_id);
+        const selection = inventorySelection(this,args);
+        const selected = await selection.inventory.select(selection.path, args.skill_id);
         const provider = config.providers.find(provider => provider.id === args.provider_id);
         if (args.provider_id) requireValue(provider, 'PROVIDER_MISSING', 'Selected instruction Provider does not exist');
         return importCoarseSkill(store, selected.path, { id: args.workflow_id, name: args.name, providerId: args.provider_id, role: provider?.config?.role ?? 'advisor', expectedSourceHash: selected.source_hash });
@@ -106,7 +126,7 @@ export class WorkflowService {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
-        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider);
+        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers));
         const adapter = buildProviderAdapter(provider, { access: 'read_only' }, { env: this.env, allowDirectApi: config.global.allow_direct_api });
         // A packet is not an invocation. Native/MCP/Strict host integration must
         // preserve this selected Provider and record actual dispatch separately.
@@ -116,7 +136,7 @@ export class WorkflowService {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
-        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id);
+        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers));
         await this.strictManager.capability({ ...job, resources: prepareResources(job.resources).manifest }, config.providers);
         const jobs = await new WorkflowStore(join(dirname(this.configPath), 'workflow-expansion-jobs'), { validationContext: context }).initialize();
         const saved = await jobs.create(job.workflow, job);
@@ -130,9 +150,9 @@ export class WorkflowService {
         const { pins } = await runtime.runs.read(args.run_id); const provenance = pins.root.provenance;
         requireValue(provenance?.kind === 'skill_expansion_job' && provenance.source_workflow_id === args.workflow_id && provenance.source_revision === args.expected_revision,
           'EXPANSION_RESULT_IDENTITY', 'Expansion result belongs to a different source Workflow revision');
-        return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context });
+        return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules } });
       }
-      case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context });
+      case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: args.routing_rules } });
       case 'list': return Promise.all((await store.list()).map(async pack => ({ id: pack.workflow.id, name: pack.workflow.name, status: pack.workflow.status, enabled: pack.workflow.enabled, revision_hash: pack.revision_hash, description: pack.workflow.description, skill_policy: pack.workflow.skill_policy, validation: (await this.validationContext(store, pack.workflow, context)).validation })));
       case 'read': return store.snapshot(args.workflow_id, args.revision_hash);
       case 'source_status': return skillSourceStatus(await store.snapshot(args.workflow_id, args.revision_hash));

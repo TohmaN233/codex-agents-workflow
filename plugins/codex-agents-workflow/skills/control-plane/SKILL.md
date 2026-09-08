@@ -75,7 +75,14 @@ change a failed Strict request to Cooperative. Cooperative explicitly retains it
 host's ambient behavior. Missing external tools, executables or scripts remain
 requirements; do not execute imported scripts to infer their behavior.
 
-Use `workflow_skill_inventory` for actual host discovery. Import only the selected
+Use `workflow_skill_inventory` for default Codex-folder import discovery; pass
+`discovery: folders` and an optional absolute `folder` for a custom source. This
+is not a list of executor-enabled Skills. Explicit `discovery: host` with a
+workspace retains qualified host discovery. Preserve the discovery selection
+when importing. Skill expansion uses editable skill2workflow classification rules
+pinned to the planning Run; configured eligible Providers are assigned per node
+by the compiler, never inherited from the planner. Read `workflow_routing_defaults`
+for current rules; shared defaults are edited in the console. Import only the selected
 entry through `workflow_import_skill`; the result is a full-resource Draft with
 visible provenance and unresolved dependencies. Never modify the original Skill.
 `workflow_source_status` reports changed SKILL.md hashes without changing any pins.

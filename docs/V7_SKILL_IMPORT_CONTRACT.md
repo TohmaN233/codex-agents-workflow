@@ -2,15 +2,14 @@
 
 The service exposes inventory/import, resource relocation, review packets,
 expansion packets and managed expansion Runs as Workflow MCP tools. The default
-inventory adapter runs the qualified Codex binary against the configured CODEX_HOME
-and requested workspace, using only initialize and skills/list. It starts no
-thread/turn/login and writes no configuration. Codex may refresh its own metadata
-or system caches; this is a normal profile inventory, not a Strict execution
-profile. Discovery is complete only relative to this configured profile and the
-errors returned by Codex, not every possible desktop task/environment. Binary
-settings are required even when Strict execution remains disabled. Configuration
-hashes before/after must match; concurrent edits are reported and never reverted.
-Per-path errors remain visible; the adapter never guesses filesystem roots.
+inventory scans CODEX_HOME/skills and CODEX_HOME/plugins/cache (default home/.codex).
+An optional absolute folder selects another import root. Bounded traversal skips
+links and reports per-path errors. This reads SKILL.md metadata only; it requires
+no Strict binary, login or model invocation. Cache entries show their full source
+paths, including versions; discovery does not claim those Skills are enabled.
+Explicit host mode retains the qualified configured-profile skills/list adapter
+and its before/after configuration integrity check. Import repeats the same
+selected discovery mode/folder and verifies source identity before snapshotting.
 
 Inventory selection is an exact canonical path plus source hash. Import refreshes
 that selection, reads bounded UTF-8 instructions and snapshots portable resources.
@@ -54,7 +53,14 @@ execution uses the qualified Strict manager, normal claims/approval gates, exact
 dispatch receipts and durable output. Unqualified Provider types fail explicitly.
 The main controller must accept the planning result before apply_expansion_result
 changes the source Draft under its original revision CAS. The planning Provider
-never replaces the source Workflow's execution Provider. No retry loop, imported
+does not determine every output node's execution Provider. Editable skill2workflow
+rules classify routine implementation, complex implementation, review and planning,
+then map these classifications to configured enabled Provider IDs and roles. The
+rules are pinned in planning provenance and the resulting import report records
+per-node reasons. Shared defaults are saved separately with CAS; editing them does
+not change an existing planning Run. Missing/ineligible routes fail visibly and
+leave the coarse Draft intact. Legacy proposals without routing rules retain their
+original fixed-binding contract. No retry loop, imported
 script or original source path is used by this planning Run.
 
 An expansion result must match the exact coarse revision. The compiler accepts

@@ -1,5 +1,6 @@
 const string = { type: 'string' }; const object = { type: 'object' };
 const properties = {
+  folder: string, discovery: { type: 'string', enum: ['folders','host'] }, routing_rules: object,
   workflow_id: string, revision_hash: string, run_id: string, node_id: string, attempt_id: string,
   control_token: { type: 'string', description: 'Main-controller capability returned by workflow_start. Never include it in worker prompts.' },
   lease_token: { type: 'string', description: 'Exact attempt lease returned by workflow_claim_node.' },
@@ -18,15 +19,16 @@ const lease = ['run_id', 'node_id', 'attempt_id', 'lease_token'];
 const main = ['run_id', 'control_token'];
 const recovery = [...main, 'node_id', 'attempt_id'];
 const specs = [
+  ['routing_defaults', 'Read editable default Skill expansion routing rules for the configured Providers.', [], []],
   ['capabilities', 'Read current Strict qualification and declared host capabilities without starting a session or exposing credentials.', [], []],
-  ['skill_inventory', 'Read actual host Skill metadata and per-path discovery errors. Never treats a filesystem guess as complete discovery.', ['workspace'], []],
-  ['import_skill', 'Coarse-import a user-selected current Skill inventory entry into an immutable Strict Draft. Executes no scripts or model calls.', ['workspace', 'skill_id', 'workflow_id'], ['name', 'provider_id']],
+  ['skill_inventory', 'Discover importable Skills in default Codex folders or a user folder without executing models; explicit host mode reads qualified host metadata.', [], ['workspace', 'folder', 'discovery']],
+  ['import_skill', 'Coarse-import a user-selected current Skill inventory entry into an immutable Strict Draft. Executes no scripts or model calls.', ['skill_id', 'workflow_id'], ['workspace', 'folder', 'discovery', 'name', 'provider_id']],
   ['verify_relocation', 'Verify pinned imported resource availability without reading the original Skill. Does not prove functional execution.', ['workflow_id', 'revision_hash'], []],
   ['import_review', 'Read unresolved import observations and exact inferred nodes/edges for human review. This does not confirm or publish them.', ['workflow_id'], ['revision_hash']],
   ['inline_skill', 'Convert one exact SkillRef and its explicitly pinned nested Skills to editable resource-backed instructions. Always creates a Draft and never runs source scripts.', ['workflow_id', 'node_id', 'expected_revision'], []],
-  ['prepare_expansion', 'Prepare a read-only expansion packet for the user-selected Provider. This does not invoke that Provider or grant approval.', ['workflow_id', 'revision_hash', 'provider_id'], []],
-  ['apply_expansion', 'Validate an inferred graph against its exact coarse revision and save another Draft. Never changes Provider/write/finalizer authority.', ['workflow_id', 'expected_revision', 'proposal'], []],
-  ['create_expansion_run', 'Create a read-only Strict planning Run using the user-selected native Provider. Use normal claim/dispatch/collect operations; its source Draft is unchanged.', ['workflow_id', 'revision_hash', 'provider_id', 'run_id', 'workspace', 'main_actor'], []],
+  ['prepare_expansion', 'Prepare a read-only expansion packet for the user-selected Provider. This does not invoke that Provider or grant approval.', ['workflow_id', 'revision_hash', 'provider_id'], ['routing_rules']],
+  ['apply_expansion', 'Validate an inferred graph against its exact coarse revision and save another Draft. Never changes Provider/write/finalizer authority.', ['workflow_id', 'expected_revision', 'proposal'], ['routing_rules']],
+  ['create_expansion_run', 'Create a read-only Strict planning Run using the user-selected native Provider. Use normal claim/dispatch/collect operations; its source Draft is unchanged.', ['workflow_id', 'revision_hash', 'provider_id', 'run_id', 'workspace', 'main_actor'], ['routing_rules']],
   ['apply_expansion_result', 'Apply a main-accepted planning Run to its exact source revision as an unreviewed Draft. Never dispatches or retries a model.', [...main, 'workflow_id', 'expected_revision'], []],
   ['list', 'List Workflow metadata and structural/environment readiness, without prompt bodies.', [], []],
   ['read', 'Read one explicit immutable Workflow revision for inspection or editing.', ['workflow_id'], ['revision_hash']],

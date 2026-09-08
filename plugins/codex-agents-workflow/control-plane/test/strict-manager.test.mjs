@@ -282,10 +282,14 @@ test('selected-Provider expansion uses durable read-only execution and applies o
   const providers = config.providers.filter(item => item.enabled && item.kind === 'native_agent'); assert(providers.length >= 2);
   const pack = await importCoarseSkill(store, join(source, 'SKILL.md'), { id: 'source-draft', providerId: providers[0].id, role: providers[0].config.role });
   const origin = { confidence: 0.8, source_span: { resource: 'source/SKILL.md', start_line: 5, end_line: 5 } };
-  proposal = { source_revision: pack.revision_hash, nodes: [{ id: 'analyze', type: 'agent', prompt_template: 'Analyze {{task}}', ...origin }],
+  proposal = { source_revision: pack.revision_hash, nodes: [{ id: 'analyze', type: 'agent', task_type: 'implementation', routing_reason: 'Routine bounded analysis', prompt_template: 'Analyze {{task}}', ...origin }],
     edges: [{ id: 'start-analyze', source: 'start', target: 'analyze', ...origin }, { id: 'analyze-final', source: 'analyze', target: 'final', ...origin }] };
   const planning = await f.service.call('create_expansion_run', { workflow_id: pack.workflow.id, revision_hash: pack.revision_hash, provider_id: providers[1].id,
     run_id: 'planning-job', workspace: f.workspace, main_actor: 'root' });
+  const originalRules = await f.service.call('routing_defaults');
+  const editedRules = structuredClone(originalRules); editedRules.routes.implementation.provider_id = providers[1].id;
+  await f.service.call('save_routing_rules', {routing_rules:editedRules,expected_rules:originalRules}, {human:true});
+  await assert.rejects(f.service.call('save_routing_rules', {routing_rules:originalRules,expected_rules:originalRules}, {human:true}), {code:'ROUTING_SETTINGS_CONFLICT'});
   await writeFile(join(source, 'reference.md'), 'Changed after the planning Run was pinned');
   const apply = { run_id: planning.run_id, control_token: planning.control_token, workflow_id: pack.workflow.id, expected_revision: pack.revision_hash };
   await assert.rejects(f.service.call('apply_expansion_result', apply), { code: 'EXPANSION_ACCEPTANCE_REQUIRED' });
