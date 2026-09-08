@@ -167,6 +167,24 @@ controller authority restarts the cursor. Rejected stale refreshes cannot advanc
 
 The human console offers one-click Skill generation: managed read-only planning
 workspace and planner defaults, bounded journal-backed claim/dispatch advancement,
-and visible progress. Never auto-accept the final review or silently retry failed
+and visible progress. Never auto-accept the final review. Explicitly configured automatic Skill generation may repair closed read-only planning rounds with journaled feedback and a pinned limit; ordinary Workflow retries remain explicit. Never silently retry other failed
 work. Explicit human acceptance applies the exact source-revision Draft; detailed
 Provider, workspace, and recovery controls remain in advanced options.
+
+Skill2Workflow generation defaults resolve registered Providers at start. The reviewer
+is a dedicated Sol/high Provider, separate from Strict global main defaults. Its
+registered configuration is pinned in server-created Run policy (never imported provenance) and permission revocation remains effective.
+Automatic repairs preserve old attempts, require closed read-only sessions, reject
+cancelled/paused Runs and stop on model/auth/transport errors or the round limit.
+
+On a human's first automatic-generation request, register the bundled native
+Sol/high generation reviewer only if its ID is absent, using configuration CAS.
+Never replace an existing/disabled Provider or an explicit different reviewer ID.
+Installation alone does not enable Providers or mutate user configuration.
+
+Local model discovery uses the newest discovered local Codex executable (numeric
+version ordering), or CODEX_CATALOG_BINARY when explicitly set. Discovery permits
+only initialize/account-read/model-list RPCs, never model turns or login. Client
+model inventory is separate from the qualified Strict runtime. Grok/Cursor discover
+local clients, honor explicit path overrides and report unknown model catalogs
+as client-managed rather than inventing lists.

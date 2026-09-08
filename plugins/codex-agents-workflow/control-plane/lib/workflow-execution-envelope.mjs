@@ -31,7 +31,7 @@ export function bindingContext(state) {
 }
 
 export function approvalBinding(node, state, pins, attemptNumber = state.nodes[node.id].attempts.length + 1) {
-  const provider = node.executor?.kind === 'provider' ? pins.providers.find(item => item.id === node.executor.provider_id) : null;
+  const provider = node.executor?.kind === 'provider' ? pins.providers.find(item => item.id === node.executor.provider_id) : node.executor?.kind === 'main' ? pins.generation?.reviewer ?? null : null;
   const permissions = nodePermissions(node, state);
   return {
     required: Boolean(node.approval.required || provider?.requires_user_approval || state.require_approval),

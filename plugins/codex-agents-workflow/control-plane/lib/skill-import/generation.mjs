@@ -1,16 +1,24 @@
+import { repairGeneration } from './generation-repair.mjs';
 import { compileExpansion } from './semantic-expander.mjs';
 import { leaseToken } from '../workflow-execution-envelope.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 
-// One bounded transition per request; never retry failed nodes or accept a final
-// model proposal automatically. Durable Run state remains the single authority.
+// One bounded transition per request. Only pinned read-only generation repairs
+// may retry; human final acceptance remains explicit.
 export async function advanceGeneration(service, runtime, executor, args, {store,context}) {
   await runtime.authorizeController(args.run_id,args);
-  const {state,pins} = await runtime.runs.read(args.run_id);
+  const record = await runtime.runs.read(args.run_id);
+  const {state,pins} = record;
   requireValue(pins.root.provenance?.kind === 'skill_expansion_job', 'GENERATION_RUN', 'Generation requires a pinned Skill expansion Run');
   const source = {workflow_id:pins.root.provenance.source_workflow_id,expected_revision:pins.root.provenance.source_revision};
   if (state.status === 'succeeded') return {phase:'ready_to_apply',source};
-  if (state.status !== 'running') return {phase:'attention',status:state.status,error:state.error};
+  if (state.status==='blocked') {const next=await runtime.next(args.run_id);if(next.approvals.length) return {phase:'approval',approvals:next.approvals};}
+  if (state.status !== 'running') {
+    const failed = Object.values(state.nodes).find(n=>n.status==='failed');
+    if (state.status==='failed' && pins.generation?.settings && ['STRICT_OUTPUT_JSON','DATA_INVALID'].includes(failed?.error?.code)) return repairGeneration(runtime,args,record,{code:failed.error.code,message:'Return valid JSON matching the exact schema.'});
+    const error=failed?.error ?? state.error;
+    return {phase:'attention',status:state.status,error,models:pins.generation?.settings,diagnostics:failed?.attempts.at(-1)?.executor_events?.filter(e=>['model_catalog','session_state'].includes(e.kind))};
+  }
   const next = await runtime.next(args.run_id);
   if (next.approvals.length) return {phase:'approval',approvals:next.approvals};
   for (const nodeId of ['expand','final']) {
@@ -18,7 +26,13 @@ export async function advanceGeneration(service, runtime, executor, args, {store
     requireValue(node, 'GENERATION_RUN', 'Expansion Run is missing a required stage');
     if (node.status === 'succeeded') continue;
     if (node.status === 'ready') {
-      const lease = await runtime.claimNode(args.run_id,{...args,node_id:nodeId,owner:state.main_actor,request_id:'generation-'+nodeId});
+      if(nodeId==='final' && pins.generation?.settings) {
+        const pack=await store.snapshot(source.workflow_id,source.expected_revision);
+        const resources=await store.resources(source.workflow_id,pack.revision_hash);
+        try {compileExpansion(pack,resources,state.nodes.expand.output,{...context,routing_rules:pins.root.provenance.routing_rules});}
+        catch(error){if(!error.code?.startsWith('EXPANSION_') && !['DATA_INVALID','ROUTING_CLASSIFICATION'].includes(error.code)) throw error;return repairGeneration(runtime,args,record,{code:error.code,message:error.message,validation:error.validation ?? null});}
+      }
+      const lease = await runtime.claimNode(args.run_id,{...args,node_id:nodeId,owner:state.main_actor,request_id:'generation-'+nodeId+'-'+node.attempts.length});
       await executor.dispatch(args.run_id,{...args,node_id:nodeId,attempt_id:lease.attempt_id,lease_token:lease.lease_token});
       return {phase:nodeId==='expand'?'generating':'reviewing'};
     }
@@ -31,6 +45,8 @@ export async function advanceGeneration(service, runtime, executor, args, {store
     }
     if (nodeId==='final' && attempt.result_proposal) {
       const result = await service.strictManager.collect(runtime,args.run_id,{...lease,accepted:false});
+      const review=result.completion.structured_output;
+      if(pins.generation?.settings && (review.approved!==true || review.findings.length)) return repairGeneration(runtime,args,record,{code:'GENERATION_REVIEW_FINDINGS',findings:review.findings});
       const pack = await store.snapshot(source.workflow_id,source.expected_revision);
       const resources = await store.resources(source.workflow_id,pack.revision_hash);
       const compiled = compileExpansion(pack,resources,state.nodes.expand.output,{...context,routing_rules:pins.root.provenance.routing_rules});
@@ -54,6 +70,7 @@ export async function acceptGeneration(service, runtime, args) {
   if (observation.phase==='review_required') {
     const {state} = await runtime.runs.read(args.run_id);
     const attempt = state.nodes.final.attempts.find(a=>a.id===state.nodes.final.active_attempt_id);
+    if(record.pins.generation) {const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);requireValue(completion.structured_output.approved===true && completion.structured_output.findings.length===0,'GENERATION_REVIEW_BLOCKED','Review must pass before acceptance');}
     await service.strictManager.collect(runtime,args.run_id,{...args,node_id:'final',attempt_id:attempt.id,lease_token:leaseToken(args.control_token,args.run_id,'final',attempt.id,attempt.lease_generation ?? 0),accepted:true});
   }
   return service.call('apply_expansion_result',{...args,...observation.source});

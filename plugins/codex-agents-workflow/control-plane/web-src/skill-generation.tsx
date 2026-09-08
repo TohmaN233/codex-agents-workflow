@@ -28,7 +28,7 @@ export function SkillGeneration({pack,routing,provider,workspace,saved,openRun}:
     catch(cause){fail(cause);}finally{setBusy(false);}
   }
   async function accept(){setBusy(true);try{const result=await api('accept_generation',{...control,accepted:true});sessions.delete(sessionKey);await saved(result);}catch(cause){fail(cause);}finally{setBusy(false);}}
-  const labels:Json={generating:'正在生成工作流…',reviewing:'正在检查生成结果…',review_required:'生成与检查已完成，请查看结果',ready_to_apply:'检查已确认，可以保存草稿',authentication_required:'所选独立登录模式需要完成登录',approval:'需要你允许本次模型调用',attention:'生成已停止，需要处理'};
+  const labels:Json={repairing:'正在根据检查意见自动修正…',generating:'正在生成工作流…',reviewing:'正在检查生成结果…',review_required:'生成与检查已完成，请查看结果',ready_to_apply:'检查已确认，可以保存草稿',authentication_required:'所选独立登录模式需要完成登录',approval:'需要你允许本次模型调用',attention:'生成已停止，需要处理'};
   return <section className="generation-panel"><h2>从 Skill 自动生成工作流</h2><p>自动安排步骤、按规则选择执行者并检查结果。工作目录由系统准备，通常无需设置。</p>
     {!run && <button className="primary" disabled={busy} onClick={start}>{busy?'正在准备…':'自动生成工作流'}</button>}
     {run && <p role="status">{labels[progress?.phase] ?? '正在准备生成…'}</p>}
@@ -37,6 +37,7 @@ export function SkillGeneration({pack,routing,provider,workspace,saved,openRun}:
     {['review_required','ready_to_apply'].includes(progress?.phase) && <button className="primary" disabled={busy} onClick={accept}>我已查看结果，保存为可编辑草稿</button>}
     {progress?.phase==='approval' && progress.approvals.map((approval:Json)=><div key={approval.id}><Details title="本次调用的权限要求" value={approval}/><button disabled={busy} onClick={async()=>{setBusy(true);try{await api('approve',{...control,approval_id:approval.id,decision:true});setProgress(null);}catch(cause){fail(cause);}finally{setBusy(false);}}}>允许此次调用并继续</button></div>)}
     {progress?.phase==='authentication_required' && <div><p>此操作仅用于你主动选择的独立登录模式。完成登录后继续。</p>{progress.live?.status==='auth_required' && <button disabled={busy} onClick={async()=>{setBusy(true);try{const value=await api('login_generation',control!);setLogin(value);setProgress({...progress,live:value});}catch(cause){fail(cause);}finally{setBusy(false);}}}>获取官方登录链接</button>}{login?.auth_url && <a href={login.auth_url} target="_blank" rel="noreferrer">打开官方登录页面</a>}<button onClick={()=>{setError(null);setProgress(null);}}>登录完成，继续</button></div>}
+    {progress?.phase==='repairing' && <p>第 {progress.round} 轮：已将具体问题反馈给生成模型。</p>}
     {progress?.phase==='attention' && <Details title="停止原因" value={progress}/>}
     {run && <details><summary>运行详情与恢复（高级）</summary><button onClick={()=>openRun(run)}>查看详细运行</button>{error && <button onClick={()=>{setError(null);setProgress(null);}}>重新检查此任务状态</button>}<button disabled={busy} onClick={async()=>{setBusy(true);try{await api('cancel',control!);setProgress({phase:'attention',status:'cancelled'});}catch(cause){fail(cause);}finally{setBusy(false);}}}>停止生成</button></details>}
   </section>;

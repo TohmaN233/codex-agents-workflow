@@ -1,8 +1,10 @@
+import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
+import { readFile } from 'node:fs/promises';
 import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
 import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
 import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
-import { loadConfig, isEnvironmentDisabled } from './config.mjs';
+import { loadConfig, saveConfig, configRevision, isEnvironmentDisabled } from './config.mjs';
 import { WorkflowStore } from './workflow-store.mjs';
 import { WorkflowRuntime } from './workflow-runtime.mjs';
 import { WorkflowExecutor } from './workflow-executor.mjs';
@@ -94,9 +96,15 @@ export class WorkflowService {
         requireValue(human,'HUMAN_GENERATION','Start automatic generation from the console');
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
         const rules = args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const reviewerId=rules.generation?.review_provider_id ?? 'native-generation-reviewer';
+        if(reviewerId==='native-generation-reviewer' && !config.providers.some(p=>p.id===reviewerId)) {
+          const bundled=JSON.parse(await readFile(this.defaultConfigPath,'utf8')).providers.find(p=>p.id===reviewerId);
+          requireValue(bundled,'GENERATION_REVIEW_PROVIDER','Bundled generation reviewer is missing');
+          await saveConfig({...config,providers:[...config.providers,bundled]},{configPath:this.configPath,expectedRevision:configRevision(config)});
+        }
         const runId = workflowId(args.run_id);
         const workspace = args.workspace || await ensureDirectory(join(dirname(this.configPath),'skill-generation-workspaces','job-'+runId));
-        return this.call('create_expansion_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.routes.planning.provider_id,routing_rules:rules,main_actor:'human-console'});
+        return this.call('create_expansion_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.routes.planning.provider_id,routing_rules:rules,automatic_generation:true,main_actor:'human-console'});
       }
       case 'advance_generation': {
         requireValue(human,'HUMAN_GENERATION','Automatic generation belongs to its console controller');
@@ -110,6 +118,12 @@ export class WorkflowService {
       case 'accept_generation': {
         requireValue(human,'HUMAN_GENERATION','Generation acceptance belongs to the human console');
         return acceptGeneration(this,runtime,args);
+      }
+      case 'local_clients': {
+        requireValue(human,'HUMAN_CLIENT_DISCOVERY','Local client discovery belongs to the console');
+        const codex=await localCodexCatalog({env:this.env,extra:[config.strict_executor.codex_binary].filter(Boolean)});
+        const connectors=await Promise.all(config.providers.filter(p=>p.kind==='builtin_connector').map(async provider=>{try{return {provider_id:provider.id,...await this.registry.probe(provider,{}),models:{source:'client_managed',available:null,message:'模型由客户端管理；当前接口未提供完整模型目录。'}};}catch(error){return {provider_id:provider.id,error:{code:error.code,message:error.message}};}}));
+        return {codex,connectors,execution_runtime:{binary:config.strict_executor.codex_binary,qualification:QUALIFIED_CODEX}};
       }
       case 'capabilities': {
         let strict;
@@ -148,7 +162,7 @@ export class WorkflowService {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
-        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers));
+        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers), args.automatic_generation === true, config.providers.find(p=>p.id === (args.routing_rules?.generation?.review_provider_id ?? 'native-generation-reviewer')));
         const adapter = buildProviderAdapter(provider, { access: 'read_only' }, { env: this.env, allowDirectApi: config.global.allow_direct_api });
         // A packet is not an invocation. Native/MCP/Strict host integration must
         // preserve this selected Provider and record actual dispatch separately.
@@ -158,11 +172,12 @@ export class WorkflowService {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
-        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers));
+        const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer')));
         await this.strictManager.capability({ ...job, resources: prepareResources(job.resources).manifest }, config.providers);
         const jobs = await new WorkflowStore(join(dirname(this.configPath), 'workflow-expansion-jobs'), { validationContext: context }).initialize();
         const saved = await jobs.create(job.workflow, job);
-        const planning = await new WorkflowRuntime({ workflowStore: jobs, runRoot: runtime.runs.root, context, strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
+        const planning = await new WorkflowRuntime({ generationPolicy:args.automatic_generation === true ? {settings:job.provenance.generation,reviewer:config.providers.find(p=>p.id===job.provenance.generation.review_provider_id)} : null, workflowStore: jobs, runRoot: runtime.runs.root, context, strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
         return planning.start({ workflow_id: saved.workflow.id, revision_hash: saved.revision_hash, run_id: args.run_id,
           workspace: args.workspace, main_actor: args.main_actor, access: 'read_only', inputs: { task: 'Analyze this pinned Skill into an editable Draft' } });
       }

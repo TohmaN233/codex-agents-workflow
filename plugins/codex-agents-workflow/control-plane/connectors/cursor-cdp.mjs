@@ -1,3 +1,4 @@
+import { pathClientCandidates, CLIENT_MANAGED_MODELS } from './local-client-paths.mjs';
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
@@ -67,6 +68,7 @@ function defaultCursorCandidates(env = process.env, platform = process.platform)
     const programFiles = env.ProgramFiles || env.PROGRAMFILES || 'C:\\Program Files';
     const programFilesX86 = env['ProgramFiles(x86)'] || env.PROGRAMFILES_X86 || '';
     return [
+      ...pathClientCandidates('cursor',env,platform),
       winPath.join(local, 'Programs', 'Cursor', 'Cursor.exe'),
       winPath.join(programFiles, 'Cursor', 'Cursor.exe'),
       programFilesX86 ? winPath.join(programFilesX86, 'Cursor', 'Cursor.exe') : '',
@@ -74,11 +76,12 @@ function defaultCursorCandidates(env = process.env, platform = process.platform)
   }
   if (platform === 'darwin') {
     return [
+      ...pathClientCandidates('cursor',env,platform),
       '/Applications/Cursor.app/Contents/MacOS/Cursor',
       join(homedir(), 'Applications', 'Cursor.app', 'Contents', 'MacOS', 'Cursor'),
     ];
   }
-  return [];
+  return pathClientCandidates('cursor',env,platform);
 }
 
 async function firstAccessible(candidates) {
@@ -168,7 +171,7 @@ export class CursorCdpConnector {
         }
         return {
           provider_id: provider.id, connector: 'cursor_cdp', state: 'available', ready: false,
-          observed: { transport: 'cdp_ui', cdp_port: port, cursor_identity: true, workspace: null },
+          observed: { transport: 'cdp_ui', cdp_port: port, cursor_identity: true, client_version:String(version.Browser ?? ''), models:CLIENT_MANAGED_MODELS, workspace: null },
           action_required: 'Provide an absolute Git workspace to verify the exact repository and supported Cursor Agent UI profile.',
           error: null,
         };
@@ -178,7 +181,7 @@ export class CursorCdpConnector {
         return {
           provider_id: provider.id, connector: 'cursor_cdp',
           state: binary ? 'available' : 'needs_user_action', ready: false,
-          observed: { transport: 'cdp_ui', cdp_port: port, binary_present: Boolean(binary), workspace: null },
+          observed: { transport: 'cdp_ui', cdp_port: port, binary_present: Boolean(binary), binary, models:CLIENT_MANAGED_MODELS, workspace: null },
           action_required: binary
             ? 'Provide a workspace and start an explicitly approved connector task.'
             : `Install Cursor or set ${provider.config.executable_env || 'CURSOR_EXE'} to an absolute executable path before the MCP server starts.`,

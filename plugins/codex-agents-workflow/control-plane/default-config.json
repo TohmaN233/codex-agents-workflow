@@ -163,6 +163,27 @@
         "system_prompt": "You are an advisory subagent. Return evidence-based analysis only. Do not claim file access, tool execution, or implementation.",
         "headers": {}
       }
+    },
+    {
+      "id": "native-generation-reviewer",
+      "name": "Skill2Workflow Sol / High reviewer",
+      "kind": "native_agent",
+      "enabled": true,
+      "description": "Default reviewer for Skill-to-Workflow generation.",
+      "requires_user_approval": false,
+      "capabilities": {
+        "read": true,
+        "write": false,
+        "background": false
+      },
+      "config": {
+        "agent_type": "default",
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "high",
+        "role": "reviewer",
+        "fresh_context": true,
+        "requested_sandbox": "read-only"
+      }
     }
   ],
   "task_types": [

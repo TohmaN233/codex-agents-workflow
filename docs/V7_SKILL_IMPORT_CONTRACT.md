@@ -110,3 +110,25 @@ There is no implicit retry, Ready publication, approval waiver or guarantee that
 arbitrary generated workflows have no bugs. Closing the page stops further UI
 advancement, not a model call already dispatched; Run details preserve cancellation
 and recovery controls. Workspace/Provider/rules remain editable in advanced options.
+
+### Provider defaults and automatic repair
+The console resolves the planning route and the registered generation reviewer before
+starting. No model text is required from users. Advanced options select registered
+Providers and a 1–10 round budget (default 3). The bundled generation reviewer is
+Sol/high; normal execution review routing and global Main settings remain separate.
+A rejected structured review or compiler-invalid proposal feeds the next fresh
+planning attempt. The journal retains every attempt and repair reason. Only closed,
+read-only generation sessions can restart. Cancellation, pause, revocation, uncertain
+transport, missing model/authentication and exhausted budget stop advancement.
+A passing review still requires explicit human acceptance before saving the Draft.
+
+### Local client inventory
+The execution-capability page reads model metadata from the newest discovered local
+Codex executable, not the bundled historical runtime catalog or a copied cache.
+CODEX_CATALOG_BINARY explicitly overrides discovery. The reader permits only
+initialize, account/read and model/list; it cannot log in, create threads, execute
+turns, or edit Skills. Model discovery does not confer Strict runtime qualification.
+Grok and Cursor honor registered path overrides, otherwise discover installed clients;
+missing public model APIs are shown as client-managed/unknown, never an invented list.
+Observed on Windows: Codex0.153.4 returned eight models including gpt-6-astra with
+zero model calls. The separately qualified Strict executable remains0.145.0.

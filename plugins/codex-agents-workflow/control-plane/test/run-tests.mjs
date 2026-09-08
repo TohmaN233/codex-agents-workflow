@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = dirname(fileURLToPath(import.meta.url));
 const files = [
   'config.test.mjs',
+  'local-client-discovery.test.mjs',
   'connector-integration.test.mjs',
   'connectors.test.mjs',
   'connector-process.test.mjs',
