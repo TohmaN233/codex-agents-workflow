@@ -99,7 +99,7 @@ export class WorkflowService {
         const reviewerId=rules.generation?.review_provider_id ?? 'native-generation-reviewer';
         const reviewer=config.providers.find(p=>p.id===reviewerId) ?? (reviewerId==='native-generation-reviewer'?JSON.parse(await readFile(this.defaultConfigPath,'utf8')).providers.find(p=>p.id===reviewerId):null);
         const pack=await store.snapshot(args.workflow_id,args.revision_hash);
-        const job=expansionRunPack(pack,await store.resources(args.workflow_id,pack.revision_hash),provider,'generation-preview',rules,true,reviewer);
+        const job=expansionRunPack(pack,await store.resources(args.workflow_id,pack.revision_hash),provider,'generation-preview',rules,true,reviewer,config.providers);
         return {invoked:false,source_revision:pack.revision_hash,generator:job.workflow.nodes.find(n=>n.id==='expand').prompt_template,reviewer:job.workflow.nodes.find(n=>n.id==='final').prompt_template,shared_request:job.resources['analysis/request.txt'],output_schemas:Object.fromEntries(job.workflow.nodes.filter(n=>n.outputs_schema).map(n=>[n.id,n.outputs_schema])),runtime_context:'Execution additionally supplies actual upstream results, output schema and any previous repair feedback. This preview does not invoke a model.'};
       }
       case 'start_generation': {
@@ -172,7 +172,7 @@ export class WorkflowService {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
-        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers), args.automatic_generation === true, config.providers.find(p=>p.id === (args.routing_rules?.generation?.review_provider_id ?? 'native-generation-reviewer')));
+        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers), config.providers);
         const adapter = buildProviderAdapter(provider, { access: 'read_only' }, { env: this.env, allowDirectApi: config.global.allow_direct_api });
         // A packet is not an invocation. Native/MCP/Strict host integration must
         // preserve this selected Provider and record actual dispatch separately.
@@ -183,7 +183,7 @@ export class WorkflowService {
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
         const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
-        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer')));
+        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer')),config.providers);
         await this.strictManager.capability({ ...job, resources: prepareResources(job.resources).manifest }, config.providers);
         const jobs = await new WorkflowStore(join(dirname(this.configPath), 'workflow-expansion-jobs'), { validationContext: context }).initialize();
         const saved = await jobs.create(job.workflow, job);
@@ -197,7 +197,7 @@ export class WorkflowService {
         const { pins } = await runtime.runs.read(args.run_id); const provenance = pins.root.provenance;
         requireValue(provenance?.kind === 'skill_expansion_job' && provenance.source_workflow_id === args.workflow_id && provenance.source_revision === args.expected_revision,
           'EXPANSION_RESULT_IDENTITY', 'Expansion result belongs to a different source Workflow revision');
-        return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules } });
+        return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null });
       }
       case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: args.routing_rules } });
       case 'list': return Promise.all((await store.list()).map(async pack => ({ id: pack.workflow.id, name: pack.workflow.name, status: pack.workflow.status, enabled: pack.workflow.enabled, revision_hash: pack.revision_hash, description: pack.workflow.description, skill_policy: pack.workflow.skill_policy, validation: (await this.validationContext(store, pack.workflow, context)).validation })));

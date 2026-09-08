@@ -2,6 +2,7 @@
 export const CONVERSION_CONTRACT = {
   version: 1,
   checks: [
+    'Before graph construction explicitly analyze independent work versus data/order/shared-state dependencies. Use parallel/join only for useful disjoint tasks; explain sequential choices. Then decide main versus subagent for every responsibility: main owns synthesis and user-facing decisions; delegate bounded independently verifiable work. Identify all required human approvals and missing task answers. In automatic mode choose each subagent from registered candidates using its supplied suitability description and actual capabilities, documenting the reason; never select by name alone. In fixed mode use the configured task routes and omit execution_target/provider_choice. Review these four decisions under the selected mode as conversion correctness.',
     'Preserve all meaningful source phases and their dependency order: discovery, production, evaluation, feedback and delivery. Do not approve a plan before the source-required evidence gathering.',
     'Preserve hard rules either explicitly or through actionable instructions to read and apply exact pinned references. Reference inheritance is valid coverage; do not duplicate every implementation detail in every prompt.',
     'Connect each consumed result to an actual preceding producer or explicit future Run input. Do not invent input fields, gate responses, output values or completed artifacts.',

@@ -173,3 +173,34 @@ This supplies an executable failure mechanism rather than relying on a prompt to
 call a nonexistent fail tool. Planning itself does not require media execution.
 Briefing and continuation decisions are explicit future Run inputs; approval gates
 remain approval-only, and missing answers produce a blocked result for a later Run.
+
+## Task-aware automatic planning
+
+New routing defaults use automatic selection. Existing saved fixed mappings remain
+valid until explicitly switched. The planning packet contains a bounded registered
+Provider catalog (ID, model, effort, role, suitability description, read/write flags),
+never credentials. Planning records parallelism, main/subagent boundaries and human
+intervention in planning_analysis. Each automatic agent chooses main or subagent;
+subagents name a registered Provider with a task-specific rationale. The compiler
+rejects missing analysis or ineligible choices and preserves read-only access.
+Main remains host-model-independent. Fixed mode rejects automatic selection fields.
+
+The explicit human generation-acceptance button confirms the displayed inferred
+nodes and edges in the same Draft save, recording source revision and proposal hash.
+Raw expansion application still requires per-item review. Approval does not clear
+resource/dependency observations or prove launch capability. The editor groups
+structural errors, pending confirmations and execution constraints separately.
+Shell-local substitutions and JavaScript template interpolation are not blanket
+environment requirements; declared dependencies and actual environment reads remain.
+
+## Artifact versus execution environment
+
+The definition validator validates requirement shapes but does not compare local
+executables, environment variables, tools or MCP availability. Execution performs
+that check. Script/binary presence and external URLs are retained as informational
+observations; missing resources, literal redactions and source-linked user paths
+remain definition issues. Portable non-Markdown files are snapshot resources with
+source/snapshot hashes. Configuration templates .env.example/.env.template pass
+through the same credential scanner instead of being excluded by filename; real
+credential files remain excluded. Known system paths (/usr,/opt,/etc) describe the
+runtime environment, not a dependency on the original imported directory.

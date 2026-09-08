@@ -35,7 +35,7 @@ test('folder import and prepare/apply preserve routing for Main and Provider coa
     const packet = await f.service.call('prepare_expansion',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,provider_id:'native-terra'});
     assert.equal(packet.routing_rules.routes.review.provider_id,'native-reviewer');
     const origin = {confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
-    const proposal = {source_revision:pack.revision_hash,nodes:[{id:'check',type:'agent',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+    const proposal = {source_revision:pack.revision_hash,planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
     const args = {workflow_id:pack.workflow.id,expected_revision:pack.revision_hash,proposal};
     await assert.rejects(f.service.call('apply_expansion',args),{code:'ROUTING_RULES_REQUIRED'});
     const applied = await f.service.call('apply_expansion',{...args,routing_rules:packet.routing_rules});

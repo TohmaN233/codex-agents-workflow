@@ -79,7 +79,7 @@ export class WorkflowRuntime {
     validateData(inputs, root.workflow.inputs_schema);
     requireValue(root.workflow.status === 'ready' && root.workflow.enabled, 'WORKFLOW_LAUNCH_BLOCKED', 'Only enabled Ready Workflows may resolve execution dependencies', { validation: validateWorkflowGraph(root.workflow, this.context) });
     const closure = await resolveWorkflowPins(this.workflows, root);
-    const checked = validateWorkflowGraph(root.workflow, { ...this.context, ...closure.context });
+    const checked = validateWorkflowGraph(root.workflow, { ...this.context, ...closure.context, check_runtime_requirements: true });
     requireValue(checked.launch_ready, 'WORKFLOW_LAUNCH_BLOCKED', 'Workflow cannot start in the current environment', { validation: checked });
     for (const pack of closure.packs) for (const node of pack.workflow.nodes) if (EXECUTOR_NODES.has(node.type)) requireValue(this.supportedNodeTypes.has(node.type), 'EXECUTOR_UNSUPPORTED', `Node type has no qualified executor: ${node.type}`, { node_id: node.id });
     for (const skill of closure.skills) {

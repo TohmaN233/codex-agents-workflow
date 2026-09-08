@@ -32,7 +32,7 @@ test('generation accepts a non-reviewer registered native model with read-only r
   const source=join(f.root,'selectable-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: selectable\ndescription: test\n---\nReview result.');
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'selectable-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
-  proposal={source_revision:pack.revision_hash,nodes:[{id:'check',type:'agent',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
   const rules=await f.service.call('routing_defaults');rules.generation={review_provider_id:'native-luna',planner_provider_id:'native-terra',max_rounds:3};rules.routes.planning.provider_id='native-luna';
   const input={workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,routing_rules:rules};
   const preview=await f.service.call('generation_prompt_preview',input,{human:true});
@@ -53,7 +53,7 @@ test('one-click generation prepares workspace and advances only to explicit huma
   const {store} = await f.service.open();
   const pack = await importCoarseSkill(store,join(source,'SKILL.md'),{id:'one-click-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
-  proposal={source_revision:pack.revision_hash,nodes:[{id:'check',type:'agent',prompt_template:'Review',task_type:'review',routing_reason:'Independent review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',prompt_template:'Review',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
   const oldConfig=await f.service.config();oldConfig.providers=oldConfig.providers.filter(p=>p.id!=='native-generation-reviewer');await saveConfig(oldConfig,{configPath:f.configPath});
   const start={workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'one-click'};
   await assert.rejects(f.service.call('start_generation',start),{code:'HUMAN_GENERATION'});
@@ -77,7 +77,29 @@ test('one-click generation prepares workspace and advances only to explicit huma
   await assert.rejects(f.service.call('accept_generation',{...control,accepted:false},{human:true}),{code:'GENERATION_ACCEPTANCE'});
   const saved=await f.service.call('accept_generation',{...control,accepted:true},{human:true});
   assert.equal(saved.workflow.status,'draft'); assert.notEqual(saved.revision_hash,pack.revision_hash);
+  assert(saved.workflow.nodes.filter(n=>n.origin?.kind==='inferred').every(n=>n.origin.reviewed));
+  assert(saved.workflow.edges.filter(n=>n.origin?.kind==='inferred').every(n=>n.origin.reviewed));
+  assert(!saved.workflow.import_status.unresolved.some(i=>i.code==='AI_INFERENCES_REQUIRE_REVIEW'));
   assert.equal(f.sessions.length,2);
+});
+
+test('an invented automatic Provider is repaired before review without an endless error state',async t=>{
+  let proposal;let generated=0;
+  const f=await fixture(t,{turn:async settings=>{
+    const value=settings.model==='gpt-5.6-sol'?{approved:true,findings:[]}:structuredClone(proposal);
+    if(value.nodes && generated++===0)value.nodes[0].provider_choice='invented-provider';
+    return {output:JSON.stringify(value),thread_id:'routing-repair',turn_id:'turn',audit:{}};
+  }});
+  const source=join(f.root,'routing-repair');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: routing-repair\ndescription: Review\n---\nReview a result.');
+  const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'routing-repair'});
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+  proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  const run=await f.service.call('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  for(const phase of ['generating','repairing','generating','reviewing','review_required']){
+    assert.equal((await f.service.call('advance_generation',control,{human:true})).phase,phase);
+    await Promise.all([...f.manager.entries.values()].map(e=>e.job));
+  }
+  assert.equal(generated,2);await f.service.call('cancel',control);
 });
 test('one-click generation exposes managed login without silently starting a model', async t => {
   const f = await fixture(t,{authenticated:false});
@@ -114,7 +136,7 @@ test('generation repairs review findings with pinned providers and preserves rej
   const source=join(f.root,'repair-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: repair\ndescription: Review\n---\nReview result.');
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'repair-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
-  proposal={source_revision:pack.revision_hash,nodes:[{id:'check',type:'agent',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
   const run=await f.service.call('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'repair-generation'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   async function step(){const result=await f.service.call('advance_generation',control,{human:true});await Promise.all([...f.manager.entries.values()].map(e=>e.job));return result;}
   assert.equal((await step()).phase,'generating');const approval=await step();assert.equal(approval.phase,'approval');await f.service.call('approve',{...control,approval_id:approval.approvals[0].id,decision:true});assert.equal((await step()).phase,'reviewing');
@@ -130,7 +152,7 @@ test('generation repairs invalid graph before review and stops at the pinned bud
   const source=join(f.root,'invalid-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: invalid\ndescription: Review\n---\nReview result.');
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'invalid-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
-  proposal={source_revision:pack.revision_hash,nodes:[{id:'start',type:'agent',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[]};
+  proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'start',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[]};
   const routing=await f.service.call('routing_defaults');routing.generation={review_provider_id:'native-generation-reviewer',max_rounds:2};
   const run=await f.service.call('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'invalid-generation',routing_rules:routing},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   async function step(){const result=await f.service.call('advance_generation',control,{human:true});await Promise.all([...f.manager.entries.values()].map(e=>e.job));return result;}
@@ -414,7 +436,7 @@ test('selected-Provider expansion uses durable read-only execution and applies o
   const providers = config.providers.filter(item => item.enabled && item.kind === 'native_agent'); assert(providers.length >= 2);
   const pack = await importCoarseSkill(store, join(source, 'SKILL.md'), { id: 'source-draft', providerId: providers[0].id, role: providers[0].config.role });
   const origin = { confidence: 0.8, source_span: { resource: 'source/SKILL.md', start_line: 5, end_line: 5 } };
-  proposal = { source_revision: pack.revision_hash, nodes: [{ id: 'analyze', type: 'agent', task_type: 'implementation', routing_reason: 'Routine bounded analysis', prompt_template: 'Analyze {{task}}', ...origin }],
+  proposal = { source_revision: pack.revision_hash, planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'}, nodes: [{ id: 'analyze', type: 'agent', execution_target:'subagent',provider_choice:'native-luna',task_type: 'implementation', routing_reason: 'Routine bounded analysis', prompt_template: 'Analyze {{task}}', ...origin }],
     edges: [{ id: 'start-analyze', source: 'start', target: 'analyze', ...origin }, { id: 'analyze-final', source: 'analyze', target: 'final', ...origin }] };
   const planning = await f.service.call('create_expansion_run', { workflow_id: pack.workflow.id, revision_hash: pack.revision_hash, provider_id: providers[1].id,
     run_id: 'planning-job', workspace: f.workspace, main_actor: 'root' });

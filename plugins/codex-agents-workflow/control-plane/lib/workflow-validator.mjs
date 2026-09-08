@@ -1,3 +1,4 @@
+import { informationalImportObservation } from './workflow-import-observations.mjs';
 import { NODE_TYPES, HUMAN_GATE_OUTPUT, validateWorkflowShape } from './workflow-schema.mjs';
 import { workflowId } from './workflow-paths.mjs';
 import { pathBoundaries, pointerParts, validateExpression } from './workflow-bindings.mjs';
@@ -216,13 +217,13 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (kind === 'providers') {
         if (!providers.has(id)) issue('PROVIDER_MISSING', `Required Provider does not exist: ${id}`);
         else if (!providers.get(id).enabled) issue('PROVIDER_DISABLED', `Required Provider is disabled: ${id}`, {}, blockers);
-      } else if (!(context[kind] ?? []).includes(id)) issue('REQUIREMENT_UNAVAILABLE', `Required ${kind} entry is unavailable: ${id}`, { requirement: id }, blockers);
+      } else if (context.check_runtime_requirements === true && !(context[kind] ?? []).includes(id)) issue('REQUIREMENT_UNAVAILABLE', `Required ${kind} entry is unavailable: ${id}`, { requirement: id }, blockers);
     }
   }
   if (workflow.import_status !== undefined) {
     const imported = workflow.import_status;
     if (!object(imported) || !['coarse', 'ai_expanded'].includes(imported.mode) || !Array.isArray(imported.unresolved)) issue('IMPORT_STATUS', 'Imported Workflow needs explicit dependency observations');
-    else if (imported.unresolved.length) issue('IMPORT_UNRESOLVED', 'Imported Workflow has unresolved resource, dependency or credential observations', { unresolved: imported.unresolved }, blockers);
+    else if (imported.unresolved.some(i=>!informationalImportObservation(i))) issue('IMPORT_UNRESOLVED', 'Imported Workflow has unresolved resource, dependency or credential observations', { unresolved: imported.unresolved.filter(i=>!informationalImportObservation(i)) }, blockers);
   }
   if (!workflow.enabled) issue('WORKFLOW_DISABLED', 'Workflow is disabled', {}, blockers);
   if (workflow.status !== 'ready') issue('WORKFLOW_DRAFT', 'Draft Workflow cannot start', {}, blockers);

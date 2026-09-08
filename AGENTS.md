@@ -7,8 +7,10 @@ thread creation; anonymous built-in catalogs cannot establish account availabili
 Skill expansion prompts must carry the exact compiler field contract and finite
 condition syntax. Keep inferred graphs acyclic; names/output schemas are data,
 while Provider, role, permissions and acceptance remain compiler-owned.
-New Skill expansion planning pins editable skill2workflow routing rules. AI classifies
-node responsibilities; the compiler maps them to enabled user-configured Providers.
+New Skill expansion planning pins editable skill2workflow routing rules. AI analyzes parallel dependencies, main/subagent responsibilities and human gates.
+Automatic mode proposes eligible registered Providers using pinned suitability descriptions;
+fixed mode retains user-owned task-type mappings. The compiler validates every choice
+and never expands access. Main model identity remains host-owned.
 Never inherit the planning Provider for every execution node. Missing eligible routes
 fail visibly before replacing the coarse Draft. Final Main acceptance stays fixed.
 Expansion packets include the future Run input convention, actual coarse input
@@ -210,3 +212,14 @@ with WORKFLOW_NODE_BLOCKED and never publish a success proposal. This applies to
 structured and unstructured results; it is not an automatic repair trigger.
 Conversion prompts require actual successful producers before downstream gates,
 and move interactive briefing/continuation answers into later explicit Run tasks.
+
+Generation acceptance in the human console confirms the exact displayed inferred nodes
+and edges atomically with saving the Draft, retaining source/proposal evidence. Raw
+expansion API calls remain unreviewed. Structural errors, pending confirmations and
+execution prerequisites are separate UI groups; none of the launch checks is suppressed.
+
+Portable scripts, binary assets and external URLs are informational import observations,
+not malformed definitions. Environment availability checks occur only at Run start.
+Missing, redacted, unsafe and source-linked resources remain conversion blockers.
+.env.example/.env.template are data templates scanned for literal credentials; real
+credential files remain excluded. System /usr,/opt,/etc paths are runtime references.

@@ -30,7 +30,7 @@ export async function advanceGeneration(service, runtime, executor, args, {store
       if(nodeId==='final' && pins.generation?.settings) {
         const pack=await store.snapshot(source.workflow_id,source.expected_revision);
         const resources=await store.resources(source.workflow_id,pack.revision_hash);
-        try {compileExpansion(pack,resources,state.nodes.expand.output,{...context,routing_rules:pins.root.provenance.routing_rules});}
+        try {compileExpansion(pack,resources,state.nodes.expand.output,{...context,routing_rules:pins.root.provenance.routing_rules,routing_catalog:pins.root.provenance.routing_catalog});}
         catch(error){if(!error.code?.startsWith('EXPANSION_') && !['DATA_INVALID','ROUTING_CLASSIFICATION'].includes(error.code)) throw error;return repairGeneration(runtime,args,record,{code:error.code,message:error.message,validation:error.validation ?? null});}
       }
       const lease = await runtime.claimNode(args.run_id,{...args,node_id:nodeId,owner:state.main_actor,request_id:'generation-'+nodeId+'-'+node.attempts.length});
@@ -50,7 +50,7 @@ export async function advanceGeneration(service, runtime, executor, args, {store
       if(pins.generation?.settings && (review.approved!==true || review.findings.length)) return repairGeneration(runtime,args,record,{code:'GENERATION_REVIEW_FINDINGS',findings:review.findings});
       const pack = await store.snapshot(source.workflow_id,source.expected_revision);
       const resources = await store.resources(source.workflow_id,pack.revision_hash);
-      const compiled = compileExpansion(pack,resources,state.nodes.expand.output,{...context,routing_rules:pins.root.provenance.routing_rules});
+      const compiled = compileExpansion(pack,resources,state.nodes.expand.output,{...context,routing_rules:pins.root.provenance.routing_rules,routing_catalog:pins.root.provenance.routing_catalog});
       return {phase:'review_required',source,proposal:state.nodes.expand.output,workflow:compiled.workflow,validation:compiled.validation,review:result.completion};
     }
     const live = await service.strictManager.status(runtime,args.run_id,lease);
@@ -74,7 +74,7 @@ export async function acceptGeneration(service, runtime, args) {
     if(record.pins.generation) {const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);requireValue(completion.structured_output.approved===true && completion.structured_output.findings.length===0,'GENERATION_REVIEW_BLOCKED','Review must pass before acceptance');}
     await service.strictManager.collect(runtime,args.run_id,{...args,node_id:'final',attempt_id:attempt.id,lease_token:leaseToken(args.control_token,args.run_id,'final',attempt.id,attempt.lease_generation ?? 0),accepted:true});
   }
-  return service.call('apply_expansion_result',{...args,...observation.source});
+  return service.call('apply_expansion_result',{...args,...observation.source,confirm_inferences:true},{human:true});
 }
 
 export async function loginGeneration(service,runtime,args) {

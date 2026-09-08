@@ -31,6 +31,15 @@ async function fixture(t, workflow = definition(), options = {}) {
   return { root, workspace, store, runtime, runtimeOptions, start: extra => runtime.start({ workflow_id: workflow.id, workspace, access: 'read_only', main_actor: 'root', ...extra }) };
 }
 const payload = (output = {}, extra = {}) => ({ status: 'succeeded', summary: 'Verified by synthetic executor', structured_output: output, artifacts: [], evidence: [{ check: 'fake executor', passed: true }], changed_paths: [], outside_paths: [], ...extra });
+
+test('environment requirements do not prevent saving Ready but are checked at execution',async t=>{
+  const workflow=definition();workflow.requirements.executables=['fixture-runtime'];
+  const f=await fixture(t,workflow);
+  assert.equal((await f.store.snapshot(workflow.id)).workflow.status,'ready');
+  await assert.rejects(f.start(),{code:'WORKFLOW_LAUNCH_BLOCKED'});
+  const ready=await fixture(t,workflow,{context:{executables:['fixture-runtime']}});
+  assert.equal((await ready.start()).status,'running');
+});
 const claim = (f, run, nodeId, extra = {}) => f.runtime.claimNode(run.run_id, { node_id: nodeId, owner: 'root', request_id: 'claim-' + nodeId, control_token: run.control_token, ...extra });
 const complete = (f, run, envelope, output = {}, extra = {}) => f.runtime.completeNode(run.run_id, { node_id: envelope.node_id, attempt_id: envelope.attempt_id, lease_token: envelope.lease_token, completion: payload(output, extra) });
 const control = run => ({ control_token: run.control_token });
