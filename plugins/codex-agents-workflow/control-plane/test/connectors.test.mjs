@@ -182,7 +182,7 @@ test('permission is surfaced and only an exact returned option resumes the run',
     decision: 'select', option_id: 'allow-once',
   });
   const done = await fx.registry.status(started.task_id, 5000);
-  assert.equal(done.state, 'completed');
+  assert.equal(done.state, 'completed', JSON.stringify(done.error));
   assert.match(done.result.text, /approved fixture result/);
 });
 
