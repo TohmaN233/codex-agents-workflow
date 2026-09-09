@@ -1,4 +1,6 @@
 import { evaluateReview } from './skill-import/review-checklist.mjs';
+import { cleanupCaches } from './cache-cleanup.mjs';
+import { homedir } from 'node:os';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
 import { readFile } from 'node:fs/promises';
 import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
@@ -93,6 +95,11 @@ export class WorkflowService {
     const { config, context, store, runtime, executor } = await this.open();
     if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
+      case 'cache_cleanup_preview':
+      case 'cleanup_caches': {
+        requireValue(human,'HUMAN_CACHE_CLEANUP','Cache cleanup belongs to the human console');
+        return cleanupCaches({store,runs:runtime.runs,home:this.env.CODEX_HOME || join(homedir(),'.codex'),auditRoot:dirname(this.configPath),env:this.env,preview:operation==='cache_cleanup_preview'});
+      }
       case 'generation_prompt_preview': {
         requireValue(human,'HUMAN_GENERATION','Prompt preview belongs to the console');
         const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);

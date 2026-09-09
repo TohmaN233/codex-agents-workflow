@@ -14,6 +14,7 @@ const files = [
   'connector-process.test.mjs',
   'run-refresh.test.mjs',
   'launch-edited-workflow.test.mjs',
+  'cache-cleanup.test.mjs',
   'console.test.mjs',
   'mcp.test.mjs',
   'open-console.test.mjs',

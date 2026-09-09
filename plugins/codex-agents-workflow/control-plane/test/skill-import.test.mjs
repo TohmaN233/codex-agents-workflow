@@ -71,6 +71,16 @@ test('automatic planning pins model suitability and compiles main, independent p
   assert(saved.workflow.nodes.find(n=>n.id==='a').origin.review.note);
   assert.equal(saved.workflow.status,'draft');
   assert.deepEqual(saved.workflow.requirements.executables,pack.workflow.requirements.executables);
+  assert.doesNotThrow(()=>expansionPacket(saved,resources,providers[0],rules,providers));
+  const rerouted=structuredClone(proposal);
+  rerouted.source_revision=saved.revision_hash;
+  for(const node of rerouted.nodes.filter(n=>n.type==='agent')) {node.execution_target='main';delete node.provider_choice;}
+  const regenerated=compileExpansion(saved,resources,rerouted,context);
+  assert.deepEqual(regenerated.workflow.requirements.providers,[]);
+  assert.deepEqual(regenerated.workflow.nodes.find(n=>n.id==='a').resources,Object.keys(resources).sort());
+  assert.equal(regenerated.workflow.nodes.find(n=>n.id==='a').origin.reviewed,false);
+  assert.throws(()=>compileExpansion(saved,resources,rerouted,{providers}),{code:'EXPANSION_ROUTING_REQUIRED'});
+  await assert.rejects(applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context}),{code:'REVISION_CONFLICT'});
 });
 
 test('folder discovery scans default Codex roots without a binary and reselects custom folders by source hash', async t => {
@@ -123,6 +133,13 @@ test('routed expansion assigns each responsibility independently and pins editab
   rules.routes.implementation.provider_id='native-terra';
   assert.equal(job.provenance.routing_rules.routes.implementation.provider_id,'native-luna');
   assert.match(job.resources['analysis/request.txt'],/task_type/);
+  const expanded = await applyExpansion(f.store,'routed',proposal,{expected_revision:pack.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']}});
+  const regeneratedJob = expansionRunPack(expanded,resources,providers[1],'regeneration-job',packet.routing_rules);
+  assert.match(regeneratedJob.resources['analysis/request.txt'],/source\/SKILL.md/);
+  const regenerated = await applyExpansion(f.store,'routed',{...proposal,source_revision:expanded.revision_hash},{expected_revision:expanded.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']}});
+  assert.deepEqual(regenerated.resources,expanded.resources);
+  assert.equal(regenerated.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.equal(regenerated.workflow.import_status.unresolved.filter(i=>i.code==='AI_INFERENCES_REQUIRE_REVIEW').length,1);
   const disabled = providers.map(p=>p.id==='native-reviewer'?{...p,enabled:false}:p);
   assert.throws(()=>compileExpansion(pack,resources,proposal,{providers:disabled,routing_rules:rules}),{code:'ROUTING_PROVIDER_UNAVAILABLE'});
   const invalid = structuredClone(proposal); invalid.nodes[0].task_type='invented';

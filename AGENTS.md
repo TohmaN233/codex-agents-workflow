@@ -237,3 +237,15 @@ publication action. Start saves edits, publishes with the returned revision CAS,
 then launches with the published revision pin. Any failure stops this sequence.
 Enabled controls launch availability; Draft/Ready remain internal lifecycle states.
 Existing Runs retain their original pinned version when the editor is saved.
+
+Skill regeneration accepts both coarse and ai_expanded imports. Reconstruct the
+source binding from immutable imported resources for an expanded graph, require
+explicit routing rules, and pin the current source revision. Never treat old graph
+nodes as source authority or replace the current graph before accepted CAS save.
+
+Human-only cache cleanup marks current Workflow revisions and all Run pins, follows
+their historical provenance/reference hashes transitively, then deletes unreferenced
+revisions before resource objects under store/Run creation locks. Run artifacts and
+trash remain intact. Plugin cleanup is limited to this plugin's cache, preserving
+installed, configured and process-referenced versions; recheck before deletion.
+Every mutation has a durable candidate list and completion/failure audit record.

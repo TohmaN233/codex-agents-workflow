@@ -7,6 +7,18 @@ import { validateWorkflowGraph } from '../workflow-validator.mjs';
 export const EXPANSION_NODE_FIELDS = Object.freeze(['task_type', 'routing_reason', 'execution_target', 'provider_choice', 'id', 'name', 'type', 'prompt_template', 'outputs_schema', 'cases', 'default_label', 'join_id', 'parallel_id', 'failure_policy', 'tool', 'confidence', 'source_span']);
 export const EXPANSION_EDGE_FIELDS = Object.freeze(['id', 'source', 'target', 'on', 'label', 'confidence', 'source_span']);
 
+function expansionSource(pack, resources, rules) {
+  if (pack.workflow.import_status?.mode === 'coarse') {
+    const node = pack.workflow.nodes.find(node => node.id === 'instructions');
+    requireValue(node?.type === 'agent', 'EXPANSION_SOURCE_INVALID', 'Imported coarse Workflow is missing its instructions agent');
+    return node;
+  }
+  requireValue(pack.workflow.import_status?.mode === 'ai_expanded' && rules, 'EXPANSION_ROUTING_REQUIRED', 'Regeneration requires an imported Workflow and explicit routing rules');
+  requireValue(resources['source/SKILL.md'], 'IMPORT_SOURCE_MISSING', 'Regeneration requires the pinned imported instructions');
+  return {type:'agent',role:'advisor',executor:{kind:'main'},resources:Object.keys(resources).sort(),
+    prompt_template:'Read source/SKILL.md and its pinned local references for the user task {{task}}. Generate a fresh graph from that source; the previous graph is not source authority.'};
+}
+
 export const EXPANSION_CONTRACT = {
   node_fields: EXPANSION_NODE_FIELDS,
   edge_fields: EXPANSION_EDGE_FIELDS,
@@ -38,14 +50,16 @@ export function expansionPacket(pack, resources, provider, routingRules, provide
       + (rules ? '\nRouting policy (compiler validates selections; never emit executor objects or permissions):\n' + canonicalJSON({instructions:rules.instructions,task_types:TASK_TYPES,selection_mode:rules.selection_mode ?? "fixed",routes:rules.routes,providers:routingCatalog(providers)}) + '\nEvery agent requires task_type from ' + TASK_TYPES.join(', ') + ' and routing_reason explaining the classification. Other nodes omit these fields.' : '')
       + (rules?.selection_mode === 'automatic' ? '\nAutomatic selection: every agent supplies execution_target main or subagent. Main is host-owned; omit provider_choice for main. For subagent supply provider_choice from the registered catalog and routing_reason comparing its suitability to alternatives using descriptions, task complexity, capabilities and cost/latency requirements. This is a proposal only: compiler validates eligibility and retains read-only access. Include planning_analysis with three nonempty strings: parallelism (independence, data dependencies, shared-write conflicts and why parallel/sequential), main_responsibilities (main/subagent boundaries), human_intervention (which gates and required future Run inputs). Do not invent model capabilities from names.' : '\nFixed mode: omit execution_target and provider_choice. Supply only task_type and routing_reason; compiler uses the exact configured routes.')
       + '\nPlatform execution facts: The future Run input object is available as workflow_inputs; its task field is exposed by {{task}} and condition expressions /inputs/task. The planning Run task is not the future task. Existing instructions are below for context. Agent nodes inherit the coarse fixed resource list and may call read_workflow_resource with an explicit pinned path from their prompt. A standalone tool node has no inferred tool-argument binding. In Strict mode standalone tool nodes are unsupported: keep resource reads inside an agent node. The imported artifact declares its dependencies; do not bake current host availability into generated instructions. The executor checks/prepares required environments at Run time within its granted permissions and reports unmet requirements explicitly.\nExisting input schema and coarse instructions (data):\n'
-      + canonicalJSON({ inputs_schema: pack.workflow.inputs_schema, instructions: pack.workflow.nodes.find(node => node.id === 'instructions') })
+      + canonicalJSON({ inputs_schema: pack.workflow.inputs_schema, instructions: expansionSource(pack,resources,rules) })
       + '\nRevision: ' + pack.revision_hash + '\nSource (numbered lines):\n' + text.split('\n').map((line, index) => `${index + 1}: ${line}`).join('\n') };
 }
 
 export function compileExpansion(pack, resources, proposal, context = {}) {
   requireValue(proposal?.source_revision === pack.revision_hash && Array.isArray(proposal.nodes) && Array.isArray(proposal.edges) && proposal.nodes.length > 0 && proposal.nodes.length <= 200 && proposal.edges.length <= 800, 'EXPANSION_SCHEMA', 'Expansion must reference the exact source revision and bounded graph arrays');
-  const workflow = structuredClone(pack.workflow); const base = workflow.nodes.find(node => node.id === 'instructions');
+  const workflow = structuredClone(pack.workflow);
   const routingRules = context.routing_rules ? validateRoutingRules(context.routing_rules) : null;
+  const base = expansionSource(pack,resources,routingRules);
+  const replacedProviders = new Set(workflow.nodes.filter(node=>!['start','final','end'].includes(node.id) && node.executor?.kind==='provider').map(node=>node.executor.provider_id));
   requireValue(routingRules || !proposal.nodes.some(n => Object.hasOwn(n,'task_type') || Object.hasOwn(n,'routing_reason')), 'ROUTING_RULES_REQUIRED', 'Classified proposals require the exact routing_rules from their preparation packet');
   requireValue(routingRules ? Boolean(base) : base?.executor.kind === 'provider' && base.executor.provider_id, 'EXPANSION_BINDING', 'Bind the coarse instruction Provider before expansion');
   if (routingRules?.selection_mode === 'automatic') requireValue(proposal.planning_analysis && ['parallelism','main_responsibilities','human_intervention'].every(k=>typeof proposal.planning_analysis[k]==='string' && proposal.planning_analysis[k].trim() && proposal.planning_analysis[k].length<=4000), 'EXPANSION_PLANNING_ANALYSIS', 'Automatic planning requires explicit parallelism, main/subagent and human-intervention analysis');
@@ -68,13 +82,15 @@ export function compileExpansion(pack, resources, proposal, context = {}) {
     return inferred;
   });
   workflow.nodes = [...originalNodes, ...newNodes];
-  if (routingRules) workflow.requirements.providers = [...new Set([...(workflow.requirements.providers ?? []).filter(id => id !== base.executor.provider_id), ...workflow.nodes.filter(n => n.executor?.kind === 'provider').map(n => n.executor.provider_id)])];
+  if (routingRules) workflow.requirements.providers = [...new Set([...(workflow.requirements.providers ?? []).filter(id => !replacedProviders.has(id)), ...workflow.nodes.filter(n => n.executor?.kind === 'provider').map(n => n.executor.provider_id)])];
   workflow.edges = proposal.edges.map(edge => {
     requireValue(Object.keys(edge).every(key => EXPANSION_EDGE_FIELDS.includes(key)) && edge.source !== 'final' && edge.target !== 'end', 'EXPANSION_EDGE', 'Inference cannot change final acceptance termination');
     return { ...Object.fromEntries(Object.entries(edge).filter(([key]) => !['confidence', 'source_span'].includes(key))), origin: origin(edge) };
   });
   workflow.edges.push({ id: 'final-end', source: 'final', target: 'end' }); workflow.status = 'draft';
-  workflow.import_status.mode = 'ai_expanded'; workflow.import_status.unresolved.push({ code: 'AI_INFERENCES_REQUIRE_REVIEW', origin: 'inferred' });
+  workflow.import_status.mode = 'ai_expanded';
+  workflow.import_status.unresolved = workflow.import_status.unresolved.filter(item=>item.code!=='AI_INFERENCES_REQUIRE_REVIEW');
+  workflow.import_status.unresolved.push({ code: 'AI_INFERENCES_REQUIRE_REVIEW', origin: 'inferred' });
   const validation = validateWorkflowGraph(workflow, context);
   requireValue(validation.valid, 'EXPANSION_GRAPH_INVALID', 'AI proposal failed structural validation; coarse Draft remains intact', { validation });
   return { workflow, proposal_hash: digest(canonicalJSON(proposal)), validation };
