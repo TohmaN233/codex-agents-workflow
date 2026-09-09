@@ -23,6 +23,21 @@ test('upgrade preserves old cached paths and records host leases even when the i
   const result=await installRetainingRevisions({home,hosts:[{pid:1,started_at:'identity'}],install:async()=>{assert(old.startsWith(home));await rm(old,{recursive:true});}});
   assert.equal(await readFile(join(old,'server.js'),'utf8'),'original bytes');
   assert.deepEqual(result.retained_versions,['1.0.0']);
-  assert.deepEqual(JSON.parse(await readFile(join(home,'codex-agents-workflow/runtime-retention.json'),'utf8')).versions['1.0.0'],[{pid:1,started_at:'identity'}]);
+ assert.deepEqual(JSON.parse(await readFile(join(home,'codex-agents-workflow/runtime-retention.json'),'utf8')).versions['1.0.0'],[{pid:1,started_at:'identity'}]);
+ }finally{assert(home.startsWith(resolve(tmpdir())));await rm(home,{recursive:true});}
+});
+
+test('upgrade records and skips a stale incomplete cache entry before installing the new revision',async()=>{
+ const home=await mkdtemp(join(tmpdir(),'incomplete-retained-plugin-'));
+ try{
+  const cache=join(home,'plugins/cache/codex-agents-workflow/codex-agents-workflow');
+  await mkdir(join(cache,'1.0.0-missing-manifest'),{recursive:true});
+  let installed=false;
+  const result=await installRetainingRevisions({home,install:async()=>{installed=true;}});
+  assert.equal(installed,true);
+  assert.deepEqual(result.retained_versions,[]);
+  assert.deepEqual(result.skipped_incomplete_versions,['1.0.0-missing-manifest']);
+  const record=JSON.parse(await readFile(join(home,'codex-agents-workflow/runtime-retention.json'),'utf8'));
+  assert.equal(record.incomplete_versions['1.0.0-missing-manifest'].reason,'missing_manifest');
  }finally{assert(home.startsWith(resolve(tmpdir())));await rm(home,{recursive:true});}
 });

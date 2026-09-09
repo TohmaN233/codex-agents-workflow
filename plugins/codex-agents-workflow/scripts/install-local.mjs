@@ -34,12 +34,22 @@ export async function installRetainingRevisions({home,install,hosts=[],name='cod
  try{record=JSON.parse(await readFile(recordPath,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
  const backup=join(stateRoot,'upgrade-backups',randomUUID());await mkdir(backup,{recursive:true});
  let entries=[];try{entries=await readdir(cache,{withFileTypes:true});}catch(e){if(e.code!=='ENOENT')throw e;}
- const retained=[];
+ const retained=[],skipped=[];
+ if(record.incomplete_versions===undefined)record.incomplete_versions={};
+ requireValue(record.incomplete_versions&&typeof record.incomplete_versions==='object'&&!Array.isArray(record.incomplete_versions),'PLUGIN_RETENTION_RECORD','Incomplete-version retention record is invalid');
  for(const entry of entries){
   requireValue(entry.isDirectory()&&/^[0-9][A-Za-z0-9.+_-]*$/.test(entry.name),'PLUGIN_CACHE_ENTRY','Unexpected cached version');
   const path=join(cache,entry.name);await noSymlinks(path);
-  const manifest=JSON.parse(await readFile(join(path,'.codex-plugin/plugin.json'),'utf8'));
+  let manifest;
+  try{manifest=JSON.parse(await readFile(join(path,'.codex-plugin/plugin.json'),'utf8'));}
+  catch(error){
+   if(error.code!=='ENOENT')throw error;
+   const observation={reason:'missing_manifest',observed_at:new Date().toISOString()};
+   record.incomplete_versions[entry.name]=observation;skipped.push(entry.name);
+   continue;
+  }
   requireValue(manifest.name===name&&manifest.version===entry.name,'PLUGIN_CACHE_IDENTITY','Cached plugin identity differs');
+  delete record.incomplete_versions[entry.name];
   await cp(path,join(backup,entry.name),{recursive:true,errorOnExist:true,force:false});
   await verifyCopy(path,join(backup,entry.name));
   retained.push(entry.name);
@@ -57,7 +67,7 @@ export async function installRetainingRevisions({home,install,hosts=[],name='cod
  }catch(error){restoreErrors.push(error);}
  if(installError||restoreErrors.length)throw new AggregateError([...(installError?[installError]:[]),...restoreErrors],`Plugin upgrade failed; recovery snapshot retained at ${backup}`);
  await rm(insideRoot(resolve(stateRoot,'upgrade-backups'),resolve(backup)),{recursive:true});
- return {retained_versions:retained,host_count:hosts.length};
+ return {retained_versions:retained,skipped_incomplete_versions:skipped,host_count:hosts.length};
 }
 
 export async function updateLegacyEntrypoints(home,root,versions){
