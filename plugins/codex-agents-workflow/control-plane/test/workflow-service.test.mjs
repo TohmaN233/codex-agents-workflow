@@ -56,6 +56,17 @@ async function fixture(t, options = {}) {
   };
 }
 const control = run => ({ run_id: run.run_id, control_token: run.control_token });
+
+test('human launch prepares an isolated workspace without expanding access', async t => {
+  const f=await fixture(t);await f.migrate();
+  const args={workflow_id:'brainstorm',main_actor:'human-console',inputs:{task:'Synthetic task',context:'Fixture only'}};
+  const run=await f.service.call('start',args,{human:true});
+  const state=await f.service.call('get',control(run));
+  assert.equal(state.permissions.workspace,join(f.root,'workflow-workspaces','run-'+run.run_id));
+  assert.equal(state.permissions.access,'read_only');
+  assert.deepEqual(state.permissions.allowed_paths,[]);
+  await assert.rejects(f.service.call('start',{...args,run_id:'../escape'},{human:true}));
+});
 const claim = (f, run, node = 'implementation') => f.service.call('claim_node', { ...control(run), node_id: node, owner: node === 'final-acceptance' ? 'root' : 'worker', request_id: 'claim-' + node });
 const leaseArgs = (run, lease) => ({ ...control(run), node_id: lease.node_id, attempt_id: lease.attempt_id, lease_token: lease.lease_token });
 const completion = output => ({ status: 'succeeded', summary: 'Synthetic verification', structured_output: output, artifacts: [], evidence: [{ check: 'fixture', passed: true }], changed_paths: [], outside_paths: [] });

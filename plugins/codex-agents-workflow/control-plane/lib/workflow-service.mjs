@@ -1,6 +1,7 @@
 import { evaluateReview } from './skill-import/review-checklist.mjs';
 import { cleanupCaches } from './cache-cleanup.mjs';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
 import { readFile } from 'node:fs/promises';
 import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
@@ -253,6 +254,11 @@ export class WorkflowService {
       }
       case 'start': {
         const request = resolveLegacyWorkflowRequest(config, args);
+        if (human && !request.workspace) {
+          request.run_id = workflowId(request.run_id ?? randomUUID());
+          request.workspace = await ensureDirectory(join(dirname(this.configPath),'workflow-workspaces','run-'+request.run_id));
+          request.access ??= 'read_only';
+        }
         return runtime.start(request);
       }
       case 'runs': return runtime.runs.list();
