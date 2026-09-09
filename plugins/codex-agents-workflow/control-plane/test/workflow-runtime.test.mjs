@@ -32,13 +32,14 @@ async function fixture(t, workflow = definition(), options = {}) {
 }
 const payload = (output = {}, extra = {}) => ({ status: 'succeeded', summary: 'Verified by synthetic executor', structured_output: output, artifacts: [], evidence: [{ check: 'fake executor', passed: true }], changed_paths: [], outside_paths: [], ...extra });
 
-test('environment requirements do not prevent saving Ready but are checked at execution',async t=>{
-  const workflow=definition();workflow.requirements.executables=['fixture-runtime'];
+test('task dependencies reach the executor without a host inventory launch gate',async t=>{
+  const workflow=definition();workflow.requirements.executables=['python'];workflow.requirements.environment=['VIDEO_TOOL_HOME'];
   const f=await fixture(t,workflow);
   assert.equal((await f.store.snapshot(workflow.id)).workflow.status,'ready');
-  await assert.rejects(f.start(),{code:'WORKFLOW_LAUNCH_BLOCKED'});
-  const ready=await fixture(t,workflow,{context:{executables:['fixture-runtime']}});
-  assert.equal((await ready.start()).status,'running');
+  const run=await f.start();assert.equal(run.status,'running');
+  const envelope=await claim(f,run,'work');
+  assert.match(envelope.prompt_template,/python/);assert.match(envelope.prompt_template,/VIDEO_TOOL_HOME/);
+  assert.match(envelope.prompt_template,/report any unresolved dependency/);
 });
 const claim = (f, run, nodeId, extra = {}) => f.runtime.claimNode(run.run_id, { node_id: nodeId, owner: 'root', request_id: 'claim-' + nodeId, control_token: run.control_token, ...extra });
 const complete = (f, run, envelope, output = {}, extra = {}) => f.runtime.completeNode(run.run_id, { node_id: envelope.node_id, attempt_id: envelope.attempt_id, lease_token: envelope.lease_token, completion: payload(output, extra) });

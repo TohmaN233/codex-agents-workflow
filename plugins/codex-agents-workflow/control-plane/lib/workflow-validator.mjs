@@ -217,7 +217,7 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (kind === 'providers') {
         if (!providers.has(id)) issue('PROVIDER_MISSING', `Required Provider does not exist: ${id}`);
         else if (!providers.get(id).enabled) issue('PROVIDER_DISABLED', `Required Provider is disabled: ${id}`, {}, blockers);
-      } else if (context.check_runtime_requirements === true && !(context[kind] ?? []).includes(id)) issue('REQUIREMENT_UNAVAILABLE', `Required ${kind} entry is unavailable: ${id}`, { requirement: id }, blockers);
+      } else if (context.check_runtime_requirements === true && ['tools', 'mcp_servers'].includes(kind) && !(context[kind] ?? []).includes(id)) issue('REQUIREMENT_UNAVAILABLE', `Required ${kind} entry is unavailable: ${id}`, { requirement: id }, blockers);
     }
   }
   if (workflow.import_status !== undefined) {

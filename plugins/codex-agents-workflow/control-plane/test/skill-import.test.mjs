@@ -196,7 +196,7 @@ test('scripts, missing references, external paths and credential resources stay 
   const validation = validateWorkflowGraph({ ...pack.workflow, status: 'ready' }, { providers: [{ id: 'chosen', enabled: true, capabilities: { read: true } }], tools: ['read_workflow_resource'], executables: ['node'] });
   assert(validation.blockers.some(item => item.code === 'IMPORT_UNRESOLVED'));
   assert(!validation.blockers.some(item => item.requirement === 'REQUIRED_KEY'));
-  assert(validateWorkflowGraph({...pack.workflow,status:'ready'},{providers:[{id:'chosen',enabled:true,capabilities:{read:true}}],check_runtime_requirements:true}).blockers.some(item=>item.requirement==='REQUIRED_KEY'));
+  assert(!validateWorkflowGraph({...pack.workflow,status:'ready'},{providers:[{id:'chosen',enabled:true,capabilities:{read:true}}],check_runtime_requirements:true}).blockers.some(item=>item.requirement==='REQUIRED_KEY'));
   assert.throws(() => verifyCoarseRelocation(pack, resources), { code: 'IMPORT_UNRESOLVED' });
 });
 

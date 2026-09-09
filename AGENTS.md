@@ -267,3 +267,5 @@ ignored user configuration and disabled shell/delegation in an ephemeral read-on
 request. Validate the prepared JSON against the original schema before starting.
 Missing facts become natural-language questions; never invent required inputs.
 Valid inputs take the deterministic fast path without another model call.
+
+Publication and task execution are separate console actions. Publishing saves/validates with CAS but never starts a Run; task launch requires an already published clean revision. Executable/environment declarations are agent-managed task dependencies, carried in the execution envelope, not host-inventory launch gates. Provider/tool/MCP authority checks remain mandatory.
