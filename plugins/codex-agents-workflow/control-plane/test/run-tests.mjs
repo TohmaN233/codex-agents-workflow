@@ -21,6 +21,7 @@ const files = [
   'mcp-startup.test.mjs',
   'run-absolute-scope.test.mjs',
   'runtime-dependency-boundary.test.mjs',
+  'runtime-environment.test.mjs',
   'open-console.test.mjs',
   'providers.test.mjs',
   'workflow-store.test.mjs',

@@ -27,7 +27,7 @@ test('explicit blocked model results fail durably rather than advancing success 
     await f.service.call('dispatch',f.args);await f.entry(f.args).job;
     const state=await f.service.call('get',f.args);
     assert.equal(state.status,'failed');assert.equal(state.nodes.work.status,'failed');assert.equal(state.nodes.work.error.code,'WORKFLOW_NODE_BLOCKED');assert.equal(state.nodes.work.error.message,'Required footage and briefing are missing.');
-    assert.notEqual(state.nodes.final.status,'ready');assert.equal(state.nodes.work.output,null);assert.equal(state.nodes.work.attempts[0].result_proposal,undefined);assert.equal(f.sessions[0].closed,true);
+    assert.notEqual(state.nodes.final.status,'ready');assert.equal(state.nodes.work.output,null);await assert.rejects(f.service.call('collect_strict',f.args),{code:'WORKFLOW_NODE_BLOCKED'});assert.equal(state.nodes.work.attempts[0].result_proposal,undefined);assert.equal(f.sessions[0].closed,true);
   }
 });
 

@@ -1,5 +1,6 @@
 const string = { type: 'string' }; const object = { type: 'object' };
 const properties = {
+  environment_directories: {type:'array',items:string,description:'Optional discovered installation directories outside PATH; applies only to this Run.'},
   folder: string, discovery: { type: 'string', enum: ['folders','host'] }, routing_rules: object,
   workflow_id: string, revision_hash: string, run_id: string, node_id: string, attempt_id: string,
   control_token: { type: 'string', description: 'Main-controller capability returned by workflow_start. Never include it in worker prompts.' },
@@ -39,7 +40,8 @@ const specs = [
   ['validate', 'Validate a graph, pinned bindings and current launch blockers.', ['workflow'], []],
   ['create', 'Create a user-requested Workflow Pack as Draft. Imported Skill drafts remain Strict; Ready publication belongs to the human console.', ['workflow'], ['resources']],
   ['save', 'Save one complete Draft definition using the previously read revision hash. Model edits cannot publish Ready.', ['workflow_id', 'workflow', 'expected_revision'], ['resources']],
-  ['start', 'Start one Ready Workflow with explicit workspace permissions. Preserve control_token only in the main controller. No implicit Provider fallback or Strict downgrade.', ['workflow_id', 'workspace', 'access', 'main_actor'], ['revision_hash', 'run_id', 'inputs', 'allowed_paths', 'constraints', 'require_approval']],
+  ['prepare_environment', 'Mandatory before task execution: discover required executables across PATH and common system/user installations. Missing tools require user consent to install through the host, then recheck. Does not install or start a Run.', ['workflow_id'], ['revision_hash','environment_directories']],
+  ['start', 'Start one Ready Workflow with explicit workspace permissions. Preserve control_token only in the main controller. No implicit Provider fallback or Strict downgrade.', ['workflow_id', 'workspace', 'access', 'main_actor'], ['revision_hash', 'run_id', 'inputs', 'allowed_paths', 'constraints', 'require_approval','environment_directories']],
   ['runs', 'List persisted Run metadata.', [], []],
   ['get', 'Read the current state reconstructed from the authoritative Run journal.', ['run_id'], []],
   ['run_definition', 'Read the Run-pinned Workflow definition even after its library revision is edited or deleted.', ['run_id'], []],

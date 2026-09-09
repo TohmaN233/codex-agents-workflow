@@ -1,3 +1,4 @@
+import {discoverRuntimeEnvironment} from './runtime-environment.mjs';
 import { evaluateReview } from './skill-import/review-checklist.mjs';
 import { cleanupCaches } from './cache-cleanup.mjs';
 import { homedir } from 'node:os';
@@ -84,7 +85,7 @@ export class WorkflowService {
     await noSymlinks(storeRoot); // A missing migrated generation is corruption, not an empty new library.
     const store = await new WorkflowStore(storeRoot, { validationContext: context }).initialize();
     const runtime = await new WorkflowRuntime({ workflowStore: store, runRoot: join(dirname(this.configPath), 'workflow-runs'), context,
-      parallelManager: this.parallelManager,
+      parallelManager: this.parallelManager, environmentResolver:(requirements,options)=>discoverRuntimeEnvironment(requirements,{...options,env:this.env}),
       strictCapability: this.capabilities.strictCapability ?? (async (pack, closure) => { await this.strictManager.capability(pack, config.providers, closure?.skills); return true; }),
       ...(this.capabilities.parallelWriteCapability ? { parallelWriteCapability: this.capabilities.parallelWriteCapability } : {}),
     }).initialize();
@@ -261,6 +262,11 @@ export class WorkflowService {
       case 'export': {
         const pack = await store.snapshot(args.workflow_id, args.revision_hash); const resources = await store.resources(args.workflow_id, pack.revision_hash);
         return { format: 'codex-agents-workflow-pack-v1', ...pack, resource_data: Object.fromEntries(Object.entries(resources).map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')])) };
+      }
+      case 'prepare_environment': {
+        const pack=await store.snapshot(args.workflow_id,args.revision_hash);
+        const closure=await resolveWorkflowPins(store,pack);
+        return discoverRuntimeEnvironment({executables:[...closure.packs.flatMap(item=>item.workflow.requirements.executables??[]), ...closure.skills.flatMap(skill=>skill.requirements.executables??[])]},{env:this.env,extraDirectories:args.environment_directories??[]});
       }
       case 'start': {
         const request = resolveLegacyWorkflowRequest(config, args);

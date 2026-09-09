@@ -1,3 +1,4 @@
+import {discoverRuntimeEnvironment} from './runtime-environment.mjs';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { HUMAN_GATE_OUTPUT } from './workflow-schema.mjs';
 import { join } from 'node:path';
@@ -44,8 +45,8 @@ function completionPayload(payload) {
 }
 
 export class WorkflowRuntime {
-  constructor({ workflowStore, runRoot, generationPolicy = null, context = {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
-    this.generationPolicy = generationPolicy;
+  constructor({ workflowStore, runRoot, generationPolicy = null, context = {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, environmentResolver = discoverRuntimeEnvironment, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
+    this.generationPolicy = generationPolicy; this.environmentResolver = environmentResolver;
     this.workflows = workflowStore; this.runs = new WorkflowRunStore(runRoot); this.context = context;
     this.strictCapability = strictCapability; this.parallelWriteCapability = parallelWriteCapability;
     this.parallelManager = parallelManager;
@@ -72,7 +73,7 @@ export class WorkflowRuntime {
     }, options);
   }
 
-  async start({ workflow_id, revision_hash, inputs = {}, workspace, access, allowed_paths = [], constraints = {}, main_actor, require_approval = false, run_id = randomUUID() }) {
+  async start({ environment_directories = [], workflow_id, revision_hash, inputs = {}, workspace, access, allowed_paths = [], constraints = {}, main_actor, require_approval = false, run_id = randomUUID() }) {
     requireValue(typeof main_actor === 'string' && main_actor.length > 0 && main_actor.length <= 256, 'MAIN_ACTOR', 'Run requires one main actor');
     requireValue(typeof require_approval === 'boolean', 'RUN_APPROVAL', 'Run approval policy must be boolean');
     const root = await this.workflows.snapshot(workflow_id, revision_hash);
@@ -84,8 +85,12 @@ export class WorkflowRuntime {
     for (const pack of closure.packs) for (const node of pack.workflow.nodes) if (EXECUTOR_NODES.has(node.type)) requireValue(this.supportedNodeTypes.has(node.type), 'EXECUTOR_UNSUPPORTED', `Node type has no qualified executor: ${node.type}`, { node_id: node.id });
     for (const skill of closure.skills) {
       requireValue(!skill.observations.length, 'SKILL_DEPENDENCY_UNRESOLVED', 'Linked Skill dependencies need review or inlining before execution', { path: skill.path, observations: skill.observations });
-      for (const [kind, names] of Object.entries(skill.requirements)) if (kind !== 'providers') requireValue(names.every(name => (this.context[kind] ?? []).includes(name)), 'SKILL_REQUIREMENT_UNAVAILABLE', 'Linked Skill requires an unavailable executor capability', { path: skill.path, kind, requirements: names });
+      for (const [kind, names] of Object.entries(skill.requirements)) if (['tools', 'mcp_servers'].includes(kind)) requireValue(names.every(name => (this.context[kind] ?? []).includes(name)), 'SKILL_REQUIREMENT_UNAVAILABLE', 'Linked Skill requires an unavailable executor capability', { path: skill.path, kind, requirements: names });
     }
+    const requirements = {executables:[...new Set([...closure.packs.flatMap(pack=>pack.workflow.requirements.executables??[]), ...closure.skills.flatMap(skill=>skill.requirements.executables??[])])]};
+    const environment = await this.environmentResolver(requirements,{extraDirectories:environment_directories});
+    requireValue(environment.status === 'ready','ENVIRONMENT_SETUP_REQUIRED','请先准备运行依赖：发现缺少的工具后询问用户是否安装，完成后重新检查。',{environment});
+    constraints = {...constraints, runtime_environment:environment};
     const permissions = runPermissions({ workspace, access, allowed_paths }); await noSymlinks(permissions.workspace);
     const providerIds = new Set(closure.provider_ids);
     const providers = (this.context.providers ?? []).filter(provider => providerIds.has(provider.id));

@@ -67,13 +67,27 @@ The native-only `$codex-agents-workflow:orchestration` remains separate.
 1. Read `workflow_list` and `workflow_capabilities`. Select only a user-authorized
    enabled Ready Workflow matching the task. State its ID, revision and purpose;
    do not reinterpret the graph as a hard-coded delegate/audit/full sequence.
-2. Call `workflow_start` with the exact revision, absolute workspace, main actor,
+2. Before starting, call `workflow_prepare_environment` for the selected revision.
+   This is a mandatory Run prerequisite. Search PATH, registered host tools and
+   system/user installation locations, not just the task folder. If any tool is
+   missing, ask the user whether to install it, showing the intended tool and source.
+   Install through the host only after consent, or use an existing location supplied
+   by the user. Pass discovered installation folders as `environment_directories` to
+   both preparation and start. Inspect required tool versions and libraries using the
+   host before execution; filesystem discovery alone is not a functional probe.
+   Recheck readiness after preparation; do not start task nodes while
+   dependencies are missing. No installation consent is implied by generating or
+   publishing a Workflow. Then call `workflow_start` with the exact revision, absolute workspace, main actor,
    task inputs and task-derived write scope. Production tasks normally use
    `bounded_write`. Paths are determined for this Run, never copied from a previous
    task or baked into the Workflow. `allowed_paths` accepts workspace-relative
    paths (e.g. `edit`), absolute descendants of workspace, or `.` when the task
    authorizes the whole project. The server normalizes absolute targets. Respect
-   explicit user limits such as keeping original media read-only. Provider
+   explicit user limits such as keeping original media read-only. In Cooperative
+   execution this boundary applies ONLY to task output writes: tools can be located
+   and invoked outside the workspace, and task inputs can be read from other
+   locations under host permissions. Never apply allowed_paths to tool discovery,
+   executable invocation or input reads. Provider
    bindings, requirements, resources, child revisions and Skill snapshots are
    pinned at this boundary. Structural Ready does not promise launch readiness.
 3. Keep `control_token` in the primary only. Read `workflow_next`, then use
@@ -106,6 +120,8 @@ Do not ask again when the session already provides the required authorization.
 Off-by-default model-call gates do not add an unrelated confirmation step.
 
 ## Strict, imports and editing
+
+New task Workflows default to Cooperative with task-scoped bounded writes. Strict is an explicit isolation choice, not the default permission level.
 
 Strict requires a qualified executor catalog, explicit Skill input and bounded tool
 broker. It is not an OS filesystem ACL. Initial qualification is limited to the

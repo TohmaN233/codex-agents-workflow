@@ -6,6 +6,7 @@ import { analyzeSkillDependencies } from './dependency-reader.mjs';
 
 export function compileCoarseSkill(snapshot, { id, name = snapshot.metadata.name, providerId, role = 'advisor' } = {}) {
   const analysis = analyzeSkillDependencies(snapshot); const workflow = createDraft(id, name);
+  workflow.skill_policy.mode = 'cooperative'; workflow.skill_policy.implicit = 'allow';
   workflow.description = snapshot.metadata.description.slice(0, 4000);
   workflow.skill_policy.shadowed_skill_paths = [snapshot.source_path];
   workflow.requirements = analysis.requirements;

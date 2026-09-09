@@ -166,7 +166,7 @@ test('service imports only a fresh actual inventory selection and prepares expan
   const selected = (await f.service.call('skill_inventory', { workspace: f.workspace })).entries[0];
   const provider = (await f.service.config()).providers.find(item => item.enabled && item.kind === 'native_agent');
   const pack = await f.service.call('import_skill', { workspace: f.workspace, skill_id: selected.id, workflow_id: 'from-skill', provider_id: provider.id });
-  assert.equal(pack.workflow.status, 'draft'); assert.equal(pack.workflow.skill_policy.mode, 'strict');
+  assert.equal(pack.workflow.status, 'draft'); assert.equal(pack.workflow.skill_policy.mode, 'cooperative');
   assert.equal(pack.workflow.nodes.find(node => node.id === 'instructions').executor.provider_id, provider.id);
   const packet = await f.service.call('prepare_expansion', { workflow_id: pack.workflow.id, revision_hash: pack.revision_hash, provider_id: provider.id });
   assert.equal(packet.invoked, false); assert.equal(packet.handoff_required, true); assert.equal(packet.access, 'read_only');

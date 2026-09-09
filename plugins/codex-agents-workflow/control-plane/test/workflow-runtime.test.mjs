@@ -34,7 +34,7 @@ const payload = (output = {}, extra = {}) => ({ status: 'succeeded', summary: 'V
 
 test('task dependencies reach the executor without a host inventory launch gate',async t=>{
   const workflow=definition();workflow.requirements.executables=['python'];workflow.requirements.environment=['VIDEO_TOOL_HOME'];
-  const f=await fixture(t,workflow);
+  const f=await fixture(t,workflow,{environmentResolver:async()=>({status:'ready',tools:[{name:'python',status:'found',path:join(t.name,'python')}],missing:[]})});
   assert.equal((await f.store.snapshot(workflow.id)).workflow.status,'ready');
   const run=await f.start();assert.equal(run.status,'running');
   const envelope=await claim(f,run,'work');
@@ -240,4 +240,11 @@ test('absolute Run targets are persisted and leased relative to the chosen proje
  const workflow=definition();workflow.nodes.find(n=>n.id==='work').access='bounded_write';workflow.nodes.find(n=>n.id==='work').path_scope={binding:'run.allowed_paths'};
  const f=await fixture(t,workflow);const run=await f.start({access:'bounded_write',allowed_paths:[join(f.workspace,'edit')]});
  const envelope=await claim(f,run,'work');assert.equal(envelope.workspace,f.workspace);assert.deepEqual(envelope.effective_allowed_paths,['edit']);
+});
+
+test('environment gate prevents Run creation until host dependencies are ready',async t=>{
+ let ready=false;const workflow=definition();workflow.requirements.executables=['fixture-program'];
+ const f=await fixture(t,workflow,{environmentResolver:async()=>({status:ready?'ready':'installation_approval_required',missing:ready?[]:['fixture-program']})});
+ await assert.rejects(f.start(),{code:'ENVIRONMENT_SETUP_REQUIRED'});assert.equal((await f.runtime.runs.list()).length,0);
+ ready=true;assert.equal((await f.start()).status,'running');
 });

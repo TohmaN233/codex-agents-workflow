@@ -21,7 +21,7 @@ class EditorBoundary extends Component<{ children: ReactNode, workflow: Json, ed
 function draft(): Json {
   const final = { ...newNode('agent','final'), role: 'finalizer', name: 'Main 验收', prompt_template: '审查上游产物和证据，明确接受后提交最终结果。' };
   return { schema_version: 1, id: uid('workflow'), name: '新 Workflow', description: '', enabled: true, status: 'draft', revision: 1, tags: [], inputs_schema: {}, outputs_schema: {},
-    skill_policy: { mode: 'strict', implicit: 'deny', ambient_allow: [], shadowed_skill_paths: [] }, requirements: { providers: [], tools: [], mcp_servers: [], executables: [] }, finalization: { required: true, node_id: 'final' },
+    skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] }, requirements: { providers: [], tools: [], mcp_servers: [], executables: [] }, finalization: { required: true, node_id: 'final' },
     nodes: [{ id: 'start', type: 'start', name: '开始' }, final, { id: 'end', type: 'end', name: '结束' }], edges: [{ id: 'start-final', source: 'start', target: 'final' }, { id: 'final-end', source: 'final', target: 'end' }] };
 }
 function App() {

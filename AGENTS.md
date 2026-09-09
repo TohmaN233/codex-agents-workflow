@@ -273,3 +273,7 @@ Publication and task execution are separate console actions. Publishing saves/va
 Run entry accepts workspace-relative write targets and absolute descendants, normalizing once before immutable permissions are persisted. Internal node scopes remain relative; never bake task directories into reusable Workflow definitions.
 
 MCP packaging must pass real initialize and tools/list subprocess probes from both ordinary and Windows namespaced plugin directories. Node script entry resolution can fail on namespaced cwd before application code runs; the packaged node -e bootstrap normalizes cwd before importing the server. Startup diagnostics are read-only and never create Runs.
+
+New imported and manually authored task Workflows default to Cooperative; Strict remains opt-in. Runtime environment discovery is mandatory before Run creation, searches host installations and optional explicit directories, never installs, and blocks missing dependencies until consented host installation and recheck. A terminal Strict attempt must never report result pending.
+
+In Cooperative execution, workspace/effective_allowed_paths constrain task output writes only. Tool discovery, invocation and input reads use host permissions and may occur outside the task directory. Never reinterpret bounded_write as a tool or read allowlist. Generator executable proposals need source evidence; optional dependencies stay conditional.

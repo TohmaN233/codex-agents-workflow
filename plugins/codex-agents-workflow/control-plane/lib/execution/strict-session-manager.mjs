@@ -258,6 +258,7 @@ export class StrictSessionManager {
   async collect(runtime, runId, args) {
     const envelope = await runtime.execution(runId, args, { allowInactive: true });
     const state = await runtime.get(runId); const attempt = state.nodes[args.node_id].attempts.find(item => item.id === args.attempt_id);
+    requireValue(!['failed','interrupted','cancelled'].includes(attempt.status), attempt.error?.code ?? 'STRICT_EXECUTOR_FAILED', attempt.error?.message ?? 'Strict execution terminated; do not keep polling for a result', {node_status:state.nodes[args.node_id].status,attempt_status:attempt.status,error:attempt.error});
     requireValue(attempt.result_proposal, 'STRICT_RESULT_PENDING', 'No durable result proposal exists for this attempt');
     const completion = await runtime.runs.readExecutorResult(runId, args.attempt_id, attempt.result_proposal.sha256);
     if (envelope.role === 'finalizer') {

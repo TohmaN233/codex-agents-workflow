@@ -172,7 +172,7 @@ test('coarse import is deterministic, preserves both metadata formats and surviv
   const two = compileCoarseSkill(source, { id: 'imported', providerId: 'chosen' });
   assert.equal(canonicalJSON(one.workflow), canonicalJSON(two.workflow)); assert.equal(one.workflow.status, 'draft');
   const main = compileCoarseSkill(source, { id: 'main-import' }); assert.deepEqual(main.workflow.nodes[1].executor, { kind: 'main' });
-  assert.deepEqual(main.workflow.requirements.providers, []); assert.equal(main.workflow.skill_policy.mode, 'strict');
+  assert.deepEqual(main.workflow.requirements.providers, []); assert.equal(main.workflow.skill_policy.mode, 'cooperative');
   assert.deepEqual(one.workflow.nodes.map(node => node.type), ['start', 'agent', 'agent', 'end']);
   assert.equal(one.workflow.nodes[1].executor.provider_id, 'chosen'); assert.deepEqual(Object.keys(one.provenance.metadata_files).sort(), ['SKILL.json', 'agents/openai.yaml']);
   const pack = await f.store.create(one.workflow, one); assert.deepEqual(await readFile(f.source), original);
@@ -347,9 +347,14 @@ test('published expansion contract compiles a named gate and finite condition wi
     { id: 'e', source: 'yes', target: 'final' }, { id: 'f', source: 'no', target: 'final' }
   ].map(edge => ({ ...edge, ...origin })) };
   const compiled = compileExpansion(pack, resources, proposal, { providers: [provider] });
+  const dependencyProposal={...proposal,required_executables:[{name:'ffmpeg',confidence:0.9,source_span:{resource:'source/setup.md',start_line:1,end_line:1}}]};
+  const dependencyResources={...resources,'source/setup.md':Buffer.from('Requires ffmpeg for every render.')};
+  assert.ok(compileExpansion(pack,dependencyResources,dependencyProposal,{providers:[provider]}).workflow.requirements.executables.includes('ffmpeg'));
+  assert.throws(()=>compileExpansion(pack,dependencyResources,{...dependencyProposal,required_executables:[{...dependencyProposal.required_executables[0],name:'invented'}]},{providers:[provider]}),{code:'EXPANSION_DEPENDENCY_EVIDENCE'});
+  assert.throws(()=>compileExpansion(pack,dependencyResources,{...dependencyProposal,required_executables:[{...dependencyProposal.required_executables[0],name:'ffmpeg --install'}]},{providers:[provider]}),{code:'EXPANSION_DEPENDENCIES'});
   const unsupportedTool = structuredClone(proposal);
   unsupportedTool.nodes[2] = { id: 'yes', type: 'tool', tool: 'read_workflow_resource', ...origin };
-  assert.throws(() => compileExpansion(pack, resources, unsupportedTool, { providers: [provider] }), { code: 'EXPANSION_STRICT_TOOL_UNSUPPORTED' });
+  assert.throws(() => compileExpansion({...pack,workflow:{...pack.workflow,skill_policy:{...pack.workflow.skill_policy,mode:'strict',implicit:'deny'}}}, resources, unsupportedTool, { providers: [provider] }), { code: 'EXPANSION_STRICT_TOOL_UNSUPPORTED' });
   const gate = compiled.workflow.nodes.find(node => node.id === 'confirm');
   assert.equal(gate.name, 'Confirm strategy'); assert.equal(gate.executor.kind, 'human'); assert.equal(gate.approval.required, true);
   assert.deepEqual(compiled.workflow.nodes.find(node => node.id === 'yes').outputs_schema, proposal.nodes[2].outputs_schema);
