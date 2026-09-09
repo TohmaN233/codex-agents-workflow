@@ -249,3 +249,5 @@ revisions before resource objects under store/Run creation locks. Run artifacts 
 trash remain intact. Plugin cleanup is limited to this plugin's cache, preserving
 installed, configured and process-referenced versions; recheck before deletion.
 Every mutation has a durable candidate list and completion/failure audit record.
+
+The Windows manual launcher resolves the installed plugin from the Codex registry and uses fixed port 58712. Before restarting, verify any port owner is this plugin's cached Node open-console entry and recheck PID creation identity. Never terminate unrelated port owners or choose a random fallback port. The stable user launcher lives outside versioned cache directories.

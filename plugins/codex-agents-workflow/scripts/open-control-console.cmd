@@ -8,7 +8,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-node "%~dp0..\control-plane\open-console.mjs" %*
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0open-installed-console.ps1" %*
 set "exit_code=%ERRORLEVEL%"
 if not "%exit_code%"=="0" pause
 exit /b %exit_code%
