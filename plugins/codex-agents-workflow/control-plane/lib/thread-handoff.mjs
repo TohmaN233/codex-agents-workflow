@@ -52,7 +52,7 @@ export function threadHandoff(adapter, envelope, prompt, { resources = [], max_c
   const resultInstruction = `\n\nThread protocol: work only on this node. Do not create replacement tasks or control the Workflow. Return only the structured node result matching this schema: ${JSON.stringify(envelope.outputs_schema ?? {})}. Include concrete artifact paths and verification facts in the result when applicable.`;
   const taskPrompt = prompt + resourcePacket + resultInstruction;
   if (max_chars !== undefined) requireValue(Number.isInteger(max_chars) && max_chars > 0 && taskPrompt.length <= max_chars, 'THREAD_PROMPT_LIMIT', 'Codex task handoff exceeds the configured prompt budget');
-  const title = `Workflow ${envelope.workflow_id} · ${envelope.node_id}`;
+  const title = `Workflow ${envelope.workflow_name ?? envelope.workflow_id} · ${envelope.node_name ?? envelope.node_id}`;
   if (context.lifecycle === 'start') return {
     operation: 'create_thread', title, prompt: taskPrompt,
     model: adapter.expected_model, thinking: adapter.expected_reasoning_effort,

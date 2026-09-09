@@ -68,8 +68,8 @@ export function executionEnvelope(node, state, pins, attempt, token) {
   });
   const thread = isThreadExecutor(node.executor) ? threadContext(state, node.executor) : null;
   return {
-    run_id: state.run_id, workflow_id: state.workflow_id, workflow_revision: state.workflow_revision,
-    node_id: node.id, attempt_id: attempt.id, lease_token: token, executor: structuredClone(node.executor),
+    run_id: state.run_id, workflow_id: state.workflow_id, workflow_name: pins.root.workflow.name, workflow_revision: state.workflow_revision,
+    node_id: node.id, node_name: node.name ?? node.id, attempt_id: attempt.id, lease_token: token, executor: structuredClone(node.executor),
     provider: ['provider', 'thread'].includes(node.executor.kind) ? structuredClone(pins.providers.find(item => item.id === node.executor.provider_id)) : null,
     role: node.role ?? null, access: permissions.access, workspace: nodeWorkspace(node.id, state, pins),
     inputs: resolveBindings(node.input_bindings ?? {}, bindingContext(state)), workflow_inputs: structuredClone(state.inputs),

@@ -20,7 +20,7 @@ async function fixture(t,preset_id='collaborative-image') {
   const run=await runtime.start({workflow_id:pack.workflow.id,workspace,access:'bounded_write',allowed_paths:['edit'],main_actor:'root',inputs:{task:'Synthetic delivery'}});
   const claim=node_id=>runtime.claimNode(run.run_id,{node_id,owner:'root',request_id:'claim-'+node_id,control_token:run.control_token});
   const complete=(lease,output,accept=false,thread_id)=>runtime.completeNode(run.run_id,{...lease,completion:{status:'succeeded',summary:'Synthetic scheduling evidence',structured_output:output,artifacts:[],evidence:thread_id?[{kind:'codex_thread',thread_id,observed:'completed'}]:[{check:'scheduler fixture'}],changed_paths:[],outside_paths:[],...(accept?{acceptance:{accepted:true}}:{})}});
-  return {service,runtime,executor,run,pack,claim,complete};
+  return {service,runtime,executor,run,pack,workspace,claim,complete};
 }
 
 for(const first of ['plan','prepare'])test(`image preparation runs concurrently and hands off after both finish (${first} first)`,async t=>{
@@ -96,6 +96,46 @@ test('thread-controlled presets route planning and production to their separate 
   assert.equal(byId(image).plan.executor.provider_id,rules.routes.planning.provider_id);
   assert.equal(byId(image).prepare.executor.provider_id,rules.routes.complex_implementation.provider_id);
   assert.equal(byId(image).produce.executor.provider_id,rules.routes.complex_implementation.provider_id);
+});
+
+test('mathematical research hybrid separates parallel one-off probes from a persistent Codex task',async t=>{
+  const f=await fixture(t);
+  const pack=await f.service.call('install_preset',{preset_id:'mathematical-research-hybrid'},{human:true});
+  assert.equal(pack.workflow.status,'ready');
+  assert.match(pack.workflow.name,/Mathematical Research/);
+  assert.match(pack.workflow.description,/one-off research workers/i);
+  assert.equal((await f.service.call('read',{workflow_id:pack.workflow.id})).validation.valid,true);
+  const byId=Object.fromEntries(pack.workflow.nodes.map(node=>[node.id,node]));
+  assert.deepEqual(['literature_map','toolbox_map','analogy_bridge','counterexample_hunt'].map(id=>byId[id].executor.kind),['provider','provider','provider','provider']);
+  assert.deepEqual(['route_probe_a','route_probe_b','route_probe_c'].map(id=>byId[id].executor.kind),['provider','provider','provider']);
+  assert.equal(byId.persistent_research_state.executor.kind,'thread');
+  assert.equal(byId.persistent_research_state.executor.lifecycle,'start');
+  assert.equal(byId.persistent_research_continue.executor.kind,'thread');
+  assert.equal(byId.persistent_research_continue.executor.lifecycle,'continue');
+  assert.equal(byId.persistent_research_continue.executor.source_node,'persistent_research_state');
+  assert.equal(byId.persistent_research_continue.executor.provider_id,byId.persistent_research_state.executor.provider_id);
+  assert.equal(byId.persistent_research_state.access,'bounded_write');
+  assert.equal(byId.adversarial_review.role,'reviewer');
+  assert.equal(byId.adversarial_review.access,'read_only');
+  assert.deepEqual(byId.research_mode.cases.map(entry=>entry.label),['persistent']);
+  assert.equal(byId.research_mode.default_label,'one_shot');
+});
+
+test('thread startup smoke test reaches a real create-task handoff',async t=>{
+  const f=await fixture(t);
+  const pack=await f.service.call('install_preset',{preset_id:'thread-startup-smoke-test'},{human:true});
+  assert.equal((await f.service.call('read',{workflow_id:pack.workflow.id})).validation.valid,true);
+  assert.equal(pack.workflow.status,'ready');
+  assert.match(pack.workflow.name,/Thread startup smoke test/);
+  const run=await f.runtime.start({workflow_id:pack.workflow.id,workspace:f.workspace,access:'read_only',allowed_paths:[],main_actor:'root',inputs:{task:'Verify that this English thread Workflow can start.'}});
+  assert.deepEqual((await f.runtime.next(run.run_id)).ready,['thread_smoke']);
+  const lease=await f.runtime.claimNode(run.run_id,{node_id:'thread_smoke',owner:'root',request_id:'thread-smoke',control_token:run.control_token});
+  const dispatch=await f.executor.dispatch(run.run_id,{...lease,control_token:run.control_token});
+  assert.equal(dispatch.adapter.execution,'codex_thread');
+  assert.equal(dispatch.adapter.lifecycle,'start');
+  assert.equal(dispatch.thread_handoff.operation,'create_thread');
+  assert.match(dispatch.thread_handoff.title,/Thread startup smoke test/);
+  assert.match(dispatch.thread_handoff.prompt,/Do not write files or create another task/i);
 });
 
 test('Codex task handoff carries a bounded immutable text snapshot and rejects binary source data',async t=>{

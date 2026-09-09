@@ -14,6 +14,10 @@ complex-implementation route. The Join releases the bounded-write continuation o
 after both branches succeed. Adding a preset binds registered routes and never
 overwrites an existing user definition.
 Updates and tool discovery do not reinstall deleted presets.
+The built-in English examples demonstrate the intended distinction: Mathematical
+Research Hybrid uses parallel one-off Provider workers for independent surveys and
+route probes, then starts one persistent task only after a human confirms the
+shared-state route; Thread startup smoke test isolates the create/collect handoff.
 
 Thread-controlled collaboration is distinct from an internal subagent handoff. A
 `thread` executor creates or continues a user-visible Codex task through the main
