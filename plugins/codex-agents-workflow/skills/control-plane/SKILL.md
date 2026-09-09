@@ -30,8 +30,12 @@ Resolve this-plugin from this Skill's directory (two parents). This diagnostic i
 an authorized short-lived protocol probe: it only initializes and lists tools, then
 closes; it cannot start a Run or replace the host's MCP connection. Its enforced
 10-second deadline distinguishes timeout from early process exit and retains stderr.
-If it reports ready, report HOST_TOOL_CONNECTION_UNAVAILABLE and ask the host to
-reload the plugin connection; sleeping is not a reconnection mechanism. If it fails,
+If it reports ready, that proves only the independent protocol probe, not this
+host connection. Inspect mcp-startup.jsonl in the plugin user-data directory and
+host startup logs before assigning a cause. A running host may cache a deleted
+pre-upgrade entrypoint; MCP reload alone does not clear its plugin catalog.
+Use the supported install-local.mjs upgrade path to refresh legacy bootstrap
+entries; do not ask the user to repeat a reload already shown ineffective. If it fails,
 report its exact diagnostic. Do not retry a deterministic process exit by sleeping.
 
 Only report `CONTROL PLANE UNAVAILABLE` after available discovery finds no callable

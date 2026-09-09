@@ -15,11 +15,13 @@ const controlDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const pluginDir = dirname(controlDir);
 const serverPath = join(controlDir, 'server.mjs');
 
-test('plugin MCP launches from the installed plugin root with the global Codex environment', async () => {
+test('plugin MCP uses a stable parent and fresh registry resolution with the global Codex environment', async () => {
   const manifest = JSON.parse(await readFile(join(pluginDir, '.mcp.json'), 'utf8'));
   const server = manifest.mcpServers['codex-agents-workflow'];
   assert.equal(server.enabled, true);
-  assert.equal(server.cwd, '.');
+  assert.equal(server.cwd, '../../..');
+  const bootstrap=await readFile(join(pluginDir,'scripts/mcp-bootstrap.cjs'),'utf8');
+  assert.ok(server.args[1].startsWith(bootstrap));
   assert.equal(server.args[0], '-e'); // The subprocess regression verifies the packaged bootstrap.
   assert.ok(server.env_vars.includes('CODEX_HOME'));
   assert.ok(server.env_vars.includes('USERPROFILE'));

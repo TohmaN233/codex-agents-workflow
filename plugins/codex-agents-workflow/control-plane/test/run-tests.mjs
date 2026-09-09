@@ -19,6 +19,7 @@ const files = [
   'console.test.mjs',
   'mcp.test.mjs',
   'mcp-startup.test.mjs',
+  'plugin-bootstrap.test.mjs',
   'run-absolute-scope.test.mjs',
   'runtime-dependency-boundary.test.mjs',
   'runtime-environment.test.mjs',

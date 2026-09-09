@@ -61,9 +61,16 @@ $installed=@($registry.installed | Where-Object { $_.pluginId -eq 'codex-agents-
 if ($installed.Count -ne 1) { throw 'Expected exactly one installed Workflow plugin' }
 $commands=@(Get-CimInstance Win32_Process | ForEach-Object { if ($_.CommandLine) { $_.CommandLine.Replace('/','\\').ToLowerInvariant() } })
 $active=@(Get-ChildItem -LiteralPath $cacheRoot -Directory | Where-Object { $candidate=$_.FullName.ToLowerInvariant(); @($commands | Where-Object { $_.Contains($candidate) }).Count -gt 0 } | ForEach-Object { $_.Name })
-@{installed=$installed;active=$active} | ConvertTo-Json -Compress`;
+$hosts=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'codex.exe' -and $_.CommandLine -match 'app-server' } | ForEach-Object { @{pid=$_.ProcessId;started_at=$_.CreationDate.ToUniversalTime().ToString('o')} })
+@{installed=$installed;active=$active;hosts=$hosts} | ConvertTo-Json -Depth 4 -Compress`;
   const {stdout}=await exec('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{windowsHide:true,timeout:30000,maxBuffer:65536,env:{...env,WORKFLOW_CLEANUP_CACHE_ROOT:cacheRoot}});
-  return JSON.parse(stdout);
+  const state=JSON.parse(stdout);
+  const retentionPath=resolve(cacheRoot,'../../../../codex-agents-workflow/runtime-retention.json');
+  let retention={versions:{}};
+  try{retention=JSON.parse(await readFile(retentionPath,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+  const live=new Set((state.hosts??[]).map(h=>`${h.pid}:${h.started_at}`));
+  state.active.push(...Object.entries(retention.versions).filter(([,hosts])=>hosts.some(h=>live.has(`${h.pid}:${h.started_at}`))).map(([version])=>version));
+  return state;
 }
 async function treeFiles(root,path=root,result=[]) {
   if(path!==root)insideRoot(root,path);await noSymlinks(path);

@@ -1,9 +1,11 @@
-# MCP startup repair evidence
+# MCP startup and upgrade lifecycle
 
-The reported thread 01a0840d-6ed3-7540-925f-b808d9865c2b entered starting at 2026-09-09T02:44:40.533Z and failed at .565Z with connection closed during initialize. Waiting was not recovery.
+A real Codex host reproduces the repeated connection-closed failure: start an ephemeral thread, upgrade the plugin through the CLI while the host remains alive, then start another thread. The installer removes old version contents, while that host still caches its MCP cwd and arguments. Independent probing of the new directory passes and does not diagnose this lifecycle. MCP reload alone does not invalidate the cached plugin catalog in the tested host.
 
-Reproduction: Node 24.14.1 with the installed package and ordinary cwd answered initialize; the same relative script entry with Windows namespaced cwd exited 1 with EISDIR lstat C:. The configured marketplace source uses a namespaced Windows path. The host log does not include child stderr, so correlation to that exact historical exit remains inferred.
+The bootstrap now resolves `codex plugin list --marketplace codex-agents-workflow --json` on every handshake and validates the exact enabled installed identity. It never chooses the greatest cache-directory name. Its cwd is the stable cache parent, and bootstrap code is embedded in the MCP configuration so deleting an obsolete revision cannot remove the bootstrap. Startup resolution and errors are recorded in the user-data `mcp-startup.jsonl` without credentials.
 
-Repair: packaged node -e bootstrap normalizes namespaced cwd before resolving/importing the same server; retains direct server signal/drain handling. No replacement task executor.
+Run `node scripts/build-mcp-entry.mjs` after editing `scripts/mcp-bootstrap.cjs`. Local upgrades use `node scripts/install-local.mjs`: retain files needed by live hosts, install through the official CLI, verify retained bytes, then replace retired server entrypoints with explicit current-registry bootstrap bridges. Existing running processes are not killed. Cache cleanup protects those compatibility entrypoints by PID plus start-time identity until their host exits. These are compatibility entrypoints, not a choice to run old logic.
 
-Hard checks: check-mcp-startup.mjs performs initialize and tools/list, verifies required execution tool names, enforces a 10-second deadline, reports early exit and stderr, and never dispatches a task. verify-control-plane.sh now requires this real handshake; regression covers ordinary and namespaced paths. Independent readiness does not prove host tool exposure or reconnect a failed host session.
+Validation: `node scripts/check-upgrade-lifecycle.mjs` starts a real Codex app-server with an isolated home, installs a synthetic plugin, upgrades it while the same host lives, and asserts a new ephemeral thread connects to the new registered version. It does not invoke a model. `check-mcp-startup.mjs` remains only a standalone protocol check; its `host_tool_exposure: not_checked` must not be interpreted as desktop readiness.
+
+The earlier Windows namespaced-path reproduction remains useful but did not cover this root cause. Do not conclude that waiting or repeating MCP reload will fix a cached deleted entrypoint.
