@@ -1,6 +1,6 @@
 {
   "name": "codex-agents-workflow",
-  "version": "0.8.0+codex.20260909014610",
+  "version": "0.8.0+codex.20260909023509",
   "description": "Versioned visual Workflows, explicit Skill imports, journal-backed Runs and pinned Provider execution.",
   "author": {
     "name": "TohmaN233",
