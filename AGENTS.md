@@ -231,3 +231,9 @@ failures retry only the closed reviewer session within the pinned budget, preser
 the accepted generator output. Semantic findings repair the graph. Both human
 acceptance and result application revalidate the checklist. Historical unversioned
 Runs retain their original approval contract; never reinterpret existing pins.
+
+The human editor exposes Save changes and Start rather than a separate Ready
+publication action. Start saves edits, publishes with the returned revision CAS,
+then launches with the published revision pin. Any failure stops this sequence.
+Enabled controls launch availability; Draft/Ready remain internal lifecycle states.
+Existing Runs retain their original pinned version when the editor is saved.
