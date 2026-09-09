@@ -2,6 +2,7 @@ import { evaluateReview } from './skill-import/review-checklist.mjs';
 import { cleanupCaches } from './cache-cleanup.mjs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { prepareTaskInputs } from './task-inputs.mjs';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
 import { readFile } from 'node:fs/promises';
 import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
@@ -254,6 +255,22 @@ export class WorkflowService {
       }
       case 'start': {
         const request = resolveLegacyWorkflowRequest(config, args);
+        if (request.launch_mode === 'task') {
+          requireValue(human,'HUMAN_TASK_LAUNCH','Task launch defaults belong to the human console');
+          const pack=await store.snapshot(request.workflow_id,request.revision_hash);
+          const resources=await store.resources(request.workflow_id,pack.revision_hash);
+          request.inputs=await prepareTaskInputs({inputs:request.inputs ?? {},schema:pack.workflow.inputs_schema,source:resources['source/SKILL.md']?.toString('utf8') ?? pack.workflow.description,config,directory:dirname(this.configPath),env:this.env});
+          request.revision_hash=pack.revision_hash;
+          request.run_id = workflowId(request.run_id ?? randomUUID());
+          const project = request.workspace || await ensureDirectory(join(dirname(this.configPath),'workflow-workspaces','run-'+request.run_id));
+          requireValue(isAbsolute(project) && dirname(resolve(project)) !== resolve(project),'RUN_WORKSPACE','Task project must be an absolute folder, not a drive root');
+          await noSymlinks(project);
+          request.workspace = resolve(project);
+          request.access = 'bounded_write';
+          request.allowed_paths = ['.'];
+          request.constraints = {...request.constraints,task_workspace:resolve(project)};
+          delete request.launch_mode;
+        }
         if (human && !request.workspace) {
           request.run_id = workflowId(request.run_id ?? randomUUID());
           request.workspace = await ensureDirectory(join(dirname(this.configPath),'workflow-workspaces','run-'+request.run_id));

@@ -29,9 +29,9 @@ export function resolveBindings(bindings, context) {
 export function pathBoundaries(values) {
   requireValue(Array.isArray(values), 'PATH_SCOPE', 'Path scope must be an array of bounded paths');
   return [...new Set(values.map(value => {
-    requireValue(typeof value === 'string' && !/[*?\[\]{}!\x00-\x1f]/.test(value), 'PATH_SCOPE', 'Path boundaries cannot contain globs');
+    requireValue(typeof value === 'string' && value.trim().length>0 && !/[*?\[\]{}!\x00-\x1f]/.test(value), 'PATH_SCOPE', 'Path boundaries cannot be empty or contain globs');
     const path = posix.normalize(value.trim().replaceAll('\\', '/'));
-    requireValue(path && !['.', '..'].includes(path) && !path.startsWith('../') && !path.startsWith('/') && !/^[a-z]:/i.test(path), 'PATH_SCOPE', 'Path scope must stay inside the workspace and cannot cover its root');
+    requireValue(path && path !== '..' && !path.startsWith('../') && !path.startsWith('/') && !/^[a-z]:/i.test(path), 'PATH_SCOPE', 'Path scope must stay inside the workspace');
     return path.replace(/\/$/, '');
   }))].sort();
 }
@@ -39,7 +39,7 @@ export function pathBoundaries(values) {
 export function intersectBoundaries(parent, child, { caseInsensitive = process.platform === 'win32' } = {}) {
   const left = pathBoundaries(parent); const right = pathBoundaries(child);
   const key = value => caseInsensitive ? value.toLowerCase() : value;
-  const within = (base, value) => key(base) === key(value) || key(value).startsWith(key(base) + '/');
+  const within = (base, value) => base==='.' || key(base) === key(value) || key(value).startsWith(key(base) + '/');
   return pathBoundaries(left.flatMap(a => right.flatMap(b => within(a, b) ? [b] : within(b, a) ? [a] : [])));
 }
 

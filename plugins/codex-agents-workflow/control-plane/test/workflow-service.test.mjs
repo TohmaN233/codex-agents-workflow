@@ -57,6 +57,23 @@ async function fixture(t, options = {}) {
 }
 const control = run => ({ run_id: run.run_id, control_token: run.control_token });
 
+test('task launch grants project writes without manual allowlists and exposes the task directory', async t => {
+  const f=await fixture(t);await f.migrate();
+  const args={workflow_id:'bounded-code-change',launch_mode:'task',main_actor:'human-console',inputs:{task:'Write a result'}};
+  await assert.rejects(f.service.call('start',args),{code:'HUMAN_TASK_LAUNCH'});
+  const run=await f.service.call('start',args,{human:true});
+  const state=await f.service.call('get',control(run));
+  assert.equal(state.permissions.access,'bounded_write');
+  assert.deepEqual(state.permissions.allowed_paths,['.']);
+  assert.equal(state.permissions.workspace,state.constraints.task_workspace);
+  assert.equal(state.constraints.task_workspace,join(f.root,'workflow-workspaces','run-'+run.run_id));
+  const lease=await f.service.call('claim_node',{...control(run),node_id:'implementation',owner:'worker',request_id:'claim-write'});
+  assert.equal(lease.access,'bounded_write');
+  assert(lease.prompt_template.includes(state.constraints.task_workspace));
+  const explicit=await f.service.call('start',{...args,workspace:f.workspace},{human:true});
+  assert.deepEqual((await f.service.call('get',control(explicit))).permissions.allowed_paths,['.']);
+});
+
 test('human launch prepares an isolated workspace without expanding access', async t => {
   const f=await fixture(t);await f.migrate();
   const args={workflow_id:'brainstorm',main_actor:'human-console',inputs:{task:'Synthetic task',context:'Fixture only'}};

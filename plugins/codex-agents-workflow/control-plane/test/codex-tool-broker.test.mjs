@@ -17,6 +17,13 @@ async function fixture(t) {
 }
 const output = result => JSON.parse(result.contentItems[0].text);
 
+test('whole-project write scope allows new task files but still rejects workspace escapes',async t=>{
+  const f=await fixture(t);const broker=await createCodexToolBroker({...f.options,allowedPaths:['.']});
+  await broker.call('write_workspace',{path:'result.txt',expected_sha256:null,text:'result'},'new-result');
+  assert.equal(await readFile(join(f.root,'result.txt'),'utf8'),'result');
+  await assert.rejects(broker.call('write_workspace',{path:'../outside.txt',expected_sha256:null,text:'outside'},'escape'),{code:'INVALID_RESOURCE_PATH'});
+});
+
 test('bounded resource reads preserve pin identity and report actual numbered coverage',async t=>{
   const f=await fixture(t);const bytes='first\nsecond\nthird';
   const options={...f.options,resources:[{path:'source/file.md',bytes,sha256:digest(bytes)}]};

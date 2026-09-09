@@ -64,7 +64,7 @@ export function executionEnvelope(node, state, pins, attempt, token, resourcesRo
     role: node.role ?? null, access: permissions.access, workspace: nodeWorkspace(node.id, state, pins),
     inputs: resolveBindings(node.input_bindings ?? {}, bindingContext(state)), workflow_inputs: structuredClone(state.inputs),
     upstream_results: Object.fromEntries([...ancestors].sort().filter(id => ['succeeded', 'failed'].includes(state.nodes[id].status)).map(id => [id, { status: state.nodes[id].status, output: structuredClone(state.nodes[id].output), error: structuredClone(state.nodes[id].error) }])),
-    constraints: structuredClone(state.constraints), prompt_template: node.prompt_template ?? (node.type === 'skill_ref' ? 'Apply the explicitly pinned Skill to {{task}}. Read its references only from the mapped pinned resources.' : null),
+    constraints: {...structuredClone(state.constraints),...(state.constraints.task_workspace?{task_workspace:nodeWorkspace(node.id,state,pins)}:{})}, prompt_template: (state.constraints.task_workspace ? `Task working directory: ${nodeWorkspace(node.id,state,pins)}. Work inside this project directory. Determine concrete parameters, intermediate files and output names from the pinned Skill and task; ask the main controller for genuinely missing task information.\n` : '') + (node.prompt_template ?? (node.type === 'skill_ref' ? 'Apply the explicitly pinned Skill to {{task}}. Read its references only from the mapped pinned resources.' : '')),
     resources: structuredClone(node.resources ?? []), outputs_schema: structuredClone(node.outputs_schema ?? {}),
     skill_policy: skillPolicy, skill_ref: structuredClone(node.skill_ref ?? null),
     subworkflow: structuredClone(node.subworkflow ?? null),

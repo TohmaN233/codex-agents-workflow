@@ -105,7 +105,7 @@ export async function validateAllowedPaths(workspace, values, { required = false
       throw connectorError('ALLOWED_PATH_INVALID', `allowed_paths[${index}] must be a string`);
     }
     const raw = normalizeSlashes(rawValue.trim());
-    if (!raw || raw === '.' || raw === './') {
+    if (!raw) {
       throw connectorError('ALLOWED_PATH_INVALID', `allowed_paths[${index}] must name a bounded path`);
     }
     if (GLOB_RE.test(raw)) {
@@ -114,6 +114,7 @@ export async function validateAllowedPaths(workspace, values, { required = false
     if (isAbsolute(raw) || /^[A-Za-z]:\//.test(raw)) {
       throw connectorError('ALLOWED_PATH_INVALID', `allowed_paths[${index}] must be workspace-relative: ${raw}`);
     }
+    if (raw === '.' || raw === './') { if(!seen.has('.')) {seen.add('.');result.push('.');} continue; }
     const absolute = resolve(root, raw);
     if (!isPathInside(root, absolute) || samePath(root, absolute)) {
       throw connectorError('ALLOWED_PATH_ESCAPE', `allowed path escapes or covers the entire workspace: ${raw}`);
@@ -137,6 +138,7 @@ export function pathAllowed(relativePath, allowedPaths) {
   const candidate = comparePath(relativePath);
   return (allowedPaths || []).some((allowed) => {
     const boundary = comparePath(allowed);
+    if(boundary==='.')return Boolean(candidate) && !candidate.startsWith('/') && !/^[a-z]:/i.test(candidate) && !candidate.split('/').includes('..');
     return candidate === boundary || candidate.startsWith(`${boundary}/`);
   });
 }

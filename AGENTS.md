@@ -251,3 +251,19 @@ installed, configured and process-referenced versions; recheck before deletion.
 Every mutation has a durable candidate list and completion/failure audit record.
 
 The Windows manual launcher resolves the installed plugin from the Codex registry and uses fixed port 58712. Before restarting, verify any port owner is this plugin's cached Node open-console entry and recheck PID creation identity. Never terminate unrelated port owners or choose a random fallback port. The stable user launcher lives outside versioned cache directories.
+
+Human task launch defaults to bounded_write over the task project without manual
+allowlists or JSON inputs. The engine keeps the actual project as workspace and uses the explicit dot
+boundary for the whole project. Parallel agents receive their isolated worktree
+directory, never the original project path. Dot cannot escape the workspace. Advanced
+API callers retain their explicit permissions. Generated agent operation_mode is
+read/write according to actual work; production defaults to write, independent
+review remains read-only, and compiler verifies Provider write capability and binds
+write scope to the Run. Coarse instructions can write; planning/review jobs cannot.
+
+For schemas that cannot accept a task description directly, prepareTaskInputs uses
+the newest discovered local Codex with the configured main model, existing auth,
+ignored user configuration and disabled shell/delegation in an ephemeral read-only
+request. Validate the prepared JSON against the original schema before starting.
+Missing facts become natural-language questions; never invent required inputs.
+Valid inputs take the deterministic fast path without another model call.

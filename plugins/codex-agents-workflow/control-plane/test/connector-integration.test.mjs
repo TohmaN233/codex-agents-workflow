@@ -382,6 +382,15 @@ test('Cursor bounded write completes for an allowed path and reports the observe
   assert.deepEqual(done.scope.outside_paths, []);
 });
 
+test('Cursor whole-project scope keeps Git workspace identity and permits task output', async t => {
+  const fx=await fixture(t);
+  const started=await startScenario(fx,'cursor-bounded-change','CURSOR_WRITE_ALLOWED',{allowedPaths:['.']});
+  const done=await fx.registry.status(started.task_id,5000);
+  assert.equal(done.state,'completed');
+  assert.deepEqual(done.scope.changed_paths,['allowed/cursor.txt']);
+  assert.deepEqual(done.scope.outside_paths,[]);
+});
+
 test('Cursor outside modification is rejected at acceptance with observable changed-path evidence', async (t) => {
   const fx = await fixture(t);
   const started = await startScenario(fx, 'cursor-bounded-change', 'CURSOR_WRITE_OUTSIDE', {
@@ -595,13 +604,12 @@ test('scope guard rejects a direct commit even when changed files are otherwise 
   assert.notEqual(scope.baseline_digest, scope.observed_digest);
 });
 
-test('allowed_paths rejects escape, absolute, glob, and whole-workspace boundaries before launch', async (t) => {
+test('allowed_paths rejects escape, absolute and glob boundaries before launch', async (t) => {
   const fx = await fixture(t);
   const invalid = [
     ['../escape'],
     [fx.workspace],
     ['src/*.js'],
-    ['.'],
   ];
   for (const allowedPaths of invalid) {
     await assert.rejects(
