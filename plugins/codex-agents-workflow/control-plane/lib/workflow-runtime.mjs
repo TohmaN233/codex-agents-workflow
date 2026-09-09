@@ -251,7 +251,7 @@ export class WorkflowRuntime {
     const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: !allowInactive });
     requireValue(allowInactive || state.status === 'running' || allowPaused && state.status === 'paused', 'RUN_NOT_RUNNING', 'Run must be running before dispatch');
     const node = pins.root.workflow.nodes.find(item => item.id === node_id);
-    return executionEnvelope(node, state, pins, attempt, lease_token, join(this.runs.directory(runId), 'objects'));
+    return executionEnvelope(node, state, pins, attempt, lease_token);
   }
   async next(runId) {
     return this.#nextFromRecord(runId, await this.runs.read(runId));
@@ -286,14 +286,14 @@ export class WorkflowRuntime {
       const existing = node.attempts.find(attempt => attempt.claim_request_id === request_id);
       if (existing) {
         requireValue(existing.owner === owner && node.active_attempt_id === existing.id && ['claimed', 'running'].includes(existing.status), 'CLAIM_CONFLICT', 'Claim request refers to a different or closed executor');
-        return executionEnvelope(definition, state, pins, existing, leaseToken(control_token, runId, node_id, existing.id, existing.lease_generation ?? 0), join(this.runs.directory(runId), 'objects'));
+        return executionEnvelope(definition, state, pins, existing, leaseToken(control_token, runId, node_id, existing.id, existing.lease_generation ?? 0));
       }
       requireValue(state.status === 'running' && node.status === 'ready', 'NODE_NOT_READY', 'Only a ready node in an active Run may be claimed');
       const approval = approvalBinding(definition, state, pins);
       if (approval.required) requireValue(state.approvals[node.approval_id]?.status === 'approved' && state.approvals[node.approval_id].binding_hash === approval.hash, 'APPROVAL_REQUIRED', 'Exact node approval is required before claim');
       const id = randomUUID(); const token = leaseToken(control_token, runId, node_id, id);
       const attempt = { id, owner, started_at: new Date().toISOString(), claim_request_id: request_id, lease_hash: digest(token), status: 'claimed', dispatch: null, completion_hash: null, reconciliation: null };
-      const envelope = executionEnvelope(definition, state, pins, attempt, token, join(this.runs.directory(runId), 'objects'));
+      const envelope = executionEnvelope(definition, state, pins, attempt, token);
       node.attempts.push(attempt); node.active_attempt_id = id; node.status = 'claimed'; touch(state);
       return envelope;
     }, { expected_sequence });

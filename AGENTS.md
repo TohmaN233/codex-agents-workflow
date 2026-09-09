@@ -81,6 +81,11 @@ fsynced hash-chain journal, writer lock and explicit recovery. Definitions edite
 or deleted after Run start never replace its intact pinned material. See
 V7_CORE_CONTRACT, V7_RUN_CONTRACT and V7_SERVICE_CONTRACT.
 
+Run-pinned resources are logical identifiers such as `source/SKILL.md`, never
+filesystem paths. Execution handoffs expose those IDs and the audited resource reader
+only. The content-addressed object root stays internal to the runtime; no agent may
+derive a local or Markdown file link by joining it with a logical resource ID.
+
 Provider bindings, approval semantics and non-glob path boundaries are user policy.
 No auto-enable, substitute Provider, implicit retry or Strict downgrade. Structural
 Ready is separate from launch readiness. Main acceptance is required on every

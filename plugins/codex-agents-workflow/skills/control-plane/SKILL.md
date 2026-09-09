@@ -43,7 +43,9 @@ when the probe succeeds but host tools remain missing.
    distinguishes configurable models from fixed roles. Pass the supplied node
    prompt and envelope, retain the real task identity, and record it using
    `workflow_dispatch_receipt`. Never fabricate a receipt or silently substitute
-   a Provider. Main-node leases stay with the main agent.
+   a Provider. Main-node leases stay with the main agent. Pinned Workflow resources
+   such as `source/SKILL.md` are logical IDs, not local file paths. Read them through
+   the returned resource reader; never form a local path or Markdown link from an ID.
 4. Collect managed work with the returned collection tool. For host-owned work,
    verify artifacts and checks, then call `workflow_complete_node` with structured
    output, evidence and changed/outside paths; record failure with

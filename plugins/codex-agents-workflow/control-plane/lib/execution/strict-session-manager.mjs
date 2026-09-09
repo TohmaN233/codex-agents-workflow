@@ -95,16 +95,17 @@ export class StrictSessionManager {
       const settings = validateStrictConfig((await this.getConfig()).strict_executor);
       entry.authenticationMode = settings.authentication.mode;
       const { pins } = await runtime.runs.read(runId);
+      const resourceObjectRoot = join(runtime.runs.directory(runId), 'objects');
       const resources = await Promise.all(envelope.resources.map(async path => {
         const pin = pins.root.resources.find(item => item.path === path);
         requireValue(pin, 'STRICT_RESOURCE_UNAVAILABLE', 'Node resource is not pinned');
-        return { path, sha256: pin.sha256, bytes: await readFile(join(envelope.resources_root, pin.sha256)) };
+        return { path, sha256: pin.sha256, bytes: await readFile(join(resourceObjectRoot, pin.sha256)) };
       }));
       const allowedSkills = []; const skillResources = [];
       for (const pin of envelope.allowed_skills ?? []) {
         const files = Object.create(null); const prefix = '__skill_pins__/' + digest(pin.path) + '/';
         for (const resource of pin.resources) {
-          const bytes = await readFile(join(envelope.resources_root, resource.sha256)); files[resource.path] = bytes;
+          const bytes = await readFile(join(resourceObjectRoot, resource.sha256)); files[resource.path] = bytes;
           resources.push({ path: prefix + resource.path, sha256: resource.sha256, bytes });
         }
         allowedSkills.push({ source_path: pin.path, source_hash: pin.source_hash, name: pin.name, files });

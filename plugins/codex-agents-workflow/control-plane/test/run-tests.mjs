@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const files = [
+  'execution-envelope-resources.test.mjs',
   'workflow-presets.test.mjs',
   'native-binding.test.mjs',
   'config.test.mjs',
