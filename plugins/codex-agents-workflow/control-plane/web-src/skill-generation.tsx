@@ -9,7 +9,7 @@ function ReviewChecklist({result}:{result:Json}) {
   return <><p>审核结论：{result.approved?'通过':'未通过'}（程序按逐项结果汇总）</p><table><thead><tr><th>检查项</th><th>结果</th><th>证据与依据</th></tr></thead><tbody>{result.checks.map((check:Json)=><tr key={check.id}><td>{reviewLabels[check.id] ?? check.id}</td><td>{{pass:'通过',fail:'未通过',not_applicable:'不适用'}[check.status as string]}</td><td>{check.evidence}<Details title="节点、连线和来源" value={{node_ids:check.node_ids,edge_ids:check.edge_ids,source_spans:check.source_spans}}/></td></tr>)}</tbody></table></>;
 }
 
-export function SkillGeneration({pack,routing,provider,workspace,saved,openRun}: {pack:Json,routing:Json|null,provider:string,workspace:string,saved:(pack:Json)=>Promise<void>,openRun:(run:Json)=>void}) {
+export function SkillGeneration({pack,routing,workspace,saved,openRun}: {pack:Json,routing:Json|null,workspace:string,saved:(pack:Json)=>Promise<void>,openRun:(run:Json)=>void}) {
   const sessionKey = pack.workflow.id+'/'+pack.revision_hash;
   const [run,setRun] = useState<Json|null>(()=>sessions.get(sessionKey) ?? null);
   const [progress,setProgress] = useState<Json|null>(null);
@@ -31,7 +31,7 @@ export function SkillGeneration({pack,routing,provider,workspace,saved,openRun}:
   },[run,error,stopping,progress?.phase]);
   async function start(){
     setBusy(true);setError(null);setProgress(null);setStopping(false);
-    try {const result=await api('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:uid('generation'),...(routing?{routing_rules:routing}:{}),...(provider?{provider_id:provider}:{}),...(workspace?{workspace}:{})});rememberRun(result);sessions.set(sessionKey,result);setRun(result);}
+    try {const result=await api('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:uid('generation'),...(routing?{routing_rules:routing}:{}),...(workspace?{workspace}:{})});rememberRun(result);sessions.set(sessionKey,result);setRun(result);}
     catch(cause){fail(cause);}finally{setBusy(false);}
   }
   async function accept(){setBusy(true);try{const result=await api('accept_generation',{...control,accepted:true});sessions.delete(sessionKey);await saved(result);}catch(cause){fail(cause);}finally{setBusy(false);}}
