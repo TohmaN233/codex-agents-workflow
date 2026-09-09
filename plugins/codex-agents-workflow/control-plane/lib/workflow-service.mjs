@@ -1,4 +1,5 @@
 import {discoverRuntimeEnvironment} from './runtime-environment.mjs';
+import { WORKFLOW_PRESETS, createWorkflowPreset } from './workflow-presets.mjs';
 import { evaluateReview } from './skill-import/review-checklist.mjs';
 import { cleanupCaches } from './cache-cleanup.mjs';
 import { homedir } from 'node:os';
@@ -98,6 +99,16 @@ export class WorkflowService {
     const { config, context, store, runtime, executor } = await this.open();
     if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
+      case 'presets': return structuredClone(WORKFLOW_PRESETS);
+      case 'install_preset': {
+        requireValue(human,'HUMAN_PRESET_INSTALL','Add presets from the authenticated console');
+        requireValue(WORKFLOW_PRESETS.some(p=>p.id===args.preset_id),'WORKFLOW_PRESET_MISSING','Unknown Workflow preset');
+        const existing=(await store.list()).find(p=>p.workflow.id==='builtin-'+args.preset_id);
+        if(existing) return existing; // Reopening a preset never overwrites user edits.
+        const rules=await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const workflow=createWorkflowPreset(args.preset_id,config.providers,rules);
+        return store.create(workflow,{provenance:{kind:'bundled_preset',preset_id:args.preset_id}});
+      }
       case 'generate_task_brief': {
         requireValue(human,'HUMAN_TASK_BRIEF','Task description generation belongs to the human console');
         const pack=args.workflow_id?await store.snapshot(args.workflow_id,args.revision_hash):null;

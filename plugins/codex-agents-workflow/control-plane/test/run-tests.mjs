@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const files = [
+  'workflow-presets.test.mjs',
   'native-binding.test.mjs',
   'config.test.mjs',
   'local-client-discovery.test.mjs',

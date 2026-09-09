@@ -32,6 +32,7 @@ const specs = [
   ['create_expansion_run', 'Create a read-only Strict planning Run using the user-selected native Provider. Use normal claim/dispatch/collect operations; its source Draft is unchanged.', ['workflow_id', 'revision_hash', 'provider_id', 'run_id', 'workspace', 'main_actor'], ['routing_rules']],
   ['apply_expansion_result', 'Apply a main-accepted planning Run to its exact source revision as an unreviewed Draft. Never dispatches or retries a model.', [...main, 'workflow_id', 'expected_revision'], []],
   ['list', 'List Workflow metadata and structural/environment readiness, without prompt bodies.', [], []],
+  ['presets', 'List bundled collaborative Workflow presets available in the console.', [], []],
   ['read', 'Read one explicit immutable Workflow revision for inspection or editing.', ['workflow_id'], ['revision_hash']],
   ['source_status', 'Compare explicitly pinned Skill instruction source hashes and report update_available or read diagnostics. Never changes Workflow resources or an existing Run.', ['workflow_id'], ['revision_hash']],
   ['revisions', 'Read immutable revision history metadata. Opening a revision verifies its resource content separately.', ['workflow_id'], []],

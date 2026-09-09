@@ -2,6 +2,14 @@
 
 A model-configurable workflow plugin with a local console. Build versioned visual Workflows and follow their local execution journal.
 
+The library's **内置协作预设** section includes **多角色协作** and **协作生图**.
+A planning subagent works alongside the main agent's tool and input preparation.
+After both succeed, the runtime releases production with their structured outputs;
+the main agent uses host tools (including image generation) and accepts the result.
+Planning uses the registered planning Provider. Production writes use the current
+task's output scope; tool discovery and input reads use host permissions. Adding a
+preset again opens the existing definition and preserves user edits.
+
 Version0.8.0 introduces the v7 Workflow runtime. Read the [v7 upgrade guide](docs/V7_UPGRADE.md) for migration, execution boundaries and release evidence.
 
 You choose the tasks, the subagent models, and their thinking levels. Plug them in, take them out, add your own, and turn each model connection on or off. Cursor and Grok are extra subagent entries. ChatGPT review uses the installed chatgpt-review-agent skill.

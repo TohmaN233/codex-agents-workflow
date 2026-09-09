@@ -7,6 +7,12 @@ validation rejects conflicting bindings before creating a Run. Provider IDs reso
 from the current registry for each new Run; deletion invalidates dependent Workflows.
 Existing Run snapshots remain immutable. Skill entrypoints describe task triggers;
 historical migration protocols do not belong in normal execution instructions.
+Bundled collaboration presets parallelize a Provider's structured planning with
+the host main agent's tool/input preparation. Only preparation is read-only; production
+is a downstream bounded-write main node so image generation and other host tools
+remain usable. The Join releases production only after both branches succeed.
+Adding a preset binds the registered planning route and never overwrites an existing
+user definition. Updates and tool discovery do not reinstall deleted presets.
 
 The plugin identity is now `codex-agents-workflow`. The primary model is host-owned:
 do not add model eligibility gates, reasoning floors or startup model advice for it.
