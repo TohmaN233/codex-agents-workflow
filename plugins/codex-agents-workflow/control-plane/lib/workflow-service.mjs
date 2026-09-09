@@ -2,7 +2,7 @@ import { evaluateReview } from './skill-import/review-checklist.mjs';
 import { cleanupCaches } from './cache-cleanup.mjs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { prepareTaskInputs } from './task-inputs.mjs';
+import { prepareTaskInputs, generateTaskBrief } from './task-inputs.mjs';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
 import { readFile } from 'node:fs/promises';
 import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
@@ -97,6 +97,15 @@ export class WorkflowService {
     const { config, context, store, runtime, executor } = await this.open();
     if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
+      case 'generate_task_brief': {
+        requireValue(human,'HUMAN_TASK_BRIEF','Task description generation belongs to the human console');
+        const pack=args.workflow_id?await store.snapshot(args.workflow_id,args.revision_hash):null;
+        const workflow=args.workflow ?? pack?.workflow;
+        requireValue(workflow && typeof workflow.name==='string','TASK_BRIEF_WORKFLOW','Select a Workflow first');
+        requireValue(typeof (args.existing ?? '')==='string','TASK_BRIEF_INPUT','Existing task description must be text');
+        const resources=pack?await store.resources(pack.workflow.id,pack.revision_hash):{};
+        return generateTaskBrief({workflow,source:resources['source/SKILL.md']?.toString('utf8') ?? '',existing:args.existing ?? '',config,directory:dirname(this.configPath),env:this.env});
+      }
       case 'cache_cleanup_preview':
       case 'cleanup_caches': {
         requireValue(human,'HUMAN_CACHE_CLEANUP','Cache cleanup belongs to the human console');

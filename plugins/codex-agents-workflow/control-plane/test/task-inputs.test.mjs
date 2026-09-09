@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {prepareTaskInputs} from '../lib/task-inputs.mjs';
+import {prepareTaskInputs,generateTaskBrief} from '../lib/task-inputs.mjs';
 import {pathBoundaries,intersectBoundaries} from '../lib/workflow-bindings.mjs';
 import {pathAllowed} from '../connectors/scope-guard.mjs';
 
@@ -21,4 +21,17 @@ test('whole-project boundary intersects narrower scopes without allowing escapes
   assert(!pathAllowed('C:/outside.txt',['.']));
   assert.throws(()=>pathBoundaries(['']),{code:'PATH_SCOPE'});
   assert.throws(()=>pathBoundaries(['../outside']),{code:'PATH_SCOPE'});
+});
+
+test('task brief generation uses registered Luna settings and returns an editable task',async()=>{
+  const provider={id:'native-luna',enabled:true,kind:'native_agent',capabilities:{read:true},config:{model:'gpt-5.6-luna',reasoning_effort:'max'}};
+  const config={providers:[provider],strict_executor:{main_model:'another-model',main_reasoning_effort:'medium'}};
+  const result=await generateTaskBrief({workflow:{name:'video-use'},existing:'保留原声',config,runModel:async request=>{
+    assert.equal(request.brief,true);assert.equal(request.inputs.existing_task,'保留原声');
+    assert.equal(request.config.strict_executor.main_model,'gpt-5.6-luna');assert.equal(request.config.strict_executor.main_reasoning_effort,'max');
+    return {ready:true,inputs_json:JSON.stringify({task:'按工作流处理【请填写：素材路径】，保留原声。'})};
+  }});
+  assert.match(result.task,/保留原声/);assert.equal(result.provider_id,'native-luna');
+  assert.equal(config.strict_executor.main_model,'another-model');
+  await assert.rejects(generateTaskBrief({workflow:{},config:{...config,providers:[{...provider,enabled:false}]}}),{code:'TASK_BRIEF_PROVIDER'});
 });
