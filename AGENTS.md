@@ -1,5 +1,13 @@
 # Maintainer context
 
+Editable native Workflow Providers use the generic `default` host agent with explicit
+model/effort and fresh context. Fixed orchestration roles remain separate; their
+model/effort contract comes from the shipped agent TOML, and Cooperative Workflow
+validation rejects conflicting bindings before creating a Run. Provider IDs resolve
+from the current registry for each new Run; deletion invalidates dependent Workflows.
+Existing Run snapshots remain immutable. Skill entrypoints describe task triggers;
+historical migration protocols do not belong in normal execution instructions.
+
 The plugin identity is now `codex-agents-workflow`. The primary model is host-owned:
 do not add model eligibility gates, reasoning floors or startup model advice for it.
 Resolve and pin Strict model metadata only after official authentication and before

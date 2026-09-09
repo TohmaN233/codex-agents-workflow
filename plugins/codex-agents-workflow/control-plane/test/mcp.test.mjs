@@ -32,19 +32,19 @@ test('routing policy leaves the primary model to the host and never auto-falls b
   const nativeSkill = await readFile(join(pluginDir, 'skills', 'orchestration', 'SKILL.md'), 'utf8');
   const legacySkill = await readFile(join(pluginDir, 'skills', 'control-plane', 'references', 'v6-control-plane.md'), 'utf8');
   assert.doesNotMatch(controlSkill, /use the native[\s\S]{0,100}workflow or stay solo/i);
-  assert.match(controlSkill, /request\s+permission[\s\S]{0,100}retry once/i);
+  assert.match(controlSkill, /Report the observed error/i);
   assert.doesNotMatch(nativeSkill, /ask the user to confirm[\s\S]{0,80}stop[\s\S]{0,40}until confirmed/i);
   for (const skill of [controlSkill, nativeSkill, legacySkill]) {
     assert.doesNotMatch(skill, /recommended primary|qualifying primary|confirm the primary session|GPT-5\.6 Luna never qualifies/i);
   }
   assert.match(legacySkill, /delegate is the default/i);
   assert.match(legacySkill, /full[\s\S]{0,120}(difficult|high-risk)/i);
-  assert.match(controlSkill, /version: 6[\s\S]{0,100}v6-control-plane.md/);
-  for (const operation of ['workflow_start', 'workflow_claim_node', 'workflow_dispatch', 'workflow_complete_node', 'workflow_reattach_connector']) assert(controlSkill.includes(operation));
-  assert.match(controlSkill, /CONTROL PLANE UNAVAILABLE/);
-  const unavailableSection = controlSkill.match(/If discovery\/calling confirms[\s\S]*?(?=\n## )/i)?.[0] || '';
-  assert.match(unavailableSection, /Do not emit[\s\S]{0,40}`SELECTIVE ROUTE`/i);
-  assert.doesNotMatch(unavailableSection, /~~~text[\s\S]*SELECTIVE ROUTE/i);
+  assert.doesNotMatch(controlSkill, /legacy|version: [67]|\bv[67]\b/);
+  const recovery = await readFile(join(pluginDir, 'skills/control-plane/references/recovery.md'), 'utf8');
+  for (const operation of ['workflow_start', 'workflow_claim_node', 'workflow_dispatch', 'workflow_complete_node', 'workflow_reattach_connector']) assert((controlSkill + recovery).includes(operation));
+  const connection = await readFile(join(pluginDir, 'skills/control-plane/references/connection.md'), 'utf8');
+  assert.match(connection, /Never claim connection recovery before a host tool call\s+succeeds/i);
+  assert.match(controlSkill, /Never fabricate a receipt or silently substitute/);
   assert.match(nativeSkill, /delegate is the default/i);
 });
 

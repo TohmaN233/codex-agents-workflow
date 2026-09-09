@@ -115,7 +115,7 @@ for phrase in \
 done
 grep -Fq 'workflow-review' "$web_app" || fail "console omits the independent review workflow switch"
 if grep -Fq 'task-type-route' "$web_app"; then fail "console still exposes an independent route selector"; fi
-grep -Fq 'CONTROL PLANE UNAVAILABLE' "$skill" || fail "control-plane skill hides activation failure"
+grep -Fq 'Report the observed error' "$skill" || fail "control-plane skill hides activation failure"
 grep -Fq 'Delegate is the default' "$plugin_dir/skills/control-plane/references/v6-control-plane.md" || fail "control-plane skill does not default to delegate"
 for phrase in \
   'Read metadata, not the prompt library' \
@@ -148,7 +148,7 @@ grep -Fq 'ubuntu-latest' "$workflow" || fail "CI does not cover Linux"
 grep -Fq 'connector-protocol-' "$workflow" || fail "CI does not expose connector protocol matrix"
 grep -Fq 'macos-latest' "$workflow" || fail "CI does not cover macOS"
 for operation in workflow_start workflow_claim_node workflow_dispatch workflow_complete_node workflow_reattach_connector; do
-  grep -Fq "$operation" "$skill" || fail "v7 skill omits $operation"
+  grep -Fq "$operation" "$skill" "$plugin_dir/skills/control-plane/references/recovery.md" || fail "execution instructions omit $operation"
 done
 pass "v7 execution, v6 compatibility, connector contracts, and three-platform CI documented"
 

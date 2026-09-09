@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Agents Workflow"
-  short_description: "Run versioned Workflows with pinned Providers and explicit main acceptance"
-  default_prompt: "Use $workflow-control-plane; read metadata once, run a pinned Workflow, and verify actual evidence."
+  short_description: "Find and run Workflows for collaborative tasks"
+  default_prompt: "Use $workflow-control-plane to find a Workflow suited to my task, run its steps, and verify the result."

@@ -1,4 +1,5 @@
 import { informationalImportObservation } from './workflow-import-observations.mjs';
+import { nativeBindingIssue } from './native-binding.mjs';
 import { NODE_TYPES, HUMAN_GATE_OUTPUT, validateWorkflowShape } from './workflow-schema.mjs';
 import { workflowId } from './workflow-paths.mjs';
 import { pathBoundaries, pointerParts, validateExpression } from './workflow-bindings.mjs';
@@ -96,6 +97,8 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
         const provider = providers.get(executor.provider_id);
         if (!provider) issue('PROVIDER_MISSING', 'Pinned Provider does not exist', location);
         else {
+          const bindingIssue = nativeBindingIssue(provider);
+          if (bindingIssue && (node.skill_policy?.mode ?? workflow.skill_policy.mode) === 'cooperative') issue(bindingIssue.code, bindingIssue.message, { ...location, provider_id: provider.id, expected: bindingIssue.expected, actual: bindingIssue.actual });
           if (!provider.enabled) issue('PROVIDER_DISABLED', 'Pinned Provider is disabled', location, blockers);
           if (!provider.capabilities?.read || (node.access === 'bounded_write' && !provider.capabilities?.write)) issue('PROVIDER_CAPABILITY', 'Provider capabilities do not match access', location);
           if (provider.kind === 'native_agent' && provider.config?.role && !['advisor', node.role].includes(provider.config.role)) issue('PROVIDER_ROLE', 'Native Provider role does not match node role', location);

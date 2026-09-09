@@ -1,4 +1,5 @@
 import { validateEndpoint } from './config.mjs';
+import { nativeSpawnConfig } from './native-binding.mjs';
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
@@ -21,11 +22,13 @@ export function buildProviderAdapter(provider, stage, { env = process.env, allow
   };
 
   if (provider.kind === 'native_agent') {
+    const spawn = nativeSpawnConfig(provider);
     return {
       ...base,
       execution: 'native_agent',
       agent_type: provider.config.agent_type,
-      fork_turns: provider.config.fresh_context ? 'none' : 'inherit',
+      fork_turns: spawn.fork_turns,
+      spawn_config: spawn,
       role: provider.config.role,
       expected_model: provider.config.model,
       expected_reasoning_effort: provider.config.reasoning_effort,

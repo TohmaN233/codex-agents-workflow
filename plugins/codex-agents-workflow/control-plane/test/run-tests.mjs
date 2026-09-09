@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const files = [
+  'native-binding.test.mjs',
   'config.test.mjs',
   'local-client-discovery.test.mjs',
   'generation-progress.test.mjs',
