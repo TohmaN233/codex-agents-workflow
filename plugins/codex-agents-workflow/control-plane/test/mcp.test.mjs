@@ -20,7 +20,7 @@ test('plugin MCP launches from the installed plugin root with the global Codex e
   const server = manifest.mcpServers['codex-agents-workflow'];
   assert.equal(server.enabled, true);
   assert.equal(server.cwd, '.');
-  assert.deepEqual(server.args, ['./control-plane/server.mjs']);
+  assert.equal(server.args[0], '-e'); // The subprocess regression verifies the packaged bootstrap.
   assert.ok(server.env_vars.includes('CODEX_HOME'));
   assert.ok(server.env_vars.includes('USERPROFILE'));
 });
@@ -40,7 +40,7 @@ test('routing policy leaves the primary model to the host and never auto-falls b
   assert.match(controlSkill, /version: 6[\s\S]{0,100}v6-control-plane.md/);
   for (const operation of ['workflow_start', 'workflow_claim_node', 'workflow_dispatch', 'workflow_complete_node', 'workflow_reattach_connector']) assert(controlSkill.includes(operation));
   assert.match(controlSkill, /CONTROL PLANE UNAVAILABLE/);
-  const unavailableSection = controlSkill.match(/If the control tools are absent[\s\S]*?(?=\n## )/i)?.[0] || '';
+  const unavailableSection = controlSkill.match(/If discovery\/calling confirms[\s\S]*?(?=\n## )/i)?.[0] || '';
   assert.match(unavailableSection, /Do not emit[\s\S]{0,40}`SELECTIVE ROUTE`/i);
   assert.doesNotMatch(unavailableSection, /~~~text[\s\S]*SELECTIVE ROUTE/i);
   assert.match(nativeSkill, /delegate is the default/i);

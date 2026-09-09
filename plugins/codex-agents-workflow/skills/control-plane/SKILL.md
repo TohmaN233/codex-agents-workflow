@@ -24,6 +24,16 @@ Call the discovered `codex_agents_workflow_status` once; for v7, actually call
 additional execution tools as needed. Reuse these results below rather than calling
 again just to satisfy a heading. Opening the browser console is not a prerequisite.
 
+If discovery finds no tools, run the bundled read-only diagnostic before asking the
+user to wait or reconnect: `node <this-plugin>/scripts/check-mcp-startup.mjs`.
+Resolve this-plugin from this Skill's directory (two parents). This diagnostic is
+an authorized short-lived protocol probe: it only initializes and lists tools, then
+closes; it cannot start a Run or replace the host's MCP connection. Its enforced
+10-second deadline distinguishes timeout from early process exit and retains stderr.
+If it reports ready, report HOST_TOOL_CONNECTION_UNAVAILABLE and ask the host to
+reload the plugin connection; sleeping is not a reconnection mechanism. If it fails,
+report its exact diagnostic. Do not retry a deterministic process exit by sleeping.
+
 Only report `CONTROL PLANE UNAVAILABLE` after available discovery finds no callable
 control tools, or an actual call fails with a connection/startup error. State which
 names were searched and the observed failure. If discovery itself is unavailable,

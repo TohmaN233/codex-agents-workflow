@@ -271,3 +271,5 @@ Valid inputs take the deterministic fast path without another model call.
 Publication and task execution are separate console actions. Publishing saves/validates with CAS but never starts a Run; task launch requires an already published clean revision. Executable/environment declarations are agent-managed task dependencies, carried in the execution envelope, not host-inventory launch gates. Provider/tool/MCP authority checks remain mandatory.
 
 Run entry accepts workspace-relative write targets and absolute descendants, normalizing once before immutable permissions are persisted. Internal node scopes remain relative; never bake task directories into reusable Workflow definitions.
+
+MCP packaging must pass real initialize and tools/list subprocess probes from both ordinary and Windows namespaced plugin directories. Node script entry resolution can fail on namespaced cwd before application code runs; the packaged node -e bootstrap normalizes cwd before importing the server. Startup diagnostics are read-only and never create Runs.

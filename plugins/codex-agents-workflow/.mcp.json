@@ -3,7 +3,8 @@
     "codex-agents-workflow": {
       "command": "node",
       "args": [
-        "./control-plane/server.mjs"
+        "-e",
+        "let cwd=process.cwd();const prefix=String.fromCharCode(92,92,63,92);if(process.platform==='win32'&&cwd.startsWith(prefix)){cwd=cwd.slice(4);if(cwd.startsWith('UNC'+String.fromCharCode(92)))cwd=String.fromCharCode(92,92)+cwd.slice(4);process.chdir(cwd);}const path=require('node:path');const url=require('node:url');process.argv[1]=path.resolve('control-plane/server.mjs');import(url.pathToFileURL(process.argv[1]).href).catch(e=>{console.error('WORKFLOW_MCP_BOOT_FAILED',e.stack||e);process.exitCode=1;});"
       ],
       "cwd": ".",
       "enabled": true,
