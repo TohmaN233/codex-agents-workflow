@@ -3,11 +3,30 @@ export function Inspector({ workflow, selection, providers, change, select, inli
   const node = workflow.nodes.find((item: Json) => item.id === selection.id); const edge = workflow.edges.find((item: Json) => item.id === selection.id);
   const patch = (fields: Json) => change({ ...workflow, nodes: workflow.nodes.map((item: Json) => item.id === node.id ? { ...item, ...fields } : item) });
   const edgePatch = (fields: Json) => change({ ...workflow, edges: workflow.edges.map((item: Json) => item.id === edge.id ? { ...item, ...fields } : item) });
+  const providerId = node?.executor?.provider_id ?? providers.find((provider: Json) => provider.enabled && provider.capabilities?.read)?.id ?? '';
+  const upstream = new Set<string>(); const pending = [node?.id];
+  while (pending.length) for (const edge of workflow.edges.filter((item: Json) => item.target === pending.pop())) if (!upstream.has(edge.source)) { upstream.add(edge.source); pending.push(edge.source); }
+  const threadSources = workflow.nodes.filter((item: Json) => item.executor?.kind === 'thread' && upstream.has(item.id)).map((item: Json) => item.id);
+  const sourceNode = (id: string) => workflow.nodes.find((item: Json) => item.id === id);
+  const setAgentExecutor = (kind: string) => {
+    if (kind === 'main') patch({ executor: { kind: 'main' } });
+    else if (kind === 'thread') patch({ executor: { kind: 'thread', provider_id: providerId, lifecycle: 'start' } });
+    else patch({ executor: { kind: 'provider', provider_id: providerId } });
+  };
   return <aside className="inspector scroll"><div className="panel-heading"><h2>{selection.kind === 'node' && node ? '节点属性' : selection.kind === 'edge' && edge ? '连接属性' : 'Workflow 属性'}</h2><button onClick={() => select('workflow', '')}>全局</button></div>
     {selection.kind === 'node' && node ? <>
       <div className="muted">{node.id} · {node.type}</div>
       <Field label="名称" value={node.name ?? node.id} onChange={name => patch({ name })}/>
-      {['agent','skill_ref'].includes(node.type) && <><ProviderField providers={providers} value={node.executor?.kind === 'main' ? '$main' : node.executor?.provider_id ?? ''} onChange={id => patch({ executor: id === '$main' ? { kind: 'main' } : { kind: 'provider', provider_id: id } })}/><Field label="角色" value={node.role} onChange={role => patch({ role })}/></>}
+      {node.type === 'agent' && <>
+        <Select label="执行方式" value={node.executor?.kind ?? 'main'} options={[{value:'main',label:'Main · 主控制会话'},{value:'provider',label:'Provider · 原生交接'},{value:'thread',label:'Codex task · 独立会话'}]} onChange={setAgentExecutor}/>
+        {node.executor?.kind !== 'main' && <ProviderField providers={node.executor?.kind === 'thread' ? providers.filter((provider: Json) => provider.kind === 'native_agent') : providers} main={false} label={node.executor?.kind === 'thread' ? 'Task Provider' : '固定 Provider'} value={node.executor?.provider_id ?? ''} onChange={id => patch({ executor: { ...node.executor, provider_id: id } })}/>}
+        <Field label="角色" value={node.role} onChange={role => patch({ role })}/>
+        {node.executor?.kind === 'thread' && <>
+          <Select label="Task 生命周期" value={node.executor.lifecycle ?? 'start'} options={[{value:'start',label:'创建独立 Task'},...(threadSources.length?[{value:'continue',label:'续聊已有 Task'}]:[])]} onChange={lifecycle => { const source=sourceNode(threadSources[0]); patch({ executor: lifecycle === 'continue' ? { ...node.executor, lifecycle, source_node: source?.id ?? '', provider_id: source?.executor?.provider_id ?? node.executor.provider_id } : { kind:'thread',provider_id:node.executor.provider_id,lifecycle } }); }}/>
+          {node.executor.lifecycle === 'continue' && <Select label="续聊来源节点" value={node.executor.source_node ?? ''} options={threadSources} onChange={source_node => patch({ executor: { ...node.executor, source_node, provider_id: sourceNode(source_node)?.executor?.provider_id ?? node.executor.provider_id } })}/>}
+        </>}
+      </>}
+      {node.type === 'skill_ref' && <><ProviderField providers={providers} value={node.executor?.kind === 'main' ? '$main' : node.executor?.provider_id ?? ''} onChange={id => patch({ executor: id === '$main' ? { kind: 'main' } : { kind: 'provider', provider_id: id } })}/><Field label="角色" value={node.role} onChange={role => patch({ role })}/></>}
       {node.type === 'agent' && <Field label="任务指令 / 模板" value={node.prompt_template} multiline onChange={prompt_template => patch({ prompt_template })}/>}
       {node.executor && <>
         <Select label="访问权限" value={typeof node.access === 'string' ? node.access : '$run'} options={['read_only', 'bounded_write', ...(['main','subworkflow'].includes(node.executor.kind) ? [{ value: '$run', label: '继承 Run 权限' }] : [])]} onChange={access => patch({ access: access === '$run' ? { binding: 'run.access' } : access })}/>

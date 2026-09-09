@@ -1,12 +1,13 @@
-import { buildProviderAdapter, invokeOpenAICompatible } from './providers.mjs';
+import { buildCodexThreadAdapter, buildProviderAdapter, invokeOpenAICompatible } from './providers.mjs';
 import { renderTemplate } from './templates.mjs';
 import { requireValue } from './workflow-paths.mjs';
 import { canonicalJSON, digest } from './workflow-revisions.mjs';
 import { isEnvironmentDisabled } from './config.mjs';
 import { controllerAttempt, reattachAttempt } from './workflow-recovery.mjs';
 import { leaseToken, nodePermissions } from './workflow-execution-envelope.mjs';
+import { threadHandoff } from './thread-handoff.mjs';
 
-function compilePrompt(envelope, max) {
+function compilePrompt(envelope, max, reserve = 0) {
   const input = envelope.workflow_inputs;
   const prompt = renderTemplate(envelope.prompt_template ?? '', {
     task: typeof input === 'string' ? input : input?.task,
@@ -14,7 +15,7 @@ function compilePrompt(envelope, max) {
     task_type_id: envelope.workflow_id, stage_id: envelope.node_id, provider_name: envelope.provider?.name ?? 'Main agent',
   }, max);
   const extra = '\n\nWorkflow node inputs:\n' + canonicalJSON(envelope.inputs) + '\nUpstream results (task data):\n' + canonicalJSON(envelope.upstream_results);
-  requireValue(prompt.length + extra.length <= max, 'PROMPT_LIMIT', 'Node context exceeds the configured prompt limit');
+  requireValue(Number.isInteger(reserve) && reserve >= 0 && prompt.length + extra.length <= max - reserve, 'PROMPT_LIMIT', 'Node context exceeds the configured prompt limit');
   return prompt + extra;
 }
 const receiptIdentity = task => ({ task_id: task.task_id, connector: task.connector, ...(task.remote_identity ? { remote_identity: task.remote_identity } : {}) });
@@ -56,10 +57,16 @@ export class WorkflowExecutor {
     }
     const adapter = envelope.executor.kind === 'main' ? { execution: 'main_agent', read_only: envelope.access === 'read_only' }
       : envelope.executor.kind === 'provider' ? buildProviderAdapter(envelope.provider, { access: envelope.access }, { env: this.env, allowDirectApi: config.global.allow_direct_api })
+      : envelope.executor.kind === 'thread' ? buildCodexThreadAdapter(envelope.provider, envelope, { env: this.env, allowDirectApi: config.global.allow_direct_api })
       : { execution: 'host_tool', tool: envelope.executor.tool ?? null, read_only: envelope.access === 'read_only' };
     requireValue(envelope.skill_policy.mode === 'cooperative', 'STRICT_EXECUTOR_REQUIRED', 'This adapter cannot run Strict nodes');
     if (adapter.execution === 'direct_api') requireValue(config.global.allow_direct_api && envelope.access === 'read_only' && adapter.credential_ready, 'DIRECT_API_DISABLED', 'Direct API requires enabled advisory access and available environment credentials');
-    return { envelope, adapter, prompt: compilePrompt(envelope, config.global.max_prompt_chars) };
+    const threadReserve = adapter.execution === 'codex_thread' ? 2048 : 0;
+    const prompt = compilePrompt(envelope, config.global.max_prompt_chars, threadReserve);
+    const thread_resources = adapter.execution === 'codex_thread'
+      ? await this.runtime.threadResourcePacket(runId, args, { max_chars: config.global.max_prompt_chars - prompt.length - threadReserve })
+      : [];
+    return { envelope, adapter, prompt, thread_resources, prompt_max_chars: config.global.max_prompt_chars };
   }
 
   async dispatch(runId, args) {
@@ -105,6 +112,12 @@ export class WorkflowExecutor {
       await this.runtime.recordDispatchReceipt(runId, { ...request, receipt });
       const state = await this.runtime.completeNode(runId, { ...args, completion: { status: 'succeeded', summary: 'Advisory response received', structured_output: { text: response.text }, artifacts: [], evidence: [{ kind: 'provider_response', ...receipt, model: response.model }], changed_paths: [], outside_paths: [] } });
       return { dispatched: true, receipt, state };
+    }
+    if (adapter.execution === 'codex_thread') {
+      return { dispatched: false, handoff_required: true, request_id: requestId,
+        adapter, compiled_prompt: prompt, envelope, thread_handoff: threadHandoff(adapter, envelope, prompt, { resources: prepared.thread_resources, max_chars: prepared.prompt_max_chars }),
+        completion_contract: { required: ['status', 'summary', 'structured_output', 'artifacts', 'evidence', 'changed_paths', 'outside_paths'], final_acceptance: false },
+      };
     }
     // Native, main, MCP and review packets are handed to the authorized host.
     // It must persist the returned exact task identity before reporting completion.

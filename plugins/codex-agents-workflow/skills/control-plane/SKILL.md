@@ -42,8 +42,20 @@ when the probe succeeds but host tools remain missing.
    execution. For native handoffs, use the returned `adapter.spawn_config`; it
    distinguishes configurable models from fixed roles. Pass the supplied node
    prompt and envelope, retain the real task identity, and record it using
-   `workflow_dispatch_receipt`. Never fabricate a receipt or silently substitute
-   a Provider. Main-node leases stay with the main agent. Pinned Workflow resources
+   `workflow_dispatch_receipt`. When `adapter.execution` is `codex_thread`, this
+   is a user-visible Codex task, not a `collaboration.spawn_agent` subagent:
+   for `thread_handoff.operation: create_thread`, call
+   `mcp__codex_app__create_thread` with the returned title, prompt, model and
+   thinking. Use the current project task context when one exists; otherwise use
+   a projectless task. Then persist its exact `threadId`.
+   For `send_message_to_thread`, call `mcp__codex_app__send_message_to_thread`
+   only for the returned exact `thread_id`; never create a replacement task.
+   Wait with `mcp__codex_app__wait_threads`, read the same thread with
+   `mcp__codex_app__read_thread`, then complete the node with observed output and
+   evidence. When the handoff includes pinned source snapshots, they are already
+   included in the returned task prompt; do not replace them with local paths or
+   attempt to rediscover original Skill files. Never fabricate a receipt or silently substitute a Provider.
+   Main-node leases stay with the main agent. Pinned Workflow resources
    such as `source/SKILL.md` are logical IDs, not local file paths. Read them through
    the returned resource reader; never form a local path or Markdown link from an ID.
 4. Collect managed work with the returned collection tool. For host-owned work,

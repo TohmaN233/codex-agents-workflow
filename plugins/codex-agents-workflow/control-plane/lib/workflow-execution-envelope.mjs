@@ -6,6 +6,7 @@ import { digest, canonicalJSON } from './workflow-revisions.mjs';
 import { skillPathKey } from './execution/codex-skill-policy.mjs';
 import { effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { nodeWorkspace } from './parallel/workspace.mjs';
+import { isThreadExecutor, threadContext } from './thread-handoff.mjs';
 
 export function runPermissions({ workspace, access, allowed_paths = [] }) {
   requireValue(typeof workspace === 'string' && isAbsolute(workspace), 'RUN_WORKSPACE', 'Run workspace must be absolute');
@@ -39,7 +40,7 @@ export function bindingContext(state) {
 }
 
 export function approvalBinding(node, state, pins, attemptNumber = state.nodes[node.id].attempts.length + 1) {
-  const provider = node.executor?.kind === 'provider' ? pins.providers.find(item => item.id === node.executor.provider_id) : node.executor?.kind === 'main' ? pins.generation?.reviewer ?? null : null;
+  const provider = ['provider', 'thread'].includes(node.executor?.kind) ? pins.providers.find(item => item.id === node.executor.provider_id) : node.executor?.kind === 'main' ? pins.generation?.reviewer ?? null : null;
   const permissions = nodePermissions(node, state);
   return {
     required: Boolean(node.approval.required || provider?.requires_user_approval || state.require_approval),
@@ -65,10 +66,11 @@ export function executionEnvelope(node, state, pins, attempt, token) {
     const pin = (pins.skills ?? []).find(skill => skillPathKey(skill.path) === path);
     requireValue(pin, 'SKILL_ALLOW_UNPINNED', 'Node allowance has no immutable Run snapshot'); return structuredClone(pin);
   });
+  const thread = isThreadExecutor(node.executor) ? threadContext(state, node.executor) : null;
   return {
     run_id: state.run_id, workflow_id: state.workflow_id, workflow_revision: state.workflow_revision,
     node_id: node.id, attempt_id: attempt.id, lease_token: token, executor: structuredClone(node.executor),
-    provider: node.executor.kind === 'provider' ? structuredClone(pins.providers.find(item => item.id === node.executor.provider_id)) : null,
+    provider: ['provider', 'thread'].includes(node.executor.kind) ? structuredClone(pins.providers.find(item => item.id === node.executor.provider_id)) : null,
     role: node.role ?? null, access: permissions.access, workspace: nodeWorkspace(node.id, state, pins),
     inputs: resolveBindings(node.input_bindings ?? {}, bindingContext(state)), workflow_inputs: structuredClone(state.inputs),
     upstream_results: Object.fromEntries([...ancestors].sort().filter(id => ['succeeded', 'failed'].includes(state.nodes[id].status)).map(id => [id, { status: state.nodes[id].status, output: structuredClone(state.nodes[id].output), error: structuredClone(state.nodes[id].error) }])),
@@ -76,6 +78,7 @@ export function executionEnvelope(node, state, pins, attempt, token) {
     resources: structuredClone(node.resources ?? []), outputs_schema: structuredClone(node.outputs_schema ?? {}),
     skill_policy: skillPolicy, skill_ref: structuredClone(node.skill_ref ?? null),
     subworkflow: structuredClone(node.subworkflow ?? null),
+    thread,
     allowed_skills: allowedSkills,
     effective_allowed_paths: permissions.allowed_paths,
     resource_access: { reader: 'read_workflow_resource', paths: structuredClone(node.resources ?? []) },

@@ -10,6 +10,7 @@ import { noSymlinks, requireValue } from './workflow-paths.mjs';
 import { pathBoundaries, resolveBindings } from './workflow-bindings.mjs';
 import { validateData } from './workflow-data-schema.mjs';
 import { runPermissions, nodePermissions, approvalBinding, leaseToken, executionEnvelope } from './workflow-execution-envelope.mjs';
+import { assertThreadReceipt, isThreadExecutor, threadResourcePacketText } from './thread-handoff.mjs';
 import { initialRunState, advanceRun, graphInfo, setOutcome, interruptActiveNodes, EXECUTOR_NODES } from './workflow-state.mjs';
 import { resolveWorkflowPins } from './workflow-pins.mjs';
 import { childIdentity, childPermissions, validateChildClosure } from './workflow-subworkflow.mjs';
@@ -253,6 +254,25 @@ export class WorkflowRuntime {
     const node = pins.root.workflow.nodes.find(item => item.id === node_id);
     return executionEnvelope(node, state, pins, attempt, lease_token);
   }
+  async threadResourcePacket(runId, args, { max_chars }) {
+    requireValue(Number.isInteger(max_chars) && max_chars >= 0, 'THREAD_RESOURCE_LIMIT', 'Thread resource packet needs a nonnegative prompt budget');
+    const envelope = await this.execution(runId, args);
+    requireValue(isThreadExecutor(envelope.executor), 'THREAD_EXECUTOR', 'Only Codex task-thread nodes can prepare a task resource packet');
+    const { pins } = await this.runs.read(runId);
+    const manifest = new Map((pins.root.resources ?? []).map(resource => [resource.path, resource]));
+    const resources = [];
+    for (const path of envelope.resources) {
+      const resource = manifest.get(path);
+      requireValue(resource, 'THREAD_RESOURCE_MISSING', 'Thread node references a resource missing from its immutable Run closure', { path });
+      const bytes = await readFile(join(this.runs.directory(runId), 'objects', resource.sha256));
+      const text = bytes.toString('utf8');
+      requireValue(Buffer.from(text, 'utf8').equals(bytes), 'THREAD_RESOURCE_BINARY', 'Codex task handoff cannot transport a binary pinned resource; pass it as an explicit task input or use a non-thread executor', { path });
+      const candidate = [...resources, { path, sha256: resource.sha256, text }];
+      requireValue(threadResourcePacketText(candidate).length <= max_chars, 'THREAD_RESOURCE_LIMIT', 'Pinned Workflow text is too large for this Codex task handoff; split the node or use a non-thread executor', { path, max_chars });
+      resources.push(candidate.at(-1));
+    }
+    return resources;
+  }
   async next(runId) {
     return this.#nextFromRecord(runId, await this.runs.read(runId));
   }
@@ -312,7 +332,8 @@ export class WorkflowRuntime {
       const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
       requireValue(definition.type !== 'subworkflow' || authority === CHILD_COMPLETION, 'CHILD_ACCEPTANCE_REQUIRED', 'SubWorkflow output must be collected from its exact accepted child Run');
       validateData(payload.structured_output, definition.outputs_schema);
-      if (definition.executor?.kind === 'provider') requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Provider completion requires a persisted exact task identity');
+      if (['provider', 'thread'].includes(definition.executor?.kind)) requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Provider or Codex task-thread completion requires a persisted exact task identity');
+      if (definition.executor?.kind === 'thread') requireValue(payload.evidence.some(item => item && item.kind === 'codex_thread' && item.thread_id === attempt.dispatch.receipt.thread_id && item.observed === 'completed'), 'THREAD_COLLECTION_EVIDENCE', 'Codex task-thread completion requires evidence from the exact recorded task');
       const permission = nodePermissions(definition, state);
       requireValue(!payload.outside_paths.length, 'SCOPE_VIOLATION', 'Completion reports writes outside the permitted scope');
       const changed = pathBoundaries(payload.changed_paths);
@@ -449,10 +470,12 @@ export class WorkflowRuntime {
     const serialized = canonicalJSON(receipt);
     requireValue(receipt && typeof receipt === 'object' && !Array.isArray(receipt) && Buffer.byteLength(serialized) <= 16000 && !/"[^"\n]*(?:password|cookie|authorization|api_key|access_token|refresh_token)[^"\n]*"\s*:/i.test(serialized), 'DISPATCH_RECEIPT', 'Receipt must contain bounded task identity metadata without credentials');
     requireValue(['task_id', 'thread_id', 'agent_id', 'invocation_id', 'main_actor', 'tool_call_id'].some(key => typeof receipt[key] === 'string' && receipt[key].length > 0 && receipt[key].length <= 256), 'DISPATCH_IDENTITY_REQUIRED', 'Receipt requires a concrete task, agent, invocation or tool-call identity');
-    const result = await this.runs.mutate(runId, 'dispatch_receipt', state => {
+    const result = await this.runs.mutate(runId, 'dispatch_receipt', (state, pins) => {
       authorize(state, control_token); const { node, attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });
       requireValue(attempt.dispatch?.request_id === request_id, 'DISPATCH_INTENT_MISSING', 'Receipt does not match a persisted dispatch intent');
       if (attempt.dispatch.receipt) { requireValue(canonicalJSON(attempt.dispatch.receipt) === serialized, 'DISPATCH_CONFLICT', 'Receipt differs from the exact previously recorded task'); return; }
+      const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
+      if (definition?.executor?.kind === 'thread') assertThreadReceipt(state, definition.executor, receipt);
       attempt.dispatch.receipt = structuredClone(receipt); attempt.dispatch.phase = 'acknowledged';
       if (node.active_attempt_id === attempt_id && node.status === 'claimed') { node.status = 'running'; attempt.status = 'running'; }
       else attempt.dispatch.cancellation_pending = true;

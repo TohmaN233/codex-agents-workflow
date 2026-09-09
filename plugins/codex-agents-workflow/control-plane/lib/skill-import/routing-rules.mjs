@@ -24,14 +24,23 @@ export function validateRoutingRules(rules) {
 export function routeAgent(node, rules, providers, catalog = routingCatalog(providers)) {
   requireValue(TASK_TYPES.includes(node.task_type) && typeof node.routing_reason === 'string' && node.routing_reason.trim() && node.routing_reason.length <= 2000, 'ROUTING_CLASSIFICATION', 'Every routed agent requires task_type and routing_reason');
   if (rules.selection_mode === 'automatic') {
-    requireValue(['main','subagent'].includes(node.execution_target),'ROUTING_CLASSIFICATION','Choose main or subagent explicitly');
+    requireValue(['main','subagent','thread'].includes(node.execution_target),'ROUTING_CLASSIFICATION','Choose main, a legacy Provider subagent, or a Codex task thread explicitly');
     if (node.execution_target === 'main') {
-      requireValue(node.provider_choice === undefined,'ROUTING_CLASSIFICATION','Main has no Provider/model selection');
+      requireValue(node.provider_choice === undefined && node.thread_lifecycle === undefined && node.thread_source_node === undefined,'ROUTING_CLASSIFICATION','Main has no Provider/model or Codex task lifecycle selection');
       return {executor:{kind:'main'},role:'advisor'};
     }
     requireValue(catalog.some(p=>p.id===node.provider_choice),'ROUTING_CLASSIFICATION','Subagent must choose a Provider from the pinned candidate catalog');
     const selected=providers.find(p=>p.id===node.provider_choice);
     requireValue(selected?.enabled && selected.capabilities?.read,'ROUTING_PROVIDER_UNAVAILABLE','Choose an enabled registered read-capable Provider');
+    if (node.execution_target === 'thread') {
+      requireValue(selected.kind === 'native_agent','ROUTING_THREAD_PROVIDER','Codex task threads require a registered native Codex Provider');
+      const lifecycle=node.thread_lifecycle ?? 'start';
+      requireValue(['start','continue'].includes(lifecycle),'ROUTING_THREAD_LIFECYCLE','Codex task threads must start a task or continue one exact prior task');
+      if (lifecycle === 'start') requireValue(node.thread_source_node === undefined,'ROUTING_THREAD_SOURCE','A new Codex task cannot name a source node');
+      else requireValue(typeof node.thread_source_node === 'string' && node.thread_source_node.trim(),'ROUTING_THREAD_SOURCE','A continuing Codex task must name its exact source node');
+      return {executor:{kind:'thread',provider_id:selected.id,lifecycle,...(lifecycle==='continue'?{source_node:node.thread_source_node}:{})},role:selected.config?.role ?? 'advisor'};
+    }
+    requireValue(node.thread_lifecycle === undefined && node.thread_source_node === undefined,'ROUTING_CLASSIFICATION','Only Codex task threads accept a task lifecycle');
     return {executor:{kind:'provider',provider_id:selected.id},role:selected.config?.role ?? 'advisor'};
   }
   requireValue(node.execution_target === undefined && node.provider_choice === undefined,'ROUTING_CLASSIFICATION','Fixed routes do not accept automatic execution choices');

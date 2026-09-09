@@ -104,6 +104,21 @@ export function buildProviderAdapter(provider, stage, { env = process.env, allow
   throw new Error(`unsupported provider kind: ${provider.kind}`);
 }
 
+export function buildCodexThreadAdapter(provider, envelope, options = {}) {
+  const native = buildProviderAdapter(provider, { access: envelope.access }, options);
+  if (native.execution !== 'native_agent') {
+    const error = new Error('Codex task threads require a registered native Codex Provider');
+    error.code = 'THREAD_PROVIDER_UNSUPPORTED';
+    throw error;
+  }
+  return {
+    ...native,
+    execution: 'codex_thread',
+    lifecycle: envelope.thread.lifecycle,
+    ...(envelope.thread.lifecycle === 'continue' ? { thread_id: envelope.thread.source.thread_id } : {}),
+  };
+}
+
 function extractText(payload) {
   const messageContent = payload?.choices?.[0]?.message?.content;
   if (typeof messageContent === 'string') return messageContent;

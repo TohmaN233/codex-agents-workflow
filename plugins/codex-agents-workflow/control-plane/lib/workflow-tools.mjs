@@ -64,7 +64,7 @@ const specs = [
   ['cancel', 'Fence local Run leases and mark external cancellation pending. Remote termination must be confirmed separately.', main, []],
   ['approve', 'Record an authorized current-node approval bound to the pinned scope. Set decision only from actual user authorization.', [...main, 'approval_id', 'decision'], []],
   ['events', 'Read sequenced event metadata without prompts or controller secrets.', main, ['after_sequence']],
-  ['dispatch', 'Persist intent, then invoke the pinned built-in/API Provider or return a main/native/MCP handoff. Repeated uncertain dispatch never resubmits.', [...lease, 'control_token'], []],
+  ['dispatch', 'Persist intent, then invoke the pinned built-in/API Provider or return a main/native/Codex-thread/MCP handoff. Codex-thread handoffs carry an exact create-or-continue task contract, bounded pinned text snapshots when needed, and exact collection instructions. Repeated uncertain dispatch never resubmits.', [...lease, 'control_token'], []],
   ['dispatch_receipt', 'Persist exact task identity from the external tool result for one existing dispatch intent.', [...lease, 'control_token', 'request_id', 'receipt'], []],
   ['reconcile_connector', 'Inspect only the preallocated exact connector task after an uncertain dispatch. Does not retry it.', [...lease, 'control_token'], []],
   ['collect_connector', 'Collect an active exact connector task. Commit completion only with observed terminal and workspace-scope evidence.', [...lease, 'control_token'], []],

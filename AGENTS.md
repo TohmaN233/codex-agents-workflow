@@ -7,12 +7,24 @@ validation rejects conflicting bindings before creating a Run. Provider IDs reso
 from the current registry for each new Run; deletion invalidates dependent Workflows.
 Existing Run snapshots remain immutable. Skill entrypoints describe task triggers;
 historical migration protocols do not belong in normal execution instructions.
-Bundled collaboration presets parallelize a Provider's structured planning with
-the host main agent's tool/input preparation. Only preparation is read-only; production
-is a downstream bounded-write main node so image generation and other host tools
-remain usable. The Join releases production only after both branches succeed.
-Adding a preset binds the registered planning route and never overwrites an existing
-user definition. Updates and tool discovery do not reinstall deleted presets.
+Bundled collaboration presets parallelize separate prompt/planning and execution-
+preparation Codex tasks under one host main controller. Planning uses the planning
+route; ordinary production uses the implementation route; image production uses the
+complex-implementation route. The Join releases the bounded-write continuation only
+after both branches succeed. Adding a preset binds registered routes and never
+overwrites an existing user definition.
+Updates and tool discovery do not reinstall deleted presets.
+
+Thread-controlled collaboration is distinct from an internal subagent handoff. A
+`thread` executor creates or continues a user-visible Codex task through the main
+controller, pins its exact thread ID in the Run receipt, waits/reads that exact task,
+and only then completes the node. A continuation must reuse its declared upstream
+thread ID; replacement threads fail validation. The built-in image preset starts the
+prompt and image-preparation tasks in parallel, then continues the image-preparation
+task after the prompt branch succeeds. Automatic Skill2Workflow routing may choose a
+main controller or Codex task thread; legacy Provider handoffs remain readable for
+existing definitions. Thread execution is Cooperative: write scope limits outputs
+only, while task threads retain host tool and input-read access.
 
 The plugin identity is now `codex-agents-workflow`. The primary model is host-owned:
 do not add model eligibility gates, reasoning floors or startup model advice for it.
@@ -21,7 +33,7 @@ thread creation; anonymous built-in catalogs cannot establish account availabili
 Skill expansion prompts must carry the exact compiler field contract and finite
 condition syntax. Keep inferred graphs acyclic; names/output schemas are data,
 while Provider, role, permissions and acceptance remain compiler-owned.
-New Skill expansion planning pins editable skill2workflow routing rules. AI analyzes parallel dependencies, main/subagent responsibilities and human gates.
+New Skill expansion planning pins editable skill2workflow routing rules. AI analyzes parallel dependencies, main/Codex-task responsibilities and human gates.
 Automatic mode proposes eligible registered Providers using pinned suitability descriptions;
 fixed mode retains user-owned task-type mappings. The compiler validates every choice
 and never expands access. Main model identity remains host-owned.
@@ -82,9 +94,11 @@ or deleted after Run start never replace its intact pinned material. See
 V7_CORE_CONTRACT, V7_RUN_CONTRACT and V7_SERVICE_CONTRACT.
 
 Run-pinned resources are logical identifiers such as `source/SKILL.md`, never
-filesystem paths. Execution handoffs expose those IDs and the audited resource reader
-only. The content-addressed object root stays internal to the runtime; no agent may
-derive a local or Markdown file link by joining it with a logical resource ID.
+filesystem paths. Native execution handoffs expose those IDs and the audited resource
+reader only. A Codex task-thread handoff instead carries a bounded immutable UTF-8
+snapshot in its initial or continuation prompt. Binary or over-budget resources fail
+before task creation; the controller never leaks the content-addressed object root or
+derives a local/Markdown link by joining it with a logical resource ID.
 
 Provider bindings, approval semantics and non-glob path boundaries are user policy.
 No auto-enable, substitute Provider, implicit retry or Strict downgrade. Structural

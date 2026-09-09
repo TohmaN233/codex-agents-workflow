@@ -50,7 +50,7 @@ test('automatic planning pins model suitability and compiles main, independent p
   const span={resource:'source/SKILL.md',start_line:9,end_line:9};
   const proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'A and B read independent sources, join before synthesis.',main_responsibilities:'Main synthesizes evidence.',human_intervention:'Confirm synthesis before final acceptance.'},nodes:[
     {id:'fork',type:'parallel',join_id:'join'},
-    ...['a','b'].map(id=>({id,type:'agent',execution_target:'subagent',provider_choice:'custom-fast',operation_mode:'read',task_type:'implementation',routing_reason:'Fast bounded evidence extraction fits the independent read task',prompt_template:'Read evidence'})),
+    ...['a','b'].map(id=>({id,type:'agent',execution_target:'thread',provider_choice:'custom-fast',operation_mode:'read',task_type:'implementation',routing_reason:'Fast bounded evidence extraction fits the independent read task',prompt_template:'Read evidence'})),
     {id:'join',type:'join',parallel_id:'fork'},
     {id:'synthesize',type:'agent',execution_target:'main',task_type:'planning',routing_reason:'Main retains cross-source synthesis and user decisions',prompt_template:'Synthesize'},
     {id:'confirm',type:'human_gate',prompt_template:'Confirm synthesis'},
@@ -63,6 +63,9 @@ test('automatic planning pins model suitability and compiles main, independent p
   assert.throws(()=>compileExpansion(pack,resources,invalidChoice,context),{code:'ROUTING_CLASSIFICATION'});
   assert.equal(result.workflow.nodes.find(n=>n.id==='synthesize').executor.kind,'main');
   assert.equal(result.workflow.nodes.find(n=>n.id==='a').executor.provider_id,'custom-fast');
+  assert.equal(result.workflow.nodes.find(n=>n.id==='a').executor.kind,'thread');
+  assert.equal(result.workflow.nodes.find(n=>n.id==='a').executor.lifecycle,'start');
+  assert(result.workflow.requirements.providers.includes('custom-fast'));
   assert.equal(result.workflow.nodes.find(n=>n.id==='confirm').approval.required,true);
   assert.throws(()=>compileExpansion(pack,resources,{...proposal,planning_analysis:undefined},context),{code:'EXPANSION_PLANNING_ANALYSIS'});
   assert.throws(()=>compileExpansion(pack,resources,proposal,{...context,providers:[],routing_catalog:providers}),{code:'ROUTING_PROVIDER_UNAVAILABLE'});

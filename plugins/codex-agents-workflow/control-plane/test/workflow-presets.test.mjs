@@ -19,7 +19,7 @@ async function fixture(t,preset_id='collaborative-image') {
   const {runtime,executor}=await service.open();
   const run=await runtime.start({workflow_id:pack.workflow.id,workspace,access:'bounded_write',allowed_paths:['edit'],main_actor:'root',inputs:{task:'Synthetic delivery'}});
   const claim=node_id=>runtime.claimNode(run.run_id,{node_id,owner:'root',request_id:'claim-'+node_id,control_token:run.control_token});
-  const complete=(lease,output,accept=false)=>runtime.completeNode(run.run_id,{...lease,completion:{status:'succeeded',summary:'Synthetic scheduling evidence',structured_output:output,artifacts:[],evidence:[{check:'scheduler fixture'}],changed_paths:[],outside_paths:[],...(accept?{acceptance:{accepted:true}}:{})}});
+  const complete=(lease,output,accept=false,thread_id)=>runtime.completeNode(run.run_id,{...lease,completion:{status:'succeeded',summary:'Synthetic scheduling evidence',structured_output:output,artifacts:[],evidence:thread_id?[{kind:'codex_thread',thread_id,observed:'completed'}]:[{check:'scheduler fixture'}],changed_paths:[],outside_paths:[],...(accept?{acceptance:{accepted:true}}:{})}});
   return {service,runtime,executor,run,pack,claim,complete};
 }
 
@@ -27,25 +27,42 @@ for(const first of ['plan','prepare'])test(`image preparation runs concurrently 
   const f=await fixture(t);
   assert.deepEqual(new Set((await f.runtime.next(f.run.run_id)).ready),new Set(['plan','prepare']));
   const [plan,prepare]=await Promise.all([f.claim('plan'),f.claim('prepare')]);
-  const dispatch=await f.executor.dispatch(f.run.run_id,{...plan,control_token:f.run.control_token});
-  assert.equal(dispatch.adapter.execution,'native_agent');
-  assert.equal(dispatch.adapter.spawn_config.agent_type,'default');
-  await f.runtime.recordDispatchReceipt(f.run.run_id,{...plan,control_token:f.run.control_token,request_id:dispatch.request_id,receipt:{task_id:'synthetic-planner-fixture'}});
-  assert.equal(plan.executor.kind,'provider');assert.equal(prepare.executor.kind,'main');
+  const [planDispatch,prepareDispatch]=await Promise.all([
+    f.executor.dispatch(f.run.run_id,{...plan,control_token:f.run.control_token}),
+    f.executor.dispatch(f.run.run_id,{...prepare,control_token:f.run.control_token}),
+  ]);
+  for(const dispatch of [planDispatch,prepareDispatch]) {
+    assert.equal(dispatch.adapter.execution,'codex_thread');
+    assert.equal(dispatch.adapter.lifecycle,'start');
+    assert.equal(dispatch.thread_handoff.operation,'create_thread');
+    assert.match(dispatch.thread_handoff.title,/Workflow/);
+    assert.match(dispatch.thread_handoff.prompt,/Return only the structured node result/);
+  }
+  await f.runtime.recordDispatchReceipt(f.run.run_id,{...plan,control_token:f.run.control_token,request_id:planDispatch.request_id,receipt:{thread_id:'planner-thread'}});
+  await f.runtime.recordDispatchReceipt(f.run.run_id,{...prepare,control_token:f.run.control_token,request_id:prepareDispatch.request_id,receipt:{thread_id:'image-worker-thread'}});
+  assert.equal(plan.executor.kind,'thread');assert.equal(prepare.executor.kind,'thread');
   assert.equal(plan.access,'read_only');assert.equal(prepare.access,'read_only');
   await assert.rejects(f.claim('produce'),{code:'NODE_NOT_READY'});
   const proposal={prompt:'A red sphere',composition:'Centered',checks:'One red sphere'};
   const preparation={tool:'synthetic image tool',references:'No references',constraints:'Square image'};
-  await f.complete(first==='plan'?plan:prepare,first==='plan'?proposal:preparation);
+  await assert.rejects(f.complete(plan,proposal),{code:'THREAD_COLLECTION_EVIDENCE'});
+  await f.complete(first==='plan'?plan:prepare,first==='plan'?proposal:preparation,false,first==='plan'?'planner-thread':'image-worker-thread');
   assert(!(await f.runtime.next(f.run.run_id)).ready.includes('produce'));
-  await f.complete(first==='plan'?prepare:plan,first==='plan'?preparation:proposal);
+  await f.complete(first==='plan'?prepare:plan,first==='plan'?preparation:proposal,false,first==='plan'?'image-worker-thread':'planner-thread');
   assert.deepEqual((await f.runtime.next(f.run.run_id)).ready,['produce']);
   const produce=await f.claim('produce');
-  assert.equal(produce.executor.kind,'main');assert.equal(produce.access,'bounded_write');
+  assert.equal(produce.executor.kind,'thread');assert.equal(produce.access,'bounded_write');
   assert.deepEqual(produce.effective_allowed_paths,['edit']);
   assert.deepEqual(produce.inputs.proposal,proposal);assert.deepEqual(produce.inputs.preparation,preparation);
+  const productionDispatch=await f.executor.dispatch(f.run.run_id,{...produce,control_token:f.run.control_token});
+  assert.equal(productionDispatch.adapter.execution,'codex_thread');
+  assert.equal(productionDispatch.adapter.lifecycle,'continue');
+  assert.equal(productionDispatch.thread_handoff.operation,'send_message_to_thread');
+  assert.equal(productionDispatch.thread_handoff.thread_id,'image-worker-thread');
+  await assert.rejects(f.runtime.recordDispatchReceipt(f.run.run_id,{...produce,control_token:f.run.control_token,request_id:productionDispatch.request_id,receipt:{thread_id:'replacement-thread'}}),{code:'THREAD_IDENTITY_MISMATCH'});
+  await f.runtime.recordDispatchReceipt(f.run.run_id,{...produce,control_token:f.run.control_token,request_id:productionDispatch.request_id,receipt:{thread_id:'image-worker-thread'}});
   const result={artifacts:['edit/example.png'],verification:'Synthetic fixture only; no real image call'};
-  await f.complete(produce,result);
+  await f.complete(produce,result,false,'image-worker-thread');
   assert.equal((await f.runtime.get(f.run.run_id)).status,'running');
   await f.complete(await f.claim('final'),result,true);
   assert.equal((await f.runtime.get(f.run.run_id)).status,'succeeded');
@@ -65,4 +82,38 @@ test('failed preparation prevents production, and reinstall preserves user edits
   await assert.rejects(f.service.call('install_preset',{preset_id:'collaborative-image'}),{code:'HUMAN_PRESET_INSTALL'});
   const config=await f.service.config();const rules=defaultRoutingRules(config.providers);rules.routes.planning.provider_id='removed';
   assert.throws(()=>createWorkflowPreset('collaborative-image',config.providers,rules),{code:'PRESET_PROVIDER_UNAVAILABLE'});
+});
+
+test('thread-controlled presets route planning and production to their separate task classes',async t=>{
+  const f=await fixture(t);
+  const config=await f.service.config(); const rules=defaultRoutingRules(config.providers);
+  const task=createWorkflowPreset('collaborative-task',config.providers,rules);
+  const image=createWorkflowPreset('collaborative-image',config.providers,rules);
+  const byId=workflow=>Object.fromEntries(workflow.nodes.map(node=>[node.id,node]));
+  assert.equal(byId(task).plan.executor.provider_id,rules.routes.planning.provider_id);
+  assert.equal(byId(task).prepare.executor.provider_id,rules.routes.implementation.provider_id);
+  assert.equal(byId(task).produce.executor.provider_id,rules.routes.implementation.provider_id);
+  assert.equal(byId(image).plan.executor.provider_id,rules.routes.planning.provider_id);
+  assert.equal(byId(image).prepare.executor.provider_id,rules.routes.complex_implementation.provider_id);
+  assert.equal(byId(image).produce.executor.provider_id,rules.routes.complex_implementation.provider_id);
+});
+
+test('Codex task handoff carries a bounded immutable text snapshot and rejects binary source data',async t=>{
+  const f=await fixture(t);
+  const workspace=(await f.runtime.get(f.run.run_id)).permissions.workspace;
+  const workflow=structuredClone(f.pack.workflow);
+  workflow.nodes.find(node=>node.id==='plan').resources=['notes.txt'];
+  const textPack=await f.service.call('save',{workflow_id:workflow.id,expected_revision:f.pack.revision_hash,workflow,resources:{'notes.txt':Buffer.from('Keep the visual identity unchanged.')}});
+  const textRun=await f.runtime.start({workflow_id:textPack.workflow.id,revision_hash:textPack.revision_hash,workspace,access:'bounded_write',allowed_paths:['edit'],main_actor:'root',inputs:{task:'Synthetic delivery'}});
+  const textLease=await f.runtime.claimNode(textRun.run_id,{node_id:'plan',owner:'root',request_id:'resource-text',control_token:textRun.control_token});
+  const textDispatch=await f.executor.dispatch(textRun.run_id,{...textLease,control_token:textRun.control_token});
+  assert.match(textDispatch.thread_handoff.prompt,/Pinned Workflow source snapshots/);
+  assert.match(textDispatch.thread_handoff.prompt,/notes\.txt/);
+  assert.match(textDispatch.thread_handoff.prompt,/Keep the visual identity unchanged/);
+
+  const binaryWorkflow=structuredClone(textPack.workflow);
+  const binaryPack=await f.service.call('save',{workflow_id:binaryWorkflow.id,expected_revision:textPack.revision_hash,workflow:binaryWorkflow,resources:{'notes.txt':Buffer.from([0xff,0xd8,0xff,0xe0])}});
+  const binaryRun=await f.runtime.start({workflow_id:binaryPack.workflow.id,revision_hash:binaryPack.revision_hash,workspace,access:'bounded_write',allowed_paths:['edit'],main_actor:'root',inputs:{task:'Synthetic delivery'}});
+  const binaryLease=await f.runtime.claimNode(binaryRun.run_id,{node_id:'plan',owner:'root',request_id:'resource-binary',control_token:binaryRun.control_token});
+  await assert.rejects(f.executor.dispatch(binaryRun.run_id,{...binaryLease,control_token:binaryRun.control_token}),{code:'THREAD_RESOURCE_BINARY'});
 });
