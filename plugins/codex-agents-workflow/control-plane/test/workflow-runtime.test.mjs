@@ -235,3 +235,9 @@ test('Run snapshot shares one validated read and preserves event authorization',
   await writeFile(join(f.runtime.runs.directory(run.run_id), 'objects', record.pins.resources[0].sha256), 'tampered');
   await assert.rejects(f.runtime.snapshot(run.run_id, control(run)), { code: 'RUN_RESOURCE_CORRUPT' });
 });
+
+test('absolute Run targets are persisted and leased relative to the chosen project',async t=>{
+ const workflow=definition();workflow.nodes.find(n=>n.id==='work').access='bounded_write';workflow.nodes.find(n=>n.id==='work').path_scope={binding:'run.allowed_paths'};
+ const f=await fixture(t,workflow);const run=await f.start({access:'bounded_write',allowed_paths:[join(f.workspace,'edit')]});
+ const envelope=await claim(f,run,'work');assert.equal(envelope.workspace,f.workspace);assert.deepEqual(envelope.effective_allowed_paths,['edit']);
+});

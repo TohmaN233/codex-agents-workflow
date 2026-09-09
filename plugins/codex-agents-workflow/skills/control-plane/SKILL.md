@@ -58,7 +58,12 @@ The native-only `$codex-agents-workflow:orchestration` remains separate.
    enabled Ready Workflow matching the task. State its ID, revision and purpose;
    do not reinterpret the graph as a hard-coded delegate/audit/full sequence.
 2. Call `workflow_start` with the exact revision, absolute workspace, main actor,
-   task inputs and smallest authorized non-glob paths for bounded writes. Provider
+   task inputs and task-derived write scope. Production tasks normally use
+   `bounded_write`. Paths are determined for this Run, never copied from a previous
+   task or baked into the Workflow. `allowed_paths` accepts workspace-relative
+   paths (e.g. `edit`), absolute descendants of workspace, or `.` when the task
+   authorizes the whole project. The server normalizes absolute targets. Respect
+   explicit user limits such as keeping original media read-only. Provider
    bindings, requirements, resources, child revisions and Skill snapshots are
    pinned at this boundary. Structural Ready does not promise launch readiness.
 3. Keep `control_token` in the primary only. Read `workflow_next`, then use

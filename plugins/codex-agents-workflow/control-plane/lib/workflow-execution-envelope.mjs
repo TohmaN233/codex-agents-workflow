@@ -1,4 +1,4 @@
-import { isAbsolute } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
 import { createHmac } from 'node:crypto';
 import { requireValue } from './workflow-paths.mjs';
 import { intersectBoundaries, pathBoundaries, resolveBindings } from './workflow-bindings.mjs';
@@ -10,7 +10,15 @@ import { nodeWorkspace } from './parallel/workspace.mjs';
 export function runPermissions({ workspace, access, allowed_paths = [] }) {
   requireValue(typeof workspace === 'string' && isAbsolute(workspace), 'RUN_WORKSPACE', 'Run workspace must be absolute');
   requireValue(['read_only', 'bounded_write'].includes(access), 'RUN_ACCESS', 'Run access must be explicitly read-only or bounded-write');
-  const paths = pathBoundaries(allowed_paths);
+  requireValue(Array.isArray(allowed_paths), 'PATH_SCOPE', 'Path scope must be an array');
+  const paths = pathBoundaries(allowed_paths.map(value => {
+    if (typeof value !== 'string' || !isAbsolute(value.trim())) return value;
+    const target = value.trim();
+    requireValue(!/[*?\[\]{}!\x00-\x1f]/.test(target), 'PATH_SCOPE', 'Path boundaries cannot contain globs or control characters');
+    const path = relative(resolve(workspace), resolve(target));
+    requireValue(!isAbsolute(path) && path !== '..' && !path.startsWith('../') && !path.startsWith('..\\'), 'PATH_SCOPE', 'Write target is outside the current Run workspace', {workspace, target});
+    return path || '.';
+  }));
   requireValue(access !== 'bounded_write' || paths.length, 'RUN_PATHS', 'Write access needs concrete current-Run path boundaries');
   return { workspace, access, allowed_paths: paths };
 }

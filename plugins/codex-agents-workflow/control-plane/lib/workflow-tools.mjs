@@ -6,7 +6,7 @@ const properties = {
   lease_token: { type: 'string', description: 'Exact attempt lease returned by workflow_claim_node.' },
   request_id: string, owner: string, expected_sequence: { type: 'integer', minimum: 1 },
   expected_revision: string, workflow: object, resources: object, inputs: {}, workspace: string,
-  access: { type: 'string', enum: ['read_only', 'bounded_write'] }, allowed_paths: { type: 'array', items: string },
+  access: { type: 'string', enum: ['read_only', 'bounded_write'] }, allowed_paths: { type: 'array', items: string, description: 'Current Run write targets: workspace-relative paths or absolute paths inside workspace. Use a task-derived scope; . means the entire workspace. Absolute targets are normalized and pinned as relative paths.' },
   constraints: {}, main_actor: string, require_approval: { type: 'boolean' }, completion: object, error: object,
   reconciliation: object, after_restart: { type: 'boolean' }, reason: string, approval_id: string, decision: { type: 'boolean' },
   after_sequence: { type: 'integer', minimum: 0 }, receipt: object,
