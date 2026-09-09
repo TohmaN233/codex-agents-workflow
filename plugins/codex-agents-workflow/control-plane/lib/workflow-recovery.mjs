@@ -83,7 +83,7 @@ export async function reattachAttempt(runtime, runId, args, observation) {
     if (definition.executor?.kind === 'main') attempt.owner = state.main_actor;
     attempt.status = attempt.dispatch ? 'running' : 'claimed'; attempt.reconciliation = { ...observation, previous_owner: previousOwner, owner: attempt.owner, at: new Date().toISOString(), resubmitted: false };
     node.status = attempt.status; node.error = null; state.updated_at = new Date().toISOString();
-    return executionEnvelope(definition, state, pins, attempt, token, join(runtime.runs.directory(runId), 'objects'));
+    return executionEnvelope(definition, state, pins, attempt, token);
   }, { expected_sequence: before.sequence }, { allowPaused: true });
   return { envelope: result.result, state: await runtime.get(runId), reattached: true, resubmitted: false, retry_charged: false };
 }

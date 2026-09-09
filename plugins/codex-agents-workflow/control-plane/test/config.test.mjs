@@ -190,7 +190,7 @@ test('resolution returns only the selected compiled prompt and adapter', async (
     user_approved: true,
   }, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {} });
   assert.equal(result.stages[0].adapter.execution, 'native_agent');
-  assert.equal(result.stages[0].adapter.agent_type, 'codex_workflow_luna_implementer');
+  assert.equal(result.stages[0].adapter.agent_type, 'default');
   assert.match(result.stages[0].compiled_prompt, /Implement the parser guard/);
   assert.match(result.stages[0].compiled_prompt, /src\/parser\.ts/);
   assert.doesNotMatch(JSON.stringify(result), /Hard-path ChatGPT/);

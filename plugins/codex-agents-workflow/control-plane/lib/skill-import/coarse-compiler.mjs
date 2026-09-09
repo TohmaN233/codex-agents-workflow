@@ -6,6 +6,7 @@ import { analyzeSkillDependencies } from './dependency-reader.mjs';
 
 export function compileCoarseSkill(snapshot, { id, name = snapshot.metadata.name, providerId, role = 'advisor' } = {}) {
   const analysis = analyzeSkillDependencies(snapshot); const workflow = createDraft(id, name);
+  workflow.skill_policy.mode = 'cooperative'; workflow.skill_policy.implicit = 'allow';
   workflow.description = snapshot.metadata.description.slice(0, 4000);
   workflow.skill_policy.shadowed_skill_paths = [snapshot.source_path];
   workflow.requirements = analysis.requirements;
@@ -15,7 +16,7 @@ export function compileCoarseSkill(snapshot, { id, name = snapshot.metadata.name
   const shared = { access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: {} };
   workflow.nodes = [
     { id: 'start', type: 'start' },
-    { ...shared, id: 'instructions', type: 'agent', role, executor: providerId ? { kind: 'provider', provider_id: providerId } : { kind: 'main' },
+    { ...shared, access: 'bounded_write', path_scope:{binding:'run.allowed_paths'}, id: 'instructions', type: 'agent', role, executor: providerId ? { kind: 'provider', provider_id: providerId } : { kind: 'main' },
       prompt_template: 'Read the pinned Workflow resource source/SKILL.md using read_workflow_resource and apply its complete instructions to this task: {{task}}. Resolve its local references within the pinned source/ resources. Report unmet requirements instead of inventing tools or accessing the original Skill.',
       resources: Object.keys(snapshot.files).sort(), origin: { kind: 'source', source_span: { resource: 'source/SKILL.md', start_line: snapshot.instructions_start_line, end_line: snapshot.files['source/SKILL.md'].toString().split('\n').length } } },
     { ...shared, id: 'final', type: 'agent', role: 'finalizer', executor: { kind: 'main' },
@@ -44,7 +45,7 @@ export async function importCoarseSkill(store, sourcePath, options) {
 export function verifyCoarseRelocation(pack, resources) {
   requireValue(pack.workflow.import_status?.mode === 'coarse', 'IMPORT_KIND', 'Relocation verification requires a coarse import');
   requireValue(!pack.workflow.import_status.unresolved.length, 'IMPORT_UNRESOLVED', 'Resolve every import observation before claiming source independence');
-  requireValue(!pack.workflow.requirements.executables.length && !(pack.workflow.requirements.environment ?? []).length && !pack.workflow.requirements.mcp_servers.length && pack.workflow.requirements.tools.every(tool => tool === 'read_workflow_resource'), 'IMPORT_EXTERNAL_REQUIREMENTS', 'External requirements prevent a self-contained claim');
+  requireValue(!(pack.import_report?.references ?? []).some(r=>r.kind==='external') && !pack.workflow.requirements.executables.length && !(pack.workflow.requirements.environment ?? []).length && !pack.workflow.requirements.mcp_servers.length && pack.workflow.requirements.tools.every(tool => tool === 'read_workflow_resource'), 'IMPORT_EXTERNAL_REQUIREMENTS', 'External requirements prevent a self-contained claim');
   const prepared = prepareResources(resources);
   requireValue(canonicalJSON(prepared.manifest) === canonicalJSON(pack.resources), 'IMPORT_RESOURCE_CHANGED', 'Relocated resources differ from the pinned Pack');
   requireValue(resources['source/SKILL.md'], 'IMPORT_SOURCE_MISSING', 'Pinned source instructions are missing');

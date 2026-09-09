@@ -1,6 +1,6 @@
 # Provider contracts
 
-Read this after selecting one Task Type. Dispatch each ordered Stage by `adapter.kind`,
+Read the relevant connector section after selecting a Workflow node. Dispatch by `adapter.kind`,
 `adapter.execution`, and `adapter.connector`; never infer a provider from its display
 name.
 
@@ -8,7 +8,7 @@ name.
 
 For every provider:
 
-1. preserve the declared Task Type, Stage, route, access intent, approval state, workspace,
+1. preserve the Workflow, node, access intent, approval state, workspace,
    and path boundary;
 2. send only the selected compiled prompt and minimum required artifacts;
 3. retain the provider's real task/session/Agent identity;
@@ -21,8 +21,9 @@ external messaging, permission choices, or product/governance authority.
 ## `native_agent`
 
 The adapter returns exact `agent_type`, freshness, role, expected model/effort, and any
-requested sandbox. Use native Codex Agents Workflow preflight and observed runtime evidence.
-Do not attach per-spawn model overrides. A requested sandbox is not proof of the host
+requested sandbox. Use `spawn_config` as the spawn arguments and inspect the returned task identity.
+Generic agents receive explicit model/effort overrides with a fresh context; fixed
+roles receive no overrides and must match their registered model/effort. A requested sandbox is not proof of the host
 policy. Reviewers remain behaviorally read-only and do not implement their own fixes.
 
 ## Built-in connector operations

@@ -1,3 +1,4 @@
+import {discoverRuntimeEnvironment} from './runtime-environment.mjs';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { HUMAN_GATE_OUTPUT } from './workflow-schema.mjs';
 import { join } from 'node:path';
@@ -9,6 +10,7 @@ import { noSymlinks, requireValue } from './workflow-paths.mjs';
 import { pathBoundaries, resolveBindings } from './workflow-bindings.mjs';
 import { validateData } from './workflow-data-schema.mjs';
 import { runPermissions, nodePermissions, approvalBinding, leaseToken, executionEnvelope } from './workflow-execution-envelope.mjs';
+import { assertThreadReceipt, isThreadExecutor, threadResourcePacketText } from './thread-handoff.mjs';
 import { initialRunState, advanceRun, graphInfo, setOutcome, interruptActiveNodes, EXECUTOR_NODES } from './workflow-state.mjs';
 import { resolveWorkflowPins } from './workflow-pins.mjs';
 import { childIdentity, childPermissions, validateChildClosure } from './workflow-subworkflow.mjs';
@@ -44,7 +46,8 @@ function completionPayload(payload) {
 }
 
 export class WorkflowRuntime {
-  constructor({ workflowStore, runRoot, context = {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
+  constructor({ workflowStore, runRoot, generationPolicy = null, context = {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, environmentResolver = discoverRuntimeEnvironment, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
+    this.generationPolicy = generationPolicy; this.environmentResolver = environmentResolver;
     this.workflows = workflowStore; this.runs = new WorkflowRunStore(runRoot); this.context = context;
     this.strictCapability = strictCapability; this.parallelWriteCapability = parallelWriteCapability;
     this.parallelManager = parallelManager;
@@ -71,26 +74,30 @@ export class WorkflowRuntime {
     }, options);
   }
 
-  async start({ workflow_id, revision_hash, inputs = {}, workspace, access, allowed_paths = [], constraints = {}, main_actor, require_approval = false, run_id = randomUUID() }) {
+  async start({ environment_directories = [], workflow_id, revision_hash, inputs = {}, workspace, access, allowed_paths = [], constraints = {}, main_actor, require_approval = false, run_id = randomUUID() }) {
     requireValue(typeof main_actor === 'string' && main_actor.length > 0 && main_actor.length <= 256, 'MAIN_ACTOR', 'Run requires one main actor');
     requireValue(typeof require_approval === 'boolean', 'RUN_APPROVAL', 'Run approval policy must be boolean');
     const root = await this.workflows.snapshot(workflow_id, revision_hash);
     validateData(inputs, root.workflow.inputs_schema);
     requireValue(root.workflow.status === 'ready' && root.workflow.enabled, 'WORKFLOW_LAUNCH_BLOCKED', 'Only enabled Ready Workflows may resolve execution dependencies', { validation: validateWorkflowGraph(root.workflow, this.context) });
     const closure = await resolveWorkflowPins(this.workflows, root);
-    const checked = validateWorkflowGraph(root.workflow, { ...this.context, ...closure.context });
+    const checked = validateWorkflowGraph(root.workflow, { ...this.context, ...closure.context, check_runtime_requirements: true });
     requireValue(checked.launch_ready, 'WORKFLOW_LAUNCH_BLOCKED', 'Workflow cannot start in the current environment', { validation: checked });
     for (const pack of closure.packs) for (const node of pack.workflow.nodes) if (EXECUTOR_NODES.has(node.type)) requireValue(this.supportedNodeTypes.has(node.type), 'EXECUTOR_UNSUPPORTED', `Node type has no qualified executor: ${node.type}`, { node_id: node.id });
     for (const skill of closure.skills) {
       requireValue(!skill.observations.length, 'SKILL_DEPENDENCY_UNRESOLVED', 'Linked Skill dependencies need review or inlining before execution', { path: skill.path, observations: skill.observations });
-      for (const [kind, names] of Object.entries(skill.requirements)) if (kind !== 'providers') requireValue(names.every(name => (this.context[kind] ?? []).includes(name)), 'SKILL_REQUIREMENT_UNAVAILABLE', 'Linked Skill requires an unavailable executor capability', { path: skill.path, kind, requirements: names });
+      for (const [kind, names] of Object.entries(skill.requirements)) if (['tools', 'mcp_servers'].includes(kind)) requireValue(names.every(name => (this.context[kind] ?? []).includes(name)), 'SKILL_REQUIREMENT_UNAVAILABLE', 'Linked Skill requires an unavailable executor capability', { path: skill.path, kind, requirements: names });
     }
+    const requirements = {executables:[...new Set([...closure.packs.flatMap(pack=>pack.workflow.requirements.executables??[]), ...closure.skills.flatMap(skill=>skill.requirements.executables??[])])]};
+    const environment = await this.environmentResolver(requirements,{extraDirectories:environment_directories});
+    requireValue(environment.status === 'ready','ENVIRONMENT_SETUP_REQUIRED','请先准备运行依赖：发现缺少的工具后询问用户是否安装，完成后重新检查。',{environment});
+    constraints = {...constraints, runtime_environment:environment};
     const permissions = runPermissions({ workspace, access, allowed_paths }); await noSymlinks(permissions.workspace);
     const providerIds = new Set(closure.provider_ids);
     const providers = (this.context.providers ?? []).filter(provider => providerIds.has(provider.id));
     for (const pack of closure.packs) if (pack.workflow.skill_policy.mode === 'strict') requireValue(await this.strictCapability(pack, { skills: closure.skills, providers }), 'STRICT_UNAVAILABLE', 'No qualified Strict executor is available; imported Workflows cannot silently downgrade');
     const blobs = closure.blobs;
-    const pins = { schema_version: 1, root, providers: structuredClone(providers), children: closure.children, skills: closure.skills, resources: closure.resources };
+    const pins = { schema_version: 1, ...(this.generationPolicy ? {generation:structuredClone(this.generationPolicy)} : {}), root, providers: structuredClone(providers), children: closure.children, skills: closure.skills, resources: closure.resources };
     const controlToken = randomBytes(32).toString('hex');
     const state = initialRunState({ runId: run_id, pinsHash: digest(canonicalJSON(pins)), pins, inputs: structuredClone(inputs), permissions, constraints: structuredClone(constraints), controlHash: digest(controlToken), mainActor: main_actor, requireApproval: require_approval });
     const scopes = validateChildClosure(pins, state);
@@ -206,7 +213,7 @@ export class WorkflowRuntime {
   async recordExecutorEvent(runId, { node_id, attempt_id, lease_token, control_token, event }) {
     const fields = {
       codex_event: ['method', 'thread_id', 'turn_id', 'item_type', 'status'],
-      tool_operation: ['call_id', 'tool', 'path', 'phase', 'sha256', 'before_sha256', 'after_sha256', 'entries'],
+      tool_operation: ['call_id', 'tool', 'path', 'phase', 'sha256', 'before_sha256', 'after_sha256', 'entries', 'start_line', 'end_line', 'total_lines', 'bytes'],
       profile_owned: ['home', 'executable_sha256', 'pid'],
       session_state: ['status', 'code'],
       model_catalog: ['requested_model', 'requested_effort', 'inventory_count', 'match_count', 'effort_supported', 'model_ids'],
@@ -218,6 +225,10 @@ export class WorkflowRuntime {
       Object.values(event.metadata).every(value => value === null || typeof value === 'boolean' || typeof value === 'string' && value.length <= 4096 || Number.isSafeInteger(value)) &&
       Buffer.byteLength(canonicalJSON(event)) <= 32000,
       'EXECUTOR_EVENT_SCHEMA', 'Executor events accept bounded metadata only, never raw auth/model payloads');
+    if(event.kind==='tool_operation' && event.metadata.tool==='read_workflow_resource_range') {
+      const {start_line:start,end_line:end,total_lines:total,bytes}=event.metadata;
+      requireValue([start,end,total,bytes].every(Number.isSafeInteger)&&start>=1&&end>=start&&end-start<200&&total>=end&&bytes>=0&&bytes<=32768,'EXECUTOR_EVENT_SCHEMA','Resource range evidence must contain bounded valid coverage');
+    }
     const result = await this.runs.mutate(runId, 'executor_event', state => {
       authorize(state, control_token);
       // Late shutdown metadata may document an already fenced attempt; it never
@@ -241,7 +252,26 @@ export class WorkflowRuntime {
     const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: !allowInactive });
     requireValue(allowInactive || state.status === 'running' || allowPaused && state.status === 'paused', 'RUN_NOT_RUNNING', 'Run must be running before dispatch');
     const node = pins.root.workflow.nodes.find(item => item.id === node_id);
-    return executionEnvelope(node, state, pins, attempt, lease_token, join(this.runs.directory(runId), 'objects'));
+    return executionEnvelope(node, state, pins, attempt, lease_token);
+  }
+  async threadResourcePacket(runId, args, { max_chars }) {
+    requireValue(Number.isInteger(max_chars) && max_chars >= 0, 'THREAD_RESOURCE_LIMIT', 'Thread resource packet needs a nonnegative prompt budget');
+    const envelope = await this.execution(runId, args);
+    requireValue(isThreadExecutor(envelope.executor), 'THREAD_EXECUTOR', 'Only Codex task-thread nodes can prepare a task resource packet');
+    const { pins } = await this.runs.read(runId);
+    const manifest = new Map((pins.root.resources ?? []).map(resource => [resource.path, resource]));
+    const resources = [];
+    for (const path of envelope.resources) {
+      const resource = manifest.get(path);
+      requireValue(resource, 'THREAD_RESOURCE_MISSING', 'Thread node references a resource missing from its immutable Run closure', { path });
+      const bytes = await readFile(join(this.runs.directory(runId), 'objects', resource.sha256));
+      const text = bytes.toString('utf8');
+      requireValue(Buffer.from(text, 'utf8').equals(bytes), 'THREAD_RESOURCE_BINARY', 'Codex task handoff cannot transport a binary pinned resource; pass it as an explicit task input or use a non-thread executor', { path });
+      const candidate = [...resources, { path, sha256: resource.sha256, text }];
+      requireValue(threadResourcePacketText(candidate).length <= max_chars, 'THREAD_RESOURCE_LIMIT', 'Pinned Workflow text is too large for this Codex task handoff; split the node or use a non-thread executor', { path, max_chars });
+      resources.push(candidate.at(-1));
+    }
+    return resources;
   }
   async next(runId) {
     return this.#nextFromRecord(runId, await this.runs.read(runId));
@@ -276,14 +306,14 @@ export class WorkflowRuntime {
       const existing = node.attempts.find(attempt => attempt.claim_request_id === request_id);
       if (existing) {
         requireValue(existing.owner === owner && node.active_attempt_id === existing.id && ['claimed', 'running'].includes(existing.status), 'CLAIM_CONFLICT', 'Claim request refers to a different or closed executor');
-        return executionEnvelope(definition, state, pins, existing, leaseToken(control_token, runId, node_id, existing.id, existing.lease_generation ?? 0), join(this.runs.directory(runId), 'objects'));
+        return executionEnvelope(definition, state, pins, existing, leaseToken(control_token, runId, node_id, existing.id, existing.lease_generation ?? 0));
       }
       requireValue(state.status === 'running' && node.status === 'ready', 'NODE_NOT_READY', 'Only a ready node in an active Run may be claimed');
       const approval = approvalBinding(definition, state, pins);
       if (approval.required) requireValue(state.approvals[node.approval_id]?.status === 'approved' && state.approvals[node.approval_id].binding_hash === approval.hash, 'APPROVAL_REQUIRED', 'Exact node approval is required before claim');
       const id = randomUUID(); const token = leaseToken(control_token, runId, node_id, id);
       const attempt = { id, owner, started_at: new Date().toISOString(), claim_request_id: request_id, lease_hash: digest(token), status: 'claimed', dispatch: null, completion_hash: null, reconciliation: null };
-      const envelope = executionEnvelope(definition, state, pins, attempt, token, join(this.runs.directory(runId), 'objects'));
+      const envelope = executionEnvelope(definition, state, pins, attempt, token);
       node.attempts.push(attempt); node.active_attempt_id = id; node.status = 'claimed'; touch(state);
       return envelope;
     }, { expected_sequence });
@@ -302,7 +332,8 @@ export class WorkflowRuntime {
       const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
       requireValue(definition.type !== 'subworkflow' || authority === CHILD_COMPLETION, 'CHILD_ACCEPTANCE_REQUIRED', 'SubWorkflow output must be collected from its exact accepted child Run');
       validateData(payload.structured_output, definition.outputs_schema);
-      if (definition.executor?.kind === 'provider') requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Provider completion requires a persisted exact task identity');
+      if (['provider', 'thread'].includes(definition.executor?.kind)) requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Provider or Codex task-thread completion requires a persisted exact task identity');
+      if (definition.executor?.kind === 'thread') requireValue(payload.evidence.some(item => item && item.kind === 'codex_thread' && item.thread_id === attempt.dispatch.receipt.thread_id && item.observed === 'completed'), 'THREAD_COLLECTION_EVIDENCE', 'Codex task-thread completion requires evidence from the exact recorded task');
       const permission = nodePermissions(definition, state);
       requireValue(!payload.outside_paths.length, 'SCOPE_VIOLATION', 'Completion reports writes outside the permitted scope');
       const changed = pathBoundaries(payload.changed_paths);
@@ -439,10 +470,12 @@ export class WorkflowRuntime {
     const serialized = canonicalJSON(receipt);
     requireValue(receipt && typeof receipt === 'object' && !Array.isArray(receipt) && Buffer.byteLength(serialized) <= 16000 && !/"[^"\n]*(?:password|cookie|authorization|api_key|access_token|refresh_token)[^"\n]*"\s*:/i.test(serialized), 'DISPATCH_RECEIPT', 'Receipt must contain bounded task identity metadata without credentials');
     requireValue(['task_id', 'thread_id', 'agent_id', 'invocation_id', 'main_actor', 'tool_call_id'].some(key => typeof receipt[key] === 'string' && receipt[key].length > 0 && receipt[key].length <= 256), 'DISPATCH_IDENTITY_REQUIRED', 'Receipt requires a concrete task, agent, invocation or tool-call identity');
-    const result = await this.runs.mutate(runId, 'dispatch_receipt', state => {
+    const result = await this.runs.mutate(runId, 'dispatch_receipt', (state, pins) => {
       authorize(state, control_token); const { node, attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });
       requireValue(attempt.dispatch?.request_id === request_id, 'DISPATCH_INTENT_MISSING', 'Receipt does not match a persisted dispatch intent');
       if (attempt.dispatch.receipt) { requireValue(canonicalJSON(attempt.dispatch.receipt) === serialized, 'DISPATCH_CONFLICT', 'Receipt differs from the exact previously recorded task'); return; }
+      const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
+      if (definition?.executor?.kind === 'thread') assertThreadReceipt(state, definition.executor, receipt);
       attempt.dispatch.receipt = structuredClone(receipt); attempt.dispatch.phase = 'acknowledged';
       if (node.active_attempt_id === attempt_id && node.status === 'claimed') { node.status = 'running'; attempt.status = 'running'; }
       else attempt.dispatch.cancellation_pending = true;

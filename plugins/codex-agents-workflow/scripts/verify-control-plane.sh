@@ -61,8 +61,8 @@ jq empty "$control/package.json"
 [ "$(jq -r '.mcpServers' "$manifest")" = './.mcp.json' ] || fail "plugin manifest does not load control-plane MCP"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].command' "$mcp_manifest")" = node ] || fail "control-plane MCP does not use node"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].enabled' "$mcp_manifest")" = true ] || fail "control-plane MCP is disabled"
-[ "$(jq -r '.mcpServers["codex-agents-workflow"].cwd' "$mcp_manifest")" = . ] || fail "control-plane MCP does not launch from plugin root"
-[ "$(jq -r '.mcpServers["codex-agents-workflow"].args[0]' "$mcp_manifest")" = './control-plane/server.mjs' ] || fail "control-plane MCP entrypoint is not plugin-root relative"
+[ "$(jq -r '.mcpServers["codex-agents-workflow"].cwd' "$mcp_manifest")" = ../../.. ] || fail "control-plane MCP must launch outside disposable version directories"
+node "$script_dir/check-mcp-startup.mjs" || fail "packaged MCP handshake failed"
 jq -e '.name == "codex-agents-workflow" and (.plugins[] | select(.name == "codex-agents-workflow"))' "$marketplace" >/dev/null || fail "local marketplace still exposes the retired predecessor identity"
 jq -e '.mcpServers["codex-agents-workflow"].env_vars | index("CODEX_HOME") and index("USERPROFILE")' "$mcp_manifest" >/dev/null || fail "control-plane MCP does not inherit the global Codex environment"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].default_tools_approval_mode' "$mcp_manifest")" = approve ] || fail "control-plane MCP is not approval-gated"
@@ -115,7 +115,7 @@ for phrase in \
 done
 grep -Fq 'workflow-review' "$web_app" || fail "console omits the independent review workflow switch"
 if grep -Fq 'task-type-route' "$web_app"; then fail "console still exposes an independent route selector"; fi
-grep -Fq 'CONTROL PLANE UNAVAILABLE' "$skill" || fail "control-plane skill hides activation failure"
+grep -Fq 'Report the observed error' "$skill" || fail "control-plane skill hides activation failure"
 grep -Fq 'Delegate is the default' "$plugin_dir/skills/control-plane/references/v6-control-plane.md" || fail "control-plane skill does not default to delegate"
 for phrase in \
   'Read metadata, not the prompt library' \
@@ -148,7 +148,7 @@ grep -Fq 'ubuntu-latest' "$workflow" || fail "CI does not cover Linux"
 grep -Fq 'connector-protocol-' "$workflow" || fail "CI does not expose connector protocol matrix"
 grep -Fq 'macos-latest' "$workflow" || fail "CI does not cover macOS"
 for operation in workflow_start workflow_claim_node workflow_dispatch workflow_complete_node workflow_reattach_connector; do
-  grep -Fq "$operation" "$skill" || fail "v7 skill omits $operation"
+  grep -Fq "$operation" "$skill" "$plugin_dir/skills/control-plane/references/recovery.md" || fail "execution instructions omit $operation"
 done
 pass "v7 execution, v6 compatibility, connector contracts, and three-platform CI documented"
 

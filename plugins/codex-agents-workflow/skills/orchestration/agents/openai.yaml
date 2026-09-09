@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Agents Workflow Orchestration"
-  short_description: "Declare a risk-gated solo, delegate, audit, or exceptional full route before task tools"
-  default_prompt: "Use $orchestration to declare a SELECTIVE ROUTE before task tools; default to solo and select delegation, audit, or exceptional full only when risk justifies it."
+  short_description: "Coordinate native agents when no Workflow fits"
+  default_prompt: "Use $orchestration to declare a SELECTIVE ROUTE before task tools; select the implementation and review route appropriate to the task."

@@ -12,7 +12,7 @@
       "name": "Native Luna / Max",
       "kind": "native_agent",
       "enabled": true,
-      "description": "Default bounded implementation worker inside Codex.",
+      "description": "适合需求明确、范围较小的实现、批量处理和常规验证；优先用于可独立验收的低复杂度子任务。",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -20,7 +20,7 @@
         "background": false
       },
       "config": {
-        "agent_type": "codex_workflow_luna_implementer",
+        "agent_type": "default",
         "model": "gpt-5.6-luna",
         "reasoning_effort": "max",
         "role": "implementer",
@@ -33,7 +33,7 @@
       "name": "Native Terra / High",
       "kind": "native_agent",
       "enabled": true,
-      "description": "Judgment-heavy, context-heavy, or higher-risk bounded worker.",
+      "description": "适合复杂实现、深入分析和需要跨文件判断的子任务；用于普通实现模型难以可靠处理的工作。",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -41,7 +41,7 @@
         "background": false
       },
       "config": {
-        "agent_type": "codex_workflow_terra_implementer",
+        "agent_type": "default",
         "model": "gpt-5.6-terra",
         "reasoning_effort": "high",
         "role": "implementer",
@@ -54,7 +54,7 @@
       "name": "Fresh native Astra / Medium reviewer",
       "kind": "native_agent",
       "enabled": true,
-      "description": "Context-clean final review lane. Requested read-only isolation must still be observed.",
+      "description": "适合高复杂度推理、架构风险分析与独立最终审阅；只读隔离是否生效需以运行证据为准。",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -62,7 +62,7 @@
         "background": false
       },
       "config": {
-        "agent_type": "codex_workflow_reviewer",
+        "agent_type": "default",
         "model": "gpt-6-astra",
         "reasoning_effort": "medium",
         "role": "reviewer",
@@ -162,6 +162,27 @@
         "temperature": 0.2,
         "system_prompt": "You are an advisory subagent. Return evidence-based analysis only. Do not claim file access, tool execution, or implementation.",
         "headers": {}
+      }
+    },
+    {
+      "id": "native-generation-reviewer",
+      "name": "Skill2Workflow Sol / High reviewer",
+      "kind": "native_agent",
+      "enabled": true,
+      "description": "适合常规代码与工作流的独立一致性检查、发现遗漏和提出具体修复意见。",
+      "requires_user_approval": false,
+      "capabilities": {
+        "read": true,
+        "write": false,
+        "background": false
+      },
+      "config": {
+        "agent_type": "default",
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "high",
+        "role": "reviewer",
+        "fresh_context": true,
+        "requested_sandbox": "read-only"
       }
     }
   ],

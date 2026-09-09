@@ -2,15 +2,14 @@
 
 The service exposes inventory/import, resource relocation, review packets,
 expansion packets and managed expansion Runs as Workflow MCP tools. The default
-inventory adapter runs the qualified Codex binary against the configured CODEX_HOME
-and requested workspace, using only initialize and skills/list. It starts no
-thread/turn/login and writes no configuration. Codex may refresh its own metadata
-or system caches; this is a normal profile inventory, not a Strict execution
-profile. Discovery is complete only relative to this configured profile and the
-errors returned by Codex, not every possible desktop task/environment. Binary
-settings are required even when Strict execution remains disabled. Configuration
-hashes before/after must match; concurrent edits are reported and never reverted.
-Per-path errors remain visible; the adapter never guesses filesystem roots.
+inventory scans CODEX_HOME/skills and CODEX_HOME/plugins/cache (default home/.codex).
+An optional absolute folder selects another import root. Bounded traversal skips
+links and reports per-path errors. This reads SKILL.md metadata only; it requires
+no Strict binary, login or model invocation. Cache entries show their full source
+paths, including versions; discovery does not claim those Skills are enabled.
+Explicit host mode retains the qualified configured-profile skills/list adapter
+and its before/after configuration integrity check. Import repeats the same
+selected discovery mode/folder and verifies source identity before snapshotting.
 
 Inventory selection is an exact canonical path plus source hash. Import refreshes
 that selection, reads bounded UTF-8 instructions and snapshots portable resources.
@@ -54,7 +53,14 @@ execution uses the qualified Strict manager, normal claims/approval gates, exact
 dispatch receipts and durable output. Unqualified Provider types fail explicitly.
 The main controller must accept the planning result before apply_expansion_result
 changes the source Draft under its original revision CAS. The planning Provider
-never replaces the source Workflow's execution Provider. No retry loop, imported
+does not determine every output node's execution Provider. Editable skill2workflow
+rules classify routine implementation, complex implementation, review and planning,
+then map these classifications to configured enabled Provider IDs and roles. The
+rules are pinned in planning provenance and the resulting import report records
+per-node reasons. Shared defaults are saved separately with CAS; editing them does
+not change an existing planning Run. Missing/ineligible routes fail visibly and
+leave the coarse Draft intact. Legacy proposals without routing rules retain their
+original fixed-binding contract. No retry loop, imported
 script or original source path is used by this planning Run.
 
 An expansion result must match the exact coarse revision. The compiler accepts
@@ -92,3 +98,129 @@ dependency observations remain visible. The human-only `review_import` operation
 must confirm the exact conversion; a separate per-node blocker prevents blanket
 summary removal from bypassing review. Functional independence still needs actual
 execution evidence. SubWorkflow authority and output rules are in V7_RUN_CONTRACT.
+
+## One-click console generation
+
+The default import review action prepares a managed planning workspace and selects
+the planning route from saved rules. The console advances normal claims/dispatch
+automatically, one bounded transition at a time, while displaying progress. Provider
+gates still require a human decision. A final proposed result and structural graph
+validation are shown before explicit acceptance applies the exact source Draft.
+There is no implicit retry, Ready publication, approval waiver or guarantee that
+arbitrary generated workflows have no bugs. Closing the page stops further UI
+advancement, not a model call already dispatched; Run details preserve cancellation
+and recovery controls. Workspace/Provider/rules remain editable in advanced options.
+
+### Provider defaults and automatic repair
+The console resolves the planning route and the registered generation reviewer before
+starting. No model text is required from users. Advanced options select registered
+Providers and a 1–10 round budget (default 3). The bundled generation reviewer is
+Sol/high; normal execution review routing and global Main settings remain separate.
+A rejected structured review or compiler-invalid proposal feeds the next fresh
+planning attempt. The journal retains every attempt and repair reason. Only closed,
+read-only generation sessions can restart. Cancellation, pause, revocation, uncertain
+transport, missing model/authentication and exhausted budget stop advancement.
+A passing review still requires explicit human acceptance before saving the Draft.
+
+### Local client inventory
+The execution-capability page reads model metadata from the newest discovered local
+Codex executable, not the bundled historical runtime catalog or a copied cache.
+CODEX_CATALOG_BINARY explicitly overrides discovery. The reader permits only
+initialize, account/read and model/list; it cannot log in, create threads, execute
+turns, or edit Skills. Model discovery does not confer Strict runtime qualification.
+Grok and Cursor honor registered path overrides, otherwise discover installed clients;
+missing public model APIs are shown as client-managed/unknown, never an invented list.
+Observed on Windows: Codex0.153.4 returned eight models including gpt-6-astra with
+zero model calls. The separately qualified Strict executable remains0.145.0.
+
+
+### Conversion quality and observable review
+
+Generation and review consume one versioned conversion contract in the pinned request.
+It covers source phase order, producer/consumer dependencies, approval boundaries,
+conditional prerequisites, reference inheritance and truthful capability limitations.
+Unavailable execution does not justify reducing the intended workflow to a diagnostic.
+Review examines conversion semantics in one pass and returns all material findings;
+source-code audits and stylistic rewrites are outside this operation.
+
+The read-only broker supports explicit pinned line ranges (up to 200 lines / 32 KiB),
+with total line count, actual coverage, hash and durable read evidence. Complete
+resources remain pinned; partial reads never claim full coverage. Existing whole-file
+reads remain compatible. Both stages use the numbered SKILL.md already in the request.
+
+The console displays round/limit, pinned model/effort, stage duration and recent read
+activity; cancellation is visible without opening advanced options. Progress is derived
+from verified journal state rather than a separate progress store.
+
+Generation defaults support optional planner_provider_id, separate from generated-node
+planning routes. Missing planner_provider_id retains the prior route default. A clearly
+labelled per-run override changes only this conversion. Review can select any enabled
+native read-capable Provider, regardless of model name or original role. It still uses
+an independent read-only session and requires human acceptance. Other connector kinds
+remain unsupported by the current automatic conversion executor, visibly rather than
+being silently substituted. Prompt preview is non-dispatching and shows the shared
+request, stage instructions and schemas; runtime additionally supplies exact upstream
+results and repair feedback.
+
+
+A generated node must reserve success for its actual required deliverable. Strict
+execution recognizes the reserved exact response `{"$workflow_blocked":"reason"}`
+(1–2000 characters) before success-schema validation. It closes the session and
+fails the node with `WORKFLOW_NODE_BLOCKED`, retaining the reason in the Run error;
+it never publishes a success proposal or advances success edges. Invalid marker
+shapes fail with `STRICT_BLOCKER_SCHEMA`. Ordinary unstructured text remains valid.
+This supplies an executable failure mechanism rather than relying on a prompt to
+call a nonexistent fail tool. Planning itself does not require media execution.
+Briefing and continuation decisions are explicit future Run inputs; approval gates
+remain approval-only, and missing answers produce a blocked result for a later Run.
+
+## Task-aware automatic planning
+
+New routing defaults use automatic selection. Existing saved fixed mappings remain
+valid until explicitly switched. The planning packet contains a bounded registered
+Provider catalog (ID, model, effort, role, suitability description, read/write flags),
+never credentials. Planning records parallelism, main/subagent boundaries and human
+intervention in planning_analysis. Each automatic agent chooses main or subagent;
+subagents name a registered Provider with a task-specific rationale. The compiler
+rejects missing analysis or ineligible choices and preserves read-only access.
+Main remains host-model-independent. Fixed mode rejects automatic selection fields.
+
+The explicit human generation-acceptance button confirms the displayed inferred
+nodes and edges in the same Draft save, recording source revision and proposal hash.
+Raw expansion application still requires per-item review. Approval does not clear
+resource/dependency observations or prove launch capability. The editor groups
+structural errors, pending confirmations and execution constraints separately.
+Shell-local substitutions and JavaScript template interpolation are not blanket
+environment requirements; declared dependencies and actual environment reads remain.
+
+## Artifact versus execution environment
+
+The definition validator validates requirement shapes but does not compare local
+executables, environment variables, tools or MCP availability. Execution performs
+that check. Script/binary presence and external URLs are retained as informational
+observations; missing resources, literal redactions and source-linked user paths
+remain definition issues. Portable non-Markdown files are snapshot resources with
+source/snapshot hashes. Configuration templates .env.example/.env.template pass
+through the same credential scanner instead of being excluded by filename; real
+credential files remain excluded. Known system paths (/usr,/opt,/etc) describe the
+runtime environment, not a dependency on the original imported directory.
+
+## Deterministic review contract v2
+
+New automatic Runs pin version 2 and the checklist output schema. The shared
+conversion contract contains fourteen stable IDs, with separate parallelism,
+main/subagent, human-intervention and model-selection checks. Review outputs only
+checks: each has pass/fail/not_applicable, evidence, proposed node/edge IDs and
+pinned source spans. Code rejects missing/duplicate/unknown rules, blank evidence,
+invalid references, unsupported not-applicable declarations and incomplete
+source-support node/edge coverage. Only conversation_inputs, human_confirmation
+(with no gate), and conditional_dependencies permit not_applicable with explanation.
+Code computes approved from the complete set; the model cannot supply that flag.
+This establishes evidence integrity and coverage, not semantic truth.
+
+A malformed review/schema retries only the reviewer, preserving the generated
+proposal; semantic failures rewind generation. Both use the existing pinned bounded
+attempt limits and retain closed sessions, approval gates and journal evidence.
+The user acceptance path and result-application path both validate checklist evidence.
+Unversioned historical generation jobs keep their original immutable contract.
+Current host limitations must not be baked into generated artifact instructions.

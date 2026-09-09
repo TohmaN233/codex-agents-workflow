@@ -1,9 +1,12 @@
+import { informationalImportObservation } from './workflow-import-observations.mjs';
+import { nativeBindingIssue } from './native-binding.mjs';
 import { NODE_TYPES, HUMAN_GATE_OUTPUT, validateWorkflowShape } from './workflow-schema.mjs';
 import { workflowId } from './workflow-paths.mjs';
 import { pathBoundaries, pointerParts, validateExpression } from './workflow-bindings.mjs';
 import { validateDataSchema, validateData } from './workflow-data-schema.mjs';
 import { validateSkillReference, effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { skillPathKey } from './execution/codex-skill-policy.mjs';
+import { assertThreadExecutor } from './thread-handoff.mjs';
 
 const EXECUTED = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
 const SHA = /^[a-f0-9]{64}$/;
@@ -90,14 +93,30 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (!object(node.retry) || !Number.isInteger(node.retry.max_attempts) || node.retry.max_attempts < 1 || node.retry.max_attempts > 10) issue('NODE_RETRY', 'Retry limit must be between 1 and 10', location);
       const executor = node.executor;
       if (['agent', 'skill_ref'].includes(node.type) && (typeof node.role !== 'string' || !node.role.trim() || node.role.length > 64)) issue('NODE_ROLE', 'Agent role must be explicit', location);
-      if (!object(executor) || !['main', 'provider', 'tool', 'human', 'subworkflow'].includes(executor.kind)) issue('EXECUTOR', 'Executed node needs a known executor', location);
-      else if (executor.kind === 'provider') {
+      if (!object(executor) || !['main', 'provider', 'thread', 'tool', 'human', 'subworkflow'].includes(executor.kind)) issue('EXECUTOR', 'Executed node needs a known executor', location);
+      else if (['provider', 'thread'].includes(executor.kind)) {
         const provider = providers.get(executor.provider_id);
         if (!provider) issue('PROVIDER_MISSING', 'Pinned Provider does not exist', location);
         else {
+          const bindingIssue = nativeBindingIssue(provider);
+          if (bindingIssue && (node.skill_policy?.mode ?? workflow.skill_policy.mode) === 'cooperative') issue(bindingIssue.code, bindingIssue.message, { ...location, provider_id: provider.id, expected: bindingIssue.expected, actual: bindingIssue.actual });
           if (!provider.enabled) issue('PROVIDER_DISABLED', 'Pinned Provider is disabled', location, blockers);
           if (!provider.capabilities?.read || (node.access === 'bounded_write' && !provider.capabilities?.write)) issue('PROVIDER_CAPABILITY', 'Provider capabilities do not match access', location);
           if (provider.kind === 'native_agent' && provider.config?.role && !['advisor', node.role].includes(provider.config.role)) issue('PROVIDER_ROLE', 'Native Provider role does not match node role', location);
+        }
+      }
+      if (executor?.kind === 'thread') {
+        try { assertThreadExecutor(executor); } catch (error) { issue(error.code ?? 'THREAD_EXECUTOR', error.message, location); }
+        if (node.type !== 'agent') issue('THREAD_NODE_TYPE', 'Codex task threads execute Agent nodes only', location);
+        if ((node.skill_policy?.mode ?? workflow.skill_policy.mode) !== 'cooperative') issue('THREAD_STRICT_UNSUPPORTED', 'Codex task thread execution requires Cooperative mode', location);
+        if (providers.get(executor.provider_id)?.kind !== 'native_agent') issue('THREAD_PROVIDER_UNSUPPORTED', 'Codex task threads require a registered native Codex Provider', location);
+        if (executor.lifecycle === 'continue') {
+          const source = nodes.get(executor.source_node);
+          if (!source || source.executor?.kind !== 'thread') issue('THREAD_SOURCE', 'Continuation requires a source node that started a Codex task thread', location);
+          else {
+            if (!visit(source.id).has(node.id)) issue('THREAD_SOURCE_ORDER', 'Continuation source must be upstream of its target node', location);
+            if (source.executor.provider_id !== executor.provider_id) issue('THREAD_PROVIDER_CONTINUITY', 'Continuation must retain the exact source task Provider and model configuration', location);
+          }
         }
       }
       if (node.type === 'tool' && executor?.kind !== 'tool') issue('TOOL_EXECUTOR', 'Tool nodes require a tool executor', location);
@@ -107,7 +126,8 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       }
       if (node.type === 'human_gate' && executor?.kind !== 'human') issue('HUMAN_EXECUTOR', 'Human gates require a human executor', location);
       if ((node.type === 'subworkflow') !== (executor?.kind === 'subworkflow')) issue('SUBWORKFLOW_EXECUTOR', 'SubWorkflow nodes require their dedicated executor', location);
-      if (['agent', 'skill_ref'].includes(node.type) && !['main', 'provider'].includes(executor?.kind)) issue('AGENT_EXECUTOR', 'Agent and SkillRef nodes require main or Provider execution', location);
+      if (node.type === 'agent' && !['main', 'provider', 'thread'].includes(executor?.kind)) issue('AGENT_EXECUTOR', 'Agent nodes require main, Provider or Codex task-thread execution', location);
+      if (node.type === 'skill_ref' && !['main', 'provider'].includes(executor?.kind)) issue('AGENT_EXECUTOR', 'SkillRef nodes require main or Provider execution', location);
       if (node.type === 'agent' && (typeof node.prompt_template !== 'string' || !node.prompt_template.trim())) issue('NODE_PROMPT', 'Agent requires instructions', location);
     }
     function checkPointer(pointer) {
@@ -216,13 +236,13 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (kind === 'providers') {
         if (!providers.has(id)) issue('PROVIDER_MISSING', `Required Provider does not exist: ${id}`);
         else if (!providers.get(id).enabled) issue('PROVIDER_DISABLED', `Required Provider is disabled: ${id}`, {}, blockers);
-      } else if (!(context[kind] ?? []).includes(id)) issue('REQUIREMENT_UNAVAILABLE', `Required ${kind} entry is unavailable: ${id}`, { requirement: id }, blockers);
+      } else if (context.check_runtime_requirements === true && ['tools', 'mcp_servers'].includes(kind) && !(context[kind] ?? []).includes(id)) issue('REQUIREMENT_UNAVAILABLE', `Required ${kind} entry is unavailable: ${id}`, { requirement: id }, blockers);
     }
   }
   if (workflow.import_status !== undefined) {
     const imported = workflow.import_status;
     if (!object(imported) || !['coarse', 'ai_expanded'].includes(imported.mode) || !Array.isArray(imported.unresolved)) issue('IMPORT_STATUS', 'Imported Workflow needs explicit dependency observations');
-    else if (imported.unresolved.length) issue('IMPORT_UNRESOLVED', 'Imported Workflow has unresolved resource, dependency or credential observations', { unresolved: imported.unresolved }, blockers);
+    else if (imported.unresolved.some(i=>!informationalImportObservation(i))) issue('IMPORT_UNRESOLVED', 'Imported Workflow has unresolved resource, dependency or credential observations', { unresolved: imported.unresolved.filter(i=>!informationalImportObservation(i)) }, blockers);
   }
   if (!workflow.enabled) issue('WORKFLOW_DISABLED', 'Workflow is disabled', {}, blockers);
   if (workflow.status !== 'ready') issue('WORKFLOW_DRAFT', 'Draft Workflow cannot start', {}, blockers);

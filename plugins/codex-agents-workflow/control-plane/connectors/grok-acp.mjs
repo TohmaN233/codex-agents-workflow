@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { pathClientCandidates, CLIENT_MANAGED_MODELS } from './local-client-paths.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { access, mkdir } from 'node:fs/promises';
@@ -173,7 +175,7 @@ export class GrokAcpConnector {
   binaryFor(provider) {
     const envName = provider.config.binary_env || 'GROK_BIN';
     const configured = String(this.env[envName] || '').trim();
-    const binary = configured || defaultGrokBinary();
+    const binary = configured || pathClientCandidates('grok',this.env).find(path=>existsSync(path)) || defaultGrokBinary();
     return isAbsolute(binary) ? resolve(binary) : binary;
   }
 
@@ -192,7 +194,7 @@ export class GrokAcpConnector {
       ready: false,
       observed: {
         transport: 'leader_acp_stdio',
-        binary_present: true,
+        binary_present: true, binary, models:CLIENT_MANAGED_MODELS,
         workspace: workspace ? await validateWorkspace(workspace) : null,
       },
       action_required: 'Start an explicitly approved read-only or bounded-write Stage to establish a live ACP session.',

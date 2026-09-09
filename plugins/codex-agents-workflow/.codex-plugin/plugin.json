@@ -1,6 +1,6 @@
 {
   "name": "codex-agents-workflow",
-  "version": "0.8.0+codex.20260908170509",
+  "version": "0.8.0+codex.20260909150617",
   "description": "Versioned visual Workflows, explicit Skill imports, journal-backed Runs and pinned Provider execution.",
   "author": {
     "name": "TohmaN233",
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Codex Agents Workflow",
     "shortDescription": "Build and run versioned Workflows with pinned Providers and main-agent acceptance.",
-    "longDescription": "Codex Agents Workflow keeps the primary agent responsible for requirements, verification and acceptance. The user owns a versioned Workflow graph with pinned Providers, Skill policies, resources, permissions and main final acceptance. Ready definition validity is separate from launch capability. Imported Skills become Strict Drafts with visible dependencies and human review; source files are never edited. Strict fails closed unless the exact Windows x64 Codex 0.145.0 binary and supported catalog, explicit input and broker boundary qualify. It is not an OS filesystem sandbox. Non-native Providers and Strict default off. Parallel writers use owned Git worktrees with reviewed integration. A durable Run journal fences stale leases and supports exact recovery without automatic resubmission. The legacy v6 and native-only SELECTIVE ROUTE remain compatible: delegate is the default; full combines implementation then review for difficult work. Route is derived from those Stages rather than configured independently. Configuration migration is explicit and backed up.",
+    "longDescription": "Codex Agents Workflow keeps the main agent responsible for requirements, verification and acceptance. You own a versioned Workflow graph with pinned Providers, Skill policies, resources, permissions and final acceptance. Definition validity is separate from task launch capability. Imported Skills become editable Drafts with visible dependencies and human review; source files are never edited. New Workflows use Cooperative execution by default: task output writes stay bounded while permitted tools and inputs can be used across the host. Thread-controlled collaboration lets one main session create, wait for and continue real Codex tasks with exact task identities. Parallel writers use owned Git worktrees with reviewed integration. A durable Run journal fences stale leases and supports exact recovery without automatic resubmission.",
     "developerName": "TohmaN233",
     "category": "Productivity",
     "capabilities": [

@@ -1,3 +1,4 @@
+import { informationalImportObservation } from '../workflow-import-observations.mjs';
 import { posix } from 'node:path';
 import { readDependencyMetadata } from './metadata-reader.mjs';
 
@@ -18,8 +19,15 @@ export function analyzeSkillDependencies(snapshot) {
       unresolved.push({ code: 'BINARY_RESOURCE_REQUIRES_CAPABILITY', path, origin: 'observed' }); continue;
     }
     const text = bytes.toString('utf8');
-    for (const match of text.matchAll(/\b(?:process\.env\.([A-Z_][A-Z0-9_]*)|os\.environ\[["']([A-Z_][A-Z0-9_]*)["']\]|\$\{([A-Z_][A-Z0-9_]*)\})/g)) requirements.environment.push(match[1] ?? match[2] ?? match[3]);
-    if (/\b[A-Za-z]:[\\/]|(?:^|[\s"'(])\/(?:Users|home|usr|opt|etc)\//m.test(text) || text.includes(snapshot.root)) unresolved.push({ code: 'SOURCE_LINKED_PATH', path, origin: 'observed' });
+    // Shell substitutions can be local variables (for example ANSI colors), and
+    // JavaScript template interpolation is not an environment read at all.
+    for (const match of text.matchAll(/\b(?:process\.env\.([A-Z_][A-Z0-9_]*)|os\.environ\[["']([A-Z_][A-Z0-9_]*)["']\])/g)) requirements.environment.push(match[1] ?? match[2]);
+    if (/\.sh$/i.test(path)) {
+      const locals = new Set([...text.matchAll(/(?:^|[;\n])\s*(?:export\s+|local\s+)?([A-Z_][A-Z0-9_]*)\s*=(["'])([^$`\n]*?)\2(?=\s|;|$)/g)].map(m => m[1]));
+      for (const match of text.matchAll(/\$\{([A-Z_][A-Z0-9_]*)\}/g)) if (!locals.has(match[1])) requirements.environment.push(match[1]);
+    }
+    if (/\b[A-Za-z]:[\\/]|(?:^|[\s"'(])\/(?:Users|home)\//m.test(text) || text.includes(snapshot.root)) unresolved.push({ code: 'SOURCE_LINKED_PATH', path, origin: 'observed' });
+    if (/(?:^|[\s"'(])\/(?:usr|opt|etc)\//m.test(text)) unresolved.push({code:'RUNTIME_PATH_REFERENCE',path,origin:'observed'});
     for (const match of text.matchAll(/\[[^\]\n]*\]\(([^)\n]+)\)/g)) {
       const target = match[1].replace(/^<|>$/g, '').split(/\s+["']/)[0];
       const line = text.slice(0, match.index).split('\n').length;
@@ -38,5 +46,5 @@ export function analyzeSkillDependencies(snapshot) {
     }
   }
   for (const kind of Object.keys(requirements)) requirements[kind] = [...new Set(requirements[kind])].sort();
-  return { requirements, references, declarations: declared.declarations, unresolved, classification: unresolved.some(item => item.code === 'SOURCE_LINKED_PATH') ? 'source_linked' : unresolved.length || requirements.executables.length || requirements.environment.length || requirements.mcp_servers.length || requirements.tools.some(tool => tool !== 'read_workflow_resource') ? 'external_requirements' : 'self_contained_candidate' };
+  return { requirements, references, declarations: declared.declarations, observations:unresolved.filter(informationalImportObservation), unresolved:unresolved.filter(i=>!informationalImportObservation(i)), classification: unresolved.some(item => item.code === 'SOURCE_LINKED_PATH') ? 'source_linked' : unresolved.length || requirements.executables.length || requirements.environment.length || requirements.mcp_servers.length || requirements.tools.some(tool => tool !== 'read_workflow_resource') ? 'external_requirements' : 'self_contained_candidate' };
 }

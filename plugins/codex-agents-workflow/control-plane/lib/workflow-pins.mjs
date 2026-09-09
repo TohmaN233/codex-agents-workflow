@@ -85,7 +85,7 @@ export async function resolveWorkflowPins(store, root, { rootResources } = {}) {
     requireValue(stat.isFile() && stat.nlink === 1 && stat.size <= 8 * 1024 * 1024 && digest(await readFile(check.path)) === check.hash, 'SKILL_SOURCE_CHANGED', 'Skill resource changed while preparing the Workflow closure', { path: check.path });
   }
   const orderedSkills = [...skills.values()].sort((a, b) => skillPathKey(a.path).localeCompare(skillPathKey(b.path), 'en'));
-  const providerIds = new Set(packs.flatMap(pack => pack.workflow.nodes.filter(node => node.executor?.kind === 'provider').map(node => node.executor.provider_id)));
+  const providerIds = new Set(packs.flatMap(pack => pack.workflow.nodes.filter(node => ['provider', 'thread'].includes(node.executor?.kind)).map(node => node.executor.provider_id)));
   const resourcePins = [...blobs].map(([sha256, bytes]) => ({ sha256, bytes: bytes.length })).sort((a, b) => a.sha256.localeCompare(b.sha256, 'en'));
   requireValue(Buffer.byteLength(canonicalJSON({ root, children, skills: orderedSkills })) <= 16 * 1024 * 1024, 'RUN_PINS_LIMIT', 'Workflow closure metadata exceeds the Run limit');
   return { children, skills: orderedSkills, resources: resourcePins, blobs, provider_ids: [...providerIds], packs, dependency_observations: dependencyObservations,

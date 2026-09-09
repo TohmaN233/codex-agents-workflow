@@ -13,7 +13,7 @@ export class SkillInventory {
   async list(workspace) {
     const result = await this.discover(workspace);
     requireValue(Array.isArray(result?.skills) && Array.isArray(result.errors) && result.skills.length <= 4096, 'SKILL_DISCOVERY_SCHEMA', 'Host discovery returned an unsupported inventory');
-    const errors = result.errors.map(item => ({ code: item.code ?? 'SKILL_DISCOVERY_ERROR', path: item.path ?? null }));
+    const errors = result.errors.map(item => ({ code: item.code ?? 'SKILL_DISCOVERY_ERROR', path: item.path ?? null, ...(item.message ? {message:item.message} : {}) }));
     const entries = []; const seen = new Set();
     for (const skill of result.skills) {
       try {

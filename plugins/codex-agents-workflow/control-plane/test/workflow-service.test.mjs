@@ -8,6 +8,41 @@ import { WorkflowService } from '../lib/workflow-service.mjs';
 import { ConnectorTaskStore } from '../connectors/task-store.mjs';
 import { DEFAULT_CONFIG_PATH, handleRpc, startConsole, stopConsole } from '../server.mjs';
 import { SkillInventory } from '../lib/skill-import/inventory.mjs';
+import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';
+
+test('explicit host discovery never falls back to folder scanning for inventory or import', async t => {
+  const f = await fixture(t); await f.migrate();
+  f.service.skillInventory = {list:async path=>({adapter:'host',path})};
+  f.service.folderInventory = {list:async path=>({adapter:'folders',path})};
+  for (const operation of ['skill_inventory','import_skill']) {
+    await assert.rejects(f.service.call(operation,{discovery:'host'}),{code:'SKILL_DISCOVERY_WORKSPACE'});
+    await assert.rejects(f.service.call(operation,{discovery:'unknown'}),{code:'SKILL_DISCOVERY_MODE'});
+  }
+  assert.equal((await f.service.call('skill_inventory',{workspace:f.workspace})).adapter,'host');
+  assert.equal((await f.service.call('skill_inventory',{})).adapter,'folders');
+  assert.equal((await f.service.call('skill_inventory',{discovery:'folders',workspace:f.workspace})).adapter,'folders');
+});
+
+test('folder import and prepare/apply preserve routing for Main and Provider coarse drafts', async t => {
+  const f = await fixture(t); await f.migrate();
+  const source = join(f.root,'skill-folder'); await mkdir(source);
+  await writeFile(join(source,'SKILL.md'),'---\nname: routing-test\ndescription: Review results\n---\nReview the result.');
+  const inventory = await f.service.call('skill_inventory',{discovery:'folders',folder:source});
+  assert.equal(inventory.entries.length,1);
+  assert(workflowToolDefinitions().find(t=>t.name==='workflow_prepare_expansion').inputSchema.properties.routing_rules);
+  for (const provider_id of [undefined,'native-luna']) {
+    const pack = await f.service.call('import_skill',{discovery:'folders',folder:source,skill_id:inventory.entries[0].id,workflow_id:provider_id?'provider-import':'main-import',provider_id});
+    const packet = await f.service.call('prepare_expansion',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,provider_id:'native-terra'});
+    assert.equal(packet.routing_rules.routes.review.provider_id,'native-reviewer');
+    const origin = {confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+    const proposal = {source_revision:pack.revision_hash,planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+    const args = {workflow_id:pack.workflow.id,expected_revision:pack.revision_hash,proposal};
+    await assert.rejects(f.service.call('apply_expansion',args),{code:'ROUTING_RULES_REQUIRED'});
+    const applied = await f.service.call('apply_expansion',{...args,routing_rules:packet.routing_rules});
+    assert.equal(applied.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+    assert.equal(applied.import_report.expansion.routing[0].reason,'Independent review');
+  }
+});
 
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'workflow-service-')); const workspace = join(root, 'workspace'); await mkdir(workspace);
@@ -21,6 +56,34 @@ async function fixture(t, options = {}) {
   };
 }
 const control = run => ({ run_id: run.run_id, control_token: run.control_token });
+
+test('task launch grants project writes without manual allowlists and exposes the task directory', async t => {
+  const f=await fixture(t);await f.migrate();
+  const args={workflow_id:'bounded-code-change',launch_mode:'task',main_actor:'human-console',inputs:{task:'Write a result'}};
+  await assert.rejects(f.service.call('start',args),{code:'HUMAN_TASK_LAUNCH'});
+  const run=await f.service.call('start',args,{human:true});
+  const state=await f.service.call('get',control(run));
+  assert.equal(state.permissions.access,'bounded_write');
+  assert.deepEqual(state.permissions.allowed_paths,['.']);
+  assert.equal(state.permissions.workspace,state.constraints.task_workspace);
+  assert.equal(state.constraints.task_workspace,join(f.root,'workflow-workspaces','run-'+run.run_id));
+  const lease=await f.service.call('claim_node',{...control(run),node_id:'implementation',owner:'worker',request_id:'claim-write'});
+  assert.equal(lease.access,'bounded_write');
+  assert(lease.prompt_template.includes(state.constraints.task_workspace));
+  const explicit=await f.service.call('start',{...args,workspace:f.workspace},{human:true});
+  assert.deepEqual((await f.service.call('get',control(explicit))).permissions.allowed_paths,['.']);
+});
+
+test('human launch prepares an isolated workspace without expanding access', async t => {
+  const f=await fixture(t);await f.migrate();
+  const args={workflow_id:'brainstorm',main_actor:'human-console',inputs:{task:'Synthetic task',context:'Fixture only'}};
+  const run=await f.service.call('start',args,{human:true});
+  const state=await f.service.call('get',control(run));
+  assert.equal(state.permissions.workspace,join(f.root,'workflow-workspaces','run-'+run.run_id));
+  assert.equal(state.permissions.access,'read_only');
+  assert.deepEqual(state.permissions.allowed_paths,[]);
+  await assert.rejects(f.service.call('start',{...args,run_id:'../escape'},{human:true}));
+});
 const claim = (f, run, node = 'implementation') => f.service.call('claim_node', { ...control(run), node_id: node, owner: node === 'final-acceptance' ? 'root' : 'worker', request_id: 'claim-' + node });
 const leaseArgs = (run, lease) => ({ ...control(run), node_id: lease.node_id, attempt_id: lease.attempt_id, lease_token: lease.lease_token });
 const completion = output => ({ status: 'succeeded', summary: 'Synthetic verification', structured_output: output, artifacts: [], evidence: [{ check: 'fixture', passed: true }], changed_paths: [], outside_paths: [] });
@@ -103,7 +166,7 @@ test('service imports only a fresh actual inventory selection and prepares expan
   const selected = (await f.service.call('skill_inventory', { workspace: f.workspace })).entries[0];
   const provider = (await f.service.config()).providers.find(item => item.enabled && item.kind === 'native_agent');
   const pack = await f.service.call('import_skill', { workspace: f.workspace, skill_id: selected.id, workflow_id: 'from-skill', provider_id: provider.id });
-  assert.equal(pack.workflow.status, 'draft'); assert.equal(pack.workflow.skill_policy.mode, 'strict');
+  assert.equal(pack.workflow.status, 'draft'); assert.equal(pack.workflow.skill_policy.mode, 'cooperative');
   assert.equal(pack.workflow.nodes.find(node => node.id === 'instructions').executor.provider_id, provider.id);
   const packet = await f.service.call('prepare_expansion', { workflow_id: pack.workflow.id, revision_hash: pack.revision_hash, provider_id: provider.id });
   assert.equal(packet.invoked, false); assert.equal(packet.handoff_required, true); assert.equal(packet.access, 'read_only');

@@ -1,5 +1,17 @@
-import { dirname, join, resolve } from 'node:path';
-import { loadConfig, isEnvironmentDisabled } from './config.mjs';
+import {discoverRuntimeEnvironment} from './runtime-environment.mjs';
+import { WORKFLOW_PRESETS, createWorkflowPreset } from './workflow-presets.mjs';
+import { evaluateReview } from './skill-import/review-checklist.mjs';
+import { cleanupCaches } from './cache-cleanup.mjs';
+import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { prepareTaskInputs, generateTaskBrief } from './task-inputs.mjs';
+import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
+import { readFile } from 'node:fs/promises';
+import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
+import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
+import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
+import { dirname, join, resolve, isAbsolute } from 'node:path';
+import { loadConfig, saveConfig, configRevision, isEnvironmentDisabled } from './config.mjs';
 import { WorkflowStore } from './workflow-store.mjs';
 import { WorkflowRuntime } from './workflow-runtime.mjs';
 import { WorkflowExecutor } from './workflow-executor.mjs';
@@ -7,7 +19,7 @@ import { validateWorkflowGraph } from './workflow-validator.mjs';
 import { migrateV6OnDisk, restoreV6Backup } from './workflow-migration-v6.mjs';
 import { resolveLegacyWorkflowRequest } from './legacy-control-adapter.mjs';
 import { connectorRegistryFor } from '../connectors/registry.mjs';
-import { requireValue, insideRoot, noSymlinks } from './workflow-paths.mjs';
+import { requireValue, insideRoot, noSymlinks, ensureDirectory, workflowId } from './workflow-paths.mjs';
 import { importCoarseSkill, verifyCoarseRelocation } from './skill-import/coarse-compiler.mjs';
 import { expansionPacket, applyExpansion } from './skill-import/semantic-expander.mjs';
 import { buildProviderAdapter } from './providers.mjs';
@@ -29,12 +41,23 @@ import { effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { nodeWorkspace } from './parallel/workspace.mjs';
 import { skillSourceStatus } from './skill-import/source-status.mjs';
 
+function inventorySelection(service, args) {
+  requireValue(args.discovery === undefined || ['folders','host'].includes(args.discovery), 'SKILL_DISCOVERY_MODE', 'Discovery mode must be folders or host');
+  const mode = args.discovery ?? (args.workspace ? 'host' : 'folders');
+  if (mode === 'host') {
+    requireValue(typeof args.workspace === 'string' && isAbsolute(args.workspace), 'SKILL_DISCOVERY_WORKSPACE', 'Host discovery requires an absolute workspace');
+    return {inventory:service.skillInventory, path:args.workspace};
+  }
+  return {inventory:service.folderInventory,path:args.folder};
+}
+
 export class WorkflowService {
   constructor({ configPath, defaultConfigPath, env = process.env, fetchImpl = globalThis.fetch, registry, capabilities = {} }) {
     this.configPath = resolve(configPath); this.defaultConfigPath = defaultConfigPath; this.env = env; this.fetchImpl = fetchImpl;
     this.registry = registry ?? connectorRegistryFor({ configPath: this.configPath, env }); this.capabilities = capabilities;
     this.strictManager = capabilities.strictManager ?? strictManagerFor({ configPath: this.configPath, getConfig: () => this.config(), env });
     this.parallelManager = capabilities.parallelManager ?? parallelManagerFor({ configPath: this.configPath, env });
+    this.folderInventory = new SkillInventory(folder => discoverFolderSkills(folder, {env}));
     this.skillInventory = capabilities.skillInventory ?? new SkillInventory(async workspace => discoverCodexSkills(workspace, { config: await this.config(), env }));
   }
   async config() { return loadConfig({ configPath: this.configPath, defaultConfigPath: this.defaultConfigPath }); }
@@ -63,7 +86,7 @@ export class WorkflowService {
     await noSymlinks(storeRoot); // A missing migrated generation is corruption, not an empty new library.
     const store = await new WorkflowStore(storeRoot, { validationContext: context }).initialize();
     const runtime = await new WorkflowRuntime({ workflowStore: store, runRoot: join(dirname(this.configPath), 'workflow-runs'), context,
-      parallelManager: this.parallelManager,
+      parallelManager: this.parallelManager, environmentResolver:(requirements,options)=>discoverRuntimeEnvironment(requirements,{...options,env:this.env}),
       strictCapability: this.capabilities.strictCapability ?? (async (pack, closure) => { await this.strictManager.capability(pack, config.providers, closure?.skills); return true; }),
       ...(this.capabilities.parallelWriteCapability ? { parallelWriteCapability: this.capabilities.parallelWriteCapability } : {}),
     }).initialize();
@@ -76,6 +99,73 @@ export class WorkflowService {
     const { config, context, store, runtime, executor } = await this.open();
     if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
+      case 'presets': return structuredClone(WORKFLOW_PRESETS);
+      case 'install_preset': {
+        requireValue(human,'HUMAN_PRESET_INSTALL','Add presets from the authenticated console');
+        requireValue(WORKFLOW_PRESETS.some(p=>p.id===args.preset_id),'WORKFLOW_PRESET_MISSING','Unknown Workflow preset');
+        const existing=(await store.list()).find(p=>p.workflow.id==='builtin-'+args.preset_id);
+        if(existing) return existing; // Reopening a preset never overwrites user edits.
+        const rules=await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const workflow=createWorkflowPreset(args.preset_id,config.providers,rules);
+        return store.create(workflow,{provenance:{kind:'bundled_preset',preset_id:args.preset_id}});
+      }
+      case 'generate_task_brief': {
+        requireValue(human,'HUMAN_TASK_BRIEF','Task description generation belongs to the human console');
+        const pack=args.workflow_id?await store.snapshot(args.workflow_id,args.revision_hash):null;
+        const workflow=args.workflow ?? pack?.workflow;
+        requireValue(workflow && typeof workflow.name==='string','TASK_BRIEF_WORKFLOW','Select a Workflow first');
+        requireValue(typeof (args.existing ?? '')==='string','TASK_BRIEF_INPUT','Existing task description must be text');
+        const resources=pack?await store.resources(pack.workflow.id,pack.revision_hash):{};
+        return generateTaskBrief({workflow,source:resources['source/SKILL.md']?.toString('utf8') ?? '',existing:args.existing ?? '',config,directory:dirname(this.configPath),env:this.env});
+      }
+      case 'cache_cleanup_preview':
+      case 'cleanup_caches': {
+        requireValue(human,'HUMAN_CACHE_CLEANUP','Cache cleanup belongs to the human console');
+        return cleanupCaches({store,runs:runtime.runs,home:this.env.CODEX_HOME || join(homedir(),'.codex'),auditRoot:dirname(this.configPath),env:this.env,preview:operation==='cache_cleanup_preview'});
+      }
+      case 'generation_prompt_preview': {
+        requireValue(human,'HUMAN_GENERATION','Prompt preview belongs to the console');
+        const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const provider=config.providers.find(p=>p.id===(args.provider_id || rules.generation?.planner_provider_id || rules.routes.planning.provider_id));
+        const reviewerId=rules.generation?.review_provider_id ?? 'native-generation-reviewer';
+        const reviewer=config.providers.find(p=>p.id===reviewerId) ?? (reviewerId==='native-generation-reviewer'?JSON.parse(await readFile(this.defaultConfigPath,'utf8')).providers.find(p=>p.id===reviewerId):null);
+        const pack=await store.snapshot(args.workflow_id,args.revision_hash);
+        const job=expansionRunPack(pack,await store.resources(args.workflow_id,pack.revision_hash),provider,'generation-preview',rules,true,reviewer,config.providers);
+        return {invoked:false,source_revision:pack.revision_hash,generator:job.workflow.nodes.find(n=>n.id==='expand').prompt_template,reviewer:job.workflow.nodes.find(n=>n.id==='final').prompt_template,shared_request:job.resources['analysis/request.txt'],output_schemas:Object.fromEntries(job.workflow.nodes.filter(n=>n.outputs_schema).map(n=>[n.id,n.outputs_schema])),runtime_context:'Execution additionally supplies actual upstream results, output schema and any previous repair feedback. This preview does not invoke a model.'};
+      }
+      case 'start_generation': {
+        requireValue(human,'HUMAN_GENERATION','Start automatic generation from the console');
+        requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
+        const rules = args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const reviewerId=rules.generation?.review_provider_id ?? 'native-generation-reviewer';
+        if(reviewerId==='native-generation-reviewer' && !config.providers.some(p=>p.id===reviewerId)) {
+          const bundled=JSON.parse(await readFile(this.defaultConfigPath,'utf8')).providers.find(p=>p.id===reviewerId);
+          requireValue(bundled,'GENERATION_REVIEW_PROVIDER','Bundled generation reviewer is missing');
+          await saveConfig({...config,providers:[...config.providers,bundled]},{configPath:this.configPath,expectedRevision:configRevision(config)});
+        }
+        const runId = workflowId(args.run_id);
+        const workspace = args.workspace || await ensureDirectory(join(dirname(this.configPath),'skill-generation-workspaces','job-'+runId));
+        return this.call('create_expansion_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.generation?.planner_provider_id || rules.routes.planning.provider_id,routing_rules:rules,automatic_generation:true,main_actor:'human-console'});
+      }
+      case 'advance_generation': {
+        requireValue(human,'HUMAN_GENERATION','Automatic generation belongs to its console controller');
+        requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
+        return advanceGeneration(this,runtime,executor,args,{store,context});
+      }
+      case 'login_generation': {
+        requireValue(human,'HUMAN_AUTHENTICATION_REQUIRED','Generation login belongs to the authenticated human console');
+        return loginGeneration(this,runtime,args);
+      }
+      case 'accept_generation': {
+        requireValue(human,'HUMAN_GENERATION','Generation acceptance belongs to the human console');
+        return acceptGeneration(this,runtime,args);
+      }
+      case 'local_clients': {
+        requireValue(human,'HUMAN_CLIENT_DISCOVERY','Local client discovery belongs to the console');
+        const codex=await localCodexCatalog({env:this.env,extra:[config.strict_executor.codex_binary].filter(Boolean)});
+        const connectors=await Promise.all(config.providers.filter(p=>p.kind==='builtin_connector').map(async provider=>{try{return {provider_id:provider.id,...await this.registry.probe(provider,{}),models:{source:'client_managed',available:null,message:'模型由客户端管理；当前接口未提供完整模型目录。'}};}catch(error){return {provider_id:provider.id,error:{code:error.code,message:error.message}};}}));
+        return {codex,connectors,execution_runtime:{binary:config.strict_executor.codex_binary,qualification:QUALIFIED_CODEX}};
+      }
       case 'capabilities': {
         let strict;
         try { await qualifiedStrictSettings(config, this.env); strict = { available: true }; }
@@ -83,11 +173,18 @@ export class WorkflowService {
         return { strict: { ...strict, qualification: QUALIFIED_CODEX, authentication: config.strict_executor.authentication.mode },
           tools: context.tools, mcp_servers: context.mcp_servers ?? [], executables: context.executables ?? [], parallel_write: 'qualified Strict broker with Git worktrees', boundary: 'application catalog, explicit Skill input and broker; not an OS ACL' };
       }
+      case 'routing_defaults': return loadRoutingSettings(dirname(this.configPath),config.providers);
+      case 'save_routing_rules': {
+        requireValue(human, 'HUMAN_CONFIGURATION_REQUIRED', 'Shared routing rules are edited in the human console');
+        return saveRoutingSettings(dirname(this.configPath),config.providers,store,args.routing_rules,args.expected_rules);
+      }
       case 'skill_inventory': {
-        return this.skillInventory.list(args.workspace);
+        const selection = inventorySelection(this,args);
+        return selection.inventory.list(selection.path);
       }
       case 'import_skill': {
-        const selected = await this.skillInventory.select(args.workspace, args.skill_id);
+        const selection = inventorySelection(this,args);
+        const selected = await selection.inventory.select(selection.path, args.skill_id);
         const provider = config.providers.find(provider => provider.id === args.provider_id);
         if (args.provider_id) requireValue(provider, 'PROVIDER_MISSING', 'Selected instruction Provider does not exist');
         return importCoarseSkill(store, selected.path, { id: args.workflow_id, name: args.name, providerId: args.provider_id, role: provider?.config?.role ?? 'advisor', expectedSourceHash: selected.source_hash });
@@ -106,7 +203,7 @@ export class WorkflowService {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
-        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider);
+        const packet = expansionPacket(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers), config.providers);
         const adapter = buildProviderAdapter(provider, { access: 'read_only' }, { env: this.env, allowDirectApi: config.global.allow_direct_api });
         // A packet is not an invocation. Native/MCP/Strict host integration must
         // preserve this selected Provider and record actual dispatch separately.
@@ -116,11 +213,12 @@ export class WorkflowService {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
-        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id);
+        const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
+        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer')),config.providers);
         await this.strictManager.capability({ ...job, resources: prepareResources(job.resources).manifest }, config.providers);
         const jobs = await new WorkflowStore(join(dirname(this.configPath), 'workflow-expansion-jobs'), { validationContext: context }).initialize();
         const saved = await jobs.create(job.workflow, job);
-        const planning = await new WorkflowRuntime({ workflowStore: jobs, runRoot: runtime.runs.root, context, strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
+        const planning = await new WorkflowRuntime({ generationPolicy:args.automatic_generation === true ? {settings:job.provenance.generation,reviewer:config.providers.find(p=>p.id===job.provenance.generation.review_provider_id)} : null, workflowStore: jobs, runRoot: runtime.runs.root, context, strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
         return planning.start({ workflow_id: saved.workflow.id, revision_hash: saved.revision_hash, run_id: args.run_id,
           workspace: args.workspace, main_actor: args.main_actor, access: 'read_only', inputs: { task: 'Analyze this pinned Skill into an editable Draft' } });
       }
@@ -130,11 +228,21 @@ export class WorkflowService {
         const { pins } = await runtime.runs.read(args.run_id); const provenance = pins.root.provenance;
         requireValue(provenance?.kind === 'skill_expansion_job' && provenance.source_workflow_id === args.workflow_id && provenance.source_revision === args.expected_revision,
           'EXPANSION_RESULT_IDENTITY', 'Expansion result belongs to a different source Workflow revision');
-        return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context });
+        if(provenance.review_contract_version===2){
+          const final=state.nodes.final;const attempt=final.attempts.find(a=>a.id===final.active_attempt_id);
+          requireValue(attempt?.result_proposal,'GENERATION_REVIEW_BLOCKED','A persisted checklist review is required');
+          const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);
+          const review=evaluateReview(completion.structured_output,state.nodes.expand.output,await store.resources(args.workflow_id,args.expected_revision));
+          requireValue(review.approved,'GENERATION_REVIEW_BLOCKED','Checklist findings remain unresolved');
+        }
+        return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null });
       }
-      case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context });
+      case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: args.routing_rules } });
       case 'list': return Promise.all((await store.list()).map(async pack => ({ id: pack.workflow.id, name: pack.workflow.name, status: pack.workflow.status, enabled: pack.workflow.enabled, revision_hash: pack.revision_hash, description: pack.workflow.description, skill_policy: pack.workflow.skill_policy, validation: (await this.validationContext(store, pack.workflow, context)).validation })));
-      case 'read': return store.snapshot(args.workflow_id, args.revision_hash);
+      case 'read': {
+        const pack = await store.snapshot(args.workflow_id, args.revision_hash);
+        return { ...pack, validation: (await this.validationContext(store, pack.workflow, context)).validation };
+      }
       case 'source_status': return skillSourceStatus(await store.snapshot(args.workflow_id, args.revision_hash));
       case 'revisions': return store.revisions(args.workflow_id);
       case 'read_resource': return readEditorResource(store, args);
@@ -169,8 +277,34 @@ export class WorkflowService {
         const pack = await store.snapshot(args.workflow_id, args.revision_hash); const resources = await store.resources(args.workflow_id, pack.revision_hash);
         return { format: 'codex-agents-workflow-pack-v1', ...pack, resource_data: Object.fromEntries(Object.entries(resources).map(([path, bytes]) => [path, Buffer.from(bytes).toString('base64')])) };
       }
+      case 'prepare_environment': {
+        const pack=await store.snapshot(args.workflow_id,args.revision_hash);
+        const closure=await resolveWorkflowPins(store,pack);
+        return discoverRuntimeEnvironment({executables:[...closure.packs.flatMap(item=>item.workflow.requirements.executables??[]), ...closure.skills.flatMap(skill=>skill.requirements.executables??[])]},{env:this.env,extraDirectories:args.environment_directories??[]});
+      }
       case 'start': {
         const request = resolveLegacyWorkflowRequest(config, args);
+        if (request.launch_mode === 'task') {
+          requireValue(human,'HUMAN_TASK_LAUNCH','Task launch defaults belong to the human console');
+          const pack=await store.snapshot(request.workflow_id,request.revision_hash);
+          const resources=await store.resources(request.workflow_id,pack.revision_hash);
+          request.inputs=await prepareTaskInputs({inputs:request.inputs ?? {},schema:pack.workflow.inputs_schema,source:resources['source/SKILL.md']?.toString('utf8') ?? pack.workflow.description,config,directory:dirname(this.configPath),env:this.env});
+          request.revision_hash=pack.revision_hash;
+          request.run_id = workflowId(request.run_id ?? randomUUID());
+          const project = request.workspace || await ensureDirectory(join(dirname(this.configPath),'workflow-workspaces','run-'+request.run_id));
+          requireValue(isAbsolute(project) && dirname(resolve(project)) !== resolve(project),'RUN_WORKSPACE','Task project must be an absolute folder, not a drive root');
+          await noSymlinks(project);
+          request.workspace = resolve(project);
+          request.access = 'bounded_write';
+          request.allowed_paths = ['.'];
+          request.constraints = {...request.constraints,task_workspace:resolve(project)};
+          delete request.launch_mode;
+        }
+        if (human && !request.workspace) {
+          request.run_id = workflowId(request.run_id ?? randomUUID());
+          request.workspace = await ensureDirectory(join(dirname(this.configPath),'workflow-workspaces','run-'+request.run_id));
+          request.access ??= 'read_only';
+        }
         return runtime.start(request);
       }
       case 'runs': return runtime.runs.list();

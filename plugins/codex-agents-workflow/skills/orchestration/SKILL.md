@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: "Codex-native risk-gated selective routing: default delegation for ordinary work, explicit audit, and full implementation plus review for difficult work."
+description: "Coordinate native subagents when the user requests delegation or a task benefits from implementation and independent review, and no suitable registered Workflow applies. Use workflow-control-plane first for existing Workflows."
 ---
 
 # Codex Agents Workflow Orchestration

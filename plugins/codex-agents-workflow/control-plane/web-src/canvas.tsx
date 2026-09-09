@@ -21,7 +21,7 @@ function WorkflowNode({ data, selected }: NodeProps) {
   return <div className={'flow-node ' + (selected ? 'selected' : '')} title={node.id}>
     {node.type !== 'start' && <Handle type="target" position={Position.Left}/>}
     <span className="node-kind">{node.type}</span><strong>{node.name || node.id}</strong>
-    <span className="node-binding">{node.executor?.provider_id ?? node.executor?.kind ?? node.id}</span>
+    <span className="node-binding">{node.executor?.kind === 'thread' ? `Codex task · ${node.executor.provider_id}` : node.executor?.provider_id ?? node.executor?.kind ?? node.id}</span>
     {data.status != null && <Status value={String(data.status)}/>}
     {node.type !== 'end' && <Handle type="source" position={Position.Right}/>}
   </div>;

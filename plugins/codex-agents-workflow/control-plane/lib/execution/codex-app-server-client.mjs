@@ -2,8 +2,8 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 // Version-qualified stdio client. Error bodies/auth events are never logged.
-export function createCodexClient(binary, { home, cwd, overrides = [], env = process.env, onToolCall, onAuthRefresh, credentialOnly = false, onEvent = () => {}, spawnImpl = spawn }) {
-  const methods = new Set(credentialOnly ? ['initialize', 'getAuthStatus', 'account/read'] : ['initialize', 'skills/list', 'skills/config/write', 'model/list', 'thread/start', 'turn/start', 'turn/interrupt', 'account/read', 'account/login/start', 'account/login/cancel']);
+export function createCodexClient(binary, { home, cwd, overrides = [], env = process.env, onToolCall, onAuthRefresh, credentialOnly = false, catalogOnly = false, onEvent = () => {}, spawnImpl = spawn }) {
+  const methods = new Set(catalogOnly ? ['initialize','account/read','model/list'] : credentialOnly ? ['initialize', 'getAuthStatus', 'account/read'] : ['initialize', 'skills/list', 'skills/config/write', 'model/list', 'thread/start', 'turn/start', 'turn/interrupt', 'account/read', 'account/login/start', 'account/login/cancel']);
   const child = spawnImpl(binary, ['app-server', '--stdio', ...overrides.flatMap(value => ['-c', value])], {
     cwd, env: { ...env, CODEX_HOME: home }, windowsHide: true, shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],

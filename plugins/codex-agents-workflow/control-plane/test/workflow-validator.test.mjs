@@ -85,6 +85,21 @@ test('disabled Provider is structurally valid but launch blocked; binding and ca
   provider.capabilities.write = true; provider.config.role = 'reviewer'; invalid(workflow, 'PROVIDER_ROLE', context);
 });
 
+test('Codex task-thread nodes pin a native Provider and continuation can only reuse an upstream task', () => {
+  const workflow = withWork(); const worker = workflow.nodes.find(node => node.id === 'work');
+  const continuation = agent('continue'); workflow.nodes.splice(workflow.nodes.findIndex(node => node.id === 'final'), 0, continuation);
+  workflow.edges = [edge('start', 'work'), edge('work', 'continue'), edge('continue', 'final'), edge('final', 'end')];
+  workflow.skill_policy = { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] };
+  worker.executor = { kind: 'thread', provider_id: 'p', lifecycle: 'start' };
+  continuation.executor = { kind: 'thread', provider_id: 'p', lifecycle: 'continue', source_node: 'work' };
+  const context = { providers: [{ id: 'p', kind: 'native_agent', enabled: true, capabilities: { read: true, write: true }, config: { role: 'implementer' } }, { id: 'other', kind: 'native_agent', enabled: true, capabilities: { read: true, write: true }, config: { role: 'implementer' } }] };
+  valid(workflow, context);
+  continuation.executor = { kind: 'thread', provider_id: 'other', lifecycle: 'continue', source_node: 'work' }; invalid(workflow, 'THREAD_PROVIDER_CONTINUITY', context);
+  continuation.executor = { kind: 'thread', provider_id: 'p', lifecycle: 'continue', source_node: 'final' }; invalid(workflow, 'THREAD_SOURCE', context);
+  continuation.executor = { kind: 'thread', provider_id: 'p', lifecycle: 'continue', source_node: 'work' }; workflow.skill_policy.mode = 'strict'; workflow.skill_policy.implicit = 'deny'; invalid(workflow, 'THREAD_STRICT_UNSUPPORTED', context);
+  workflow.skill_policy.mode = 'cooperative'; workflow.skill_policy.implicit = 'allow'; context.providers[0].kind = 'openai_compatible'; invalid(workflow, 'THREAD_PROVIDER_UNSUPPORTED', context);
+});
+
 test('Skill references detect missing and stale sources', () => {
   const workflow = withWork(); const worker = workflow.nodes.find(n => n.id === 'work');
   workflow.skill_policy.mode = 'strict'; workflow.skill_policy.implicit = 'deny';

@@ -47,7 +47,7 @@ export function redactKnownCredentials(text, { sourcePath = '' } = {}) {
   }).join('');
   return { text: sanitized, findings };
 }
-const credentialFile = path => /(?:^|\/)(?:\.env(?:\..*)?|auth\.json|credentials(?:\.json)?|cookies?(?:\.json|\.txt)?|id_rsa|id_ed25519|[^/]+\.(?:key|p12|pfx|pem))$/i.test(path);
+const credentialFile = path => !/(?:^|\/)\.env\.(?:example|template)$/i.test(path) && /(?:^|\/)(?:\.env(?:\..*)?|auth\.json|credentials(?:\.json)?|cookies?(?:\.json|\.txt)?|id_rsa|id_ed25519|[^/]+\.(?:key|p12|pfx|pem))$/i.test(path);
 const binaryText = bytes => { try { const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); return text.includes('\0') ? null : text; } catch { return null; } };
 
 export async function readSkillSnapshot(sourcePath, { expectedSourceHash } = {}) {

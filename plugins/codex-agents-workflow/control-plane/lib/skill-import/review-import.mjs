@@ -1,3 +1,4 @@
+import { informationalImportObservation } from '../workflow-import-observations.mjs';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 
@@ -8,9 +9,9 @@ export function importIssueId(issue) {
 export function importReviewPacket(pack) {
   requireValue(pack.workflow.import_status, 'IMPORT_KIND', 'This Workflow was not imported from a Skill');
   return { revision_hash: pack.revision_hash,
-    issues: pack.workflow.import_status.unresolved.map(issue => ({ ...issue, id: importIssueId(issue) })),
+    issues: pack.workflow.import_status.unresolved.filter(i=>!informationalImportObservation(i)).map(issue => ({ ...issue, id: importIssueId(issue) })),
     inferences: ['nodes', 'edges'].flatMap(kind => pack.workflow[kind].filter(item => item.origin?.kind === 'inferred').map(item => ({ kind, id: item.id, origin: item.origin }))),
-    requirements: pack.workflow.requirements, review_history: pack.import_report?.review_history ?? [] };
+    observations:[...(pack.import_report?.observations ?? []),...pack.workflow.import_status.unresolved.filter(informationalImportObservation)], requirements: pack.workflow.requirements, review_history: pack.import_report?.review_history ?? [] };
 }
 
 export async function reviewImportedDraft(store, workflowId, { expected_revision, decisions = [], inferences = [] }) {
