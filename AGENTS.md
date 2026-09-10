@@ -92,7 +92,7 @@ The v0.8.0 candidate is `plugins/codex-agents-workflow`; its control-plane packa
 0.5.0. Configuration v7 is activated through explicit transactional migration.
 `default-config.json` remains the v6 migration seed and compatibility fixture;
 installation and tests must not migrate real user configuration automatically.
-The current language is in CONTEXT.md and runtime contracts. Do not describe pending CI or release steps as complete.
+Use the shipped Skill references for runtime terminology. Do not describe pending CI or release steps as complete.
 
 The shipped control-plane Skill references and runtime modules define the maintained architecture.
 Use separate branches for large changes. Fix root causes, surface failures and
@@ -183,6 +183,9 @@ store contention, and real manager-created worktrees for relocation checks.
 The core suite serializes test files because each file can own multiple subprocesses;
 contention tests still create concurrent OS processes explicitly. Packaged MCP tests
 use an isolated registry fixture and never depend on a developer's Codex installation.
+Bootstrap must canonicalize the selected server entry before assigning argv and
+importing it; symlinked installation homes and macOS temporary-directory aliases
+must still execute the server's main entrypoint. Keep an actual alias-home handshake test.
 RunPanel refresh publishes state/next/events/live as one generation-fenced snapshot;
 Run sequence cannot regress and disposed Run callbacks cannot restart refreshes.
 The stdio drain process test uses an OS SIGTERM on POSIX. On Windows it injects

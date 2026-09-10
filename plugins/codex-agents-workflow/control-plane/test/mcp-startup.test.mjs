@@ -1,16 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {cp,mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
+import {cp,mkdtemp,mkdir,readFile,rm,writeFile,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {resolve,dirname,join,toNamespacedPath} from 'node:path';
 import {probe} from '../../scripts/check-mcp-startup.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 
-async function fixture(t) {
+async function fixture(t,{aliasHome=false}={}) {
  const rootDir=await mkdtemp(join(tmpdir(),'workflow-mcp-startup-'));
  t.after(()=>rm(rootDir,{recursive:true,force:true}));
- const home=join(rootDir,'home');
+ let home=join(rootDir,'home');
  const version=JSON.parse(await readFile(join(root,'.codex-plugin','plugin.json'),'utf8')).version;
  const cached=join(home,'plugins','cache','codex-agents-workflow','codex-agents-workflow',version);
  const excluded=new Set(['node_modules','test','web-src','workflow-runs']);
@@ -18,6 +18,7 @@ async function fixture(t) {
  await cp(join(root,'.codex-plugin','plugin.json'),join(cached,'.codex-plugin','plugin.json'));
  await cp(join(root,'agents'),join(cached,'agents'),{recursive:true});
  await cp(join(root,'control-plane'),join(cached,'control-plane'),{recursive:true,filter:source=>!source.split(/[\\/]/).some(part=>excluded.has(part))});
+ if(aliasHome){const alias=join(rootDir,'home-alias');await symlink(home,alias,process.platform==='win32'?'junction':'dir');home=alias;}
  const cwd=join(rootDir,'cwd');
  await mkdir(cwd,{recursive:true});
  // Preload the fake CLI before Node resolves its relative "plugin" entry point:
@@ -30,4 +31,9 @@ async function fixture(t) {
 test('packaged MCP initializes and exposes execution tools from ordinary and Windows extended paths',async t=>{
  const fx=await fixture(t);
  for(const cwd of [...new Set([fx.cwd,toNamespacedPath(fx.cwd)])])assert.equal((await probe(root,{cwd,env:fx.env})).status,'ready');
+});
+
+test('packaged MCP starts through a symlinked installation home',async t=>{
+ const fx=await fixture(t,{aliasHome:true});
+ assert.equal((await probe(root,{cwd:fx.cwd,env:fx.env})).status,'ready');
 });

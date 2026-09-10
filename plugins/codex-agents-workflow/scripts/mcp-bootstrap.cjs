@@ -23,8 +23,10 @@ async function boot() {
     const selected=registeredRoot(JSON.parse(stdout),home);
     const manifest=JSON.parse(await fs.readFile(path.join(selected.root,'.codex-plugin/plugin.json'),'utf8'));
     if(manifest.name!=='codex-agents-workflow'||manifest.version!==selected.version)throw Error('WORKFLOW_PLUGIN_IDENTITY: registered version does not match installed files');
-    const entry=path.join(selected.root,'control-plane/server.mjs');
-    await fs.access(entry);await audit({phase:'resolved',version:selected.version,entry});
+    // Node resolves imported modules through filesystem aliases. Use that same
+    // physical entry for argv so server.mjs recognizes itself as the main module.
+    const entry=await fs.realpath(path.join(selected.root,'control-plane/server.mjs'));
+    await audit({phase:'resolved',version:selected.version,entry});
     process.chdir(selected.root);process.argv[1]=entry;
     await import(pathToFileURL(entry).href);
   } catch(error) {
