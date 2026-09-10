@@ -7,6 +7,7 @@ import { validateDataSchema, validateData } from './workflow-data-schema.mjs';
 import { validateSkillReference, effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { skillPathKey } from './execution/codex-skill-policy.mjs';
 import { assertThreadExecutor } from './thread-handoff.mjs';
+import { threadLineage } from './thread-protocol.mjs';
 
 const EXECUTED = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
 const SHA = /^[a-f0-9]{64}$/;
@@ -114,7 +115,7 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
           const source = nodes.get(executor.source_node);
           if (!source || source.executor?.kind !== 'thread') issue('THREAD_SOURCE', 'Continuation requires a source node that started a Codex task thread', location);
           else {
-            if (!visit(source.id).has(node.id)) issue('THREAD_SOURCE_ORDER', 'Continuation source must be upstream of its target node', location);
+            if (source.id === node.id || !visit(source.id).has(node.id)) issue('THREAD_SOURCE_ORDER', 'Continuation source must be strictly upstream of its target node', location);
             if (source.executor.provider_id !== executor.provider_id) issue('THREAD_PROVIDER_CONTINUITY', 'Continuation must retain the exact source task Provider and model configuration', location);
           }
         }
@@ -199,6 +200,10 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     const branches = out.get(parallel.id);
     if (branches.length < 2 || branches.some(edge => !edge.label || edge.target === join.id || (edge.on ?? 'success') !== 'success') || new Set(branches.map(edge => edge.label)).size !== branches.length) issue('PARALLEL_BRANCHES', 'Parallel needs at least two distinct labeled branches', location);
     const sets = branches.map(edge => visit(edge.target, out, join.id));
+    const lineages = sets.map(set => new Set([...set].map(id => threadLineage(nodes, id)).filter(Boolean)));
+    for (let index = 0; index < lineages.length; index++) for (const lineage of lineages[index]) {
+      if (lineages.slice(index + 1).some(set => set.has(lineage))) issue('THREAD_CONCURRENT_CONTINUATION', 'Parallel branches cannot send prompts to the same task lineage; serialize its continuations', { ...location, source_node: lineage });
+    }
     const all = new Set(sets.flatMap(set => [...set]));
     for (let index = 0; index < sets.length; index++) for (const id of sets[index]) {
       if (!visit(id).has(join.id) || visit(id, out, join.id).size && [...visit(id, out, join.id)].some(next => nodes.get(next).type === 'end')) issue('JOIN_BYPASS', 'Every parallel branch path must pass through its Join', { node_id: id });

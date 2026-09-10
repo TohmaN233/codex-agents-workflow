@@ -14,10 +14,20 @@ complex-implementation route. The Join releases the bounded-write continuation o
 after both branches succeed. Adding a preset binds registered routes and never
 overwrites an existing user definition.
 Updates and tool discovery do not reinstall deleted presets.
-The built-in English examples demonstrate the intended distinction: Mathematical
-Research Hybrid uses parallel one-off Provider workers for independent surveys and
-route probes, then starts one persistent task only after a human confirms the
-shared-state route; Thread startup smoke test isolates the create/collect handoff.
+The library homepage lists saved Workflows directly. Do not add a separate built-in
+preset gallery or promote smoke-test fixtures above that list. Preset constructors
+remain available to existing backend callers and tests; saved user Workflows remain
+independent library entries.
+The production Mathematical Research Hybrid example uses parallel one-off Provider
+workers for independent surveys and route probes, then starts one persistent task
+only after a human confirms the shared-state route. Thread startup smoke coverage
+belongs only in test fixtures, not the production preset catalog. Do not distribute
+the user's imported video-use Skill or Workflow Pack; tutorial screenshots may
+illustrate that separately supplied workflow without bundling its executable content.
+README and the Chinese/English tutorials describe the workbench as the successor
+to sol-subagent-control. Keep model setup, manual launch, Skill conversion and task
+continuation examples synchronized with actual controls. Do not claim a preview is
+final delivery or promise a fixed reduction in token use.
 
 Thread-controlled collaboration is distinct from an internal subagent handoff. A
 `thread` executor creates or continues a user-visible Codex task through the main
@@ -71,7 +81,7 @@ The public MCP service, configuration path, Provider IDs and native role templat
 `sol-advisor` directory and moves it as a whole when no owned path-sensitive Git
 worktrees are present; otherwise it refuses with an actionable diagnostic instead of
 stranding those worktrees. It does not copy or retain a second active store. See
-docs/PLUGIN_RENAME.md. Historical qualification records retain their original paths.
+the migration implementation. Historical qualification fixtures retain their original paths.
 Strict session UI derives terminal state from the current attempt's journal, fences
 cached snapshots by attempt ID, and preserves active-session error diagnostics.
 Skill credential scanning must distinguish literal values from code expressions,
@@ -82,12 +92,9 @@ The v0.8.0 candidate is `plugins/codex-agents-workflow`; its control-plane packa
 0.5.0. Configuration v7 is activated through explicit transactional migration.
 `default-config.json` remains the v6 migration seed and compatibility fixture;
 installation and tests must not migrate real user configuration automatically.
-The current language is in CONTEXT.md and docs/V7_UPGRADE.md. Release evidence is
-docs/V7_RELEASE_EVIDENCE.md; do not describe pending CI or release steps as complete.
+The current language is in CONTEXT.md and runtime contracts. Do not describe pending CI or release steps as complete.
 
-The user's v7 plan and five amendments were accepted on2026-09-04. ADR0002–0007
-and docs/V7_VISUAL_WORKFLOW_EXECUTION_PLAN.md are authoritative architecture.
-The submitted proposal is preserved under docs/proposals as design material.
+Current runtime contracts and ADR0002–0007 define the maintained architecture.
 Use separate branches for large changes. Fix root causes, surface failures and
 keep meaningful journal/audit diagnostics. Never suppress audit durability errors.
 
@@ -137,11 +144,21 @@ Cursor runtime scope violations persist evidence before Stop and share manual
 cancel's exact-identity confirmation. A Stop click alone is not terminal evidence;
 identity loss keeps the task unconfirmed and blocks acceptance.
 
+The model-settings console and Workflow editor share web/i18n.js for Chinese and
+English presentation. Persist only the locale under codex-agents-workflow.locale
+in browser localStorage, with browser-language initialization and same-origin tab
+updates. Translate explicit UI copy at render time; never translate stored names,
+prompts, resource contents, API enum values or model IDs. Language changes must not
+reload/remount the editor, save configuration, or discard unsaved form state.
+Use complete t(Chinese, English) pairs, including accessible labels and dialogs.
+
 The React/TypeScript/React Flow editor is in web-src; committed web/workflows.*
 assets are built with pinned esbuild and include all bundled licenses. No runtime
 npm is required. Canvas/transient layout is never a second IR authority. Draft
-errors remain visible and repairable. Browser tokens remain in memory; reconnecting
-requires explicit human tree adoption. Live output is a bounded unverified suffix;
+errors remain visible and repairable. Browser tokens remain in memory; lost control requires explicit user-authorized tree
+recovery through the main host or authenticated console adoption. Conversational
+recovery records host-attested user authorization and observed-sequence CAS; it
+never grants approvals, completes nodes, changes pins or persists plaintext tokens. Live output is a bounded unverified suffix;
 durable artifacts and main acceptance determine completion.
 Rendered diagnostic details hide control_token and lease_token recursively.
 Redaction must never mutate the in-memory controller, execution payload or editable IR.
@@ -159,8 +176,8 @@ npm run check:web
 
 Also run both repository verify scripts and the Windows/Linux/macOS core/console
 CI matrix. Real Codex probes are opt-in bounded tests outside the runtime package;
-never use real credentials without existing authorization. Consult V7_WORK_LOG for
-observed failures/fixes and distinguish actual platform evidence from emulation.
+never use real credentials without existing authorization. Distinguish actual
+platform evidence from emulation.
 
 Review regression evidence must use actual independent OS processes for connector
 store contention, and real manager-created worktrees for relocation checks.
@@ -269,11 +286,10 @@ the accepted generator output. Semantic findings repair the graph. Both human
 acceptance and result application revalidate the checklist. Historical unversioned
 Runs retain their original approval contract; never reinterpret existing pins.
 
-The human editor exposes Save changes and Start rather than a separate Ready
-publication action. Start saves edits, publishes with the returned revision CAS,
-then launches with the published revision pin. Any failure stops this sequence.
-Enabled controls launch availability; Draft/Ready remain internal lifecycle states.
-Existing Runs retain their original pinned version when the editor is saved.
+The human editor separates publication from task launch. Publishing saves and
+validates using revision CAS; launch requires an already published clean revision.
+Enabled controls launch availability. Existing Runs retain their original pinned
+version when the editor is saved.
 
 Skill regeneration accepts both coarse and ai_expanded imports. Reconstruct the
 source binding from immutable imported resources for an expanded graph, require
@@ -316,3 +332,12 @@ New imported and manually authored task Workflows default to Cooperative; Strict
 In Cooperative execution, workspace/effective_allowed_paths constrain task output writes only. Tool discovery, invocation and input reads use host permissions and may occur outside the task directory. Never reinterpret bounded_write as a tool or read allowlist. Generator executable proposals need source evidence; optional dependencies stay conditional.
 
 MCP startup resolves the installed registry version on every handshake through scripts/mcp-bootstrap.cjs; .mcp.json embeds the generated entry and uses a stable cache-parent cwd. Run build-mcp-entry.mjs after editing the bootstrap. Never launch a revision cached by the host or choose the largest cache directory. Local upgrades use scripts/install-local.mjs to retain active host entrypoints and rewrite legacy server entries as explicit latest-version bridges. Cache cleanup respects PID/start-time leases. Validate upgrades using scripts/check-upgrade-lifecycle.mjs (real Codex host, no model invocation), not only a standalone MCP probe.
+
+New Runs pin thread_protocol_version=2: actual task prompts carry resolved workspace, access, output-write scope and dispatch identity; completion requires the host-observed matching turn ID and dispatch request ID. Unversioned Runs keep their collection contract. Shared task lineages cannot occupy parallel branches, and atomic dispatch guards fence unresolved turns, including historical graphs. Task retries require not_started/terminated evidence; explicit_retry never releases their shared lane. A start receipt must identify a fresh task. These are host-attested Cooperative contracts, not remote isolation or automatic host cancellation.
+
+Connector receipt comparisons exclude only the mutable recovered_attachment annotation. Preserve immutable stored receipts and compare every remote session/run/agent/transport identity field exactly. Reattachment metadata never proves remote termination; timeout and cancellation remain unconfirmed until the connector observes terminal evidence.
+
+Public documentation is a screenshot-led usage tutorial. Keep maintenance diaries,
+repair histories and submitted development plans outside the repository. Do not
+enforce README length, frozen prose or historical version narratives in verification
+scripts. Link third-party Skills to their original repositories; do not bundle them.

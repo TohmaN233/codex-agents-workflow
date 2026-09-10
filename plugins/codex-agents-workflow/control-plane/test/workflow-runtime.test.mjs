@@ -45,6 +45,16 @@ const claim = (f, run, nodeId, extra = {}) => f.runtime.claimNode(run.run_id, { 
 const complete = (f, run, envelope, output = {}, extra = {}) => f.runtime.completeNode(run.run_id, { node_id: envelope.node_id, attempt_id: envelope.attempt_id, lease_token: envelope.lease_token, completion: payload(output, extra) });
 const control = run => ({ control_token: run.control_token });
 
+test('whole-workspace dot scope accepts relative outputs but never parent traversal', async t => {
+  const workflow = definition();
+  Object.assign(workflow.nodes.find(node => node.id === 'work'), { access: 'bounded_write', path_scope: { binding: 'run.allowed_paths' } });
+  const f = await fixture(t, workflow); const run = await f.start({ access: 'bounded_write', allowed_paths: ['.'] });
+  const work = await claim(f, run, 'work');
+  await assert.rejects(complete(f, run, work, {}, { changed_paths: ['../outside.txt'] }), { code: 'PATH_SCOPE' });
+  await complete(f, run, work, {}, { changed_paths: ['nested/output.txt'] });
+  assert.equal((await f.runtime.get(run.run_id)).nodes.work.status, 'succeeded');
+});
+
 test('executor event journal accepts narrow metadata under controller authority and never revives a cancelled lease', async t => {
   const f = await fixture(t); const run = await f.start(); const work = await claim(f, run, 'work');
   const args = { node_id: work.node_id, attempt_id: work.attempt_id, lease_token: work.lease_token, control_token: run.control_token,

@@ -22,6 +22,8 @@ h2 { margin: 0; font-size: 1.35rem; }
 .lede { max-width: 760px; color: var(--muted); font-size: 1.05rem; line-height: 1.55; }
 .eyebrow { margin: 0 0 8px; color: var(--accent); font-size: .72rem; font-weight: 800; letter-spacing: .16em; }
 .header-actions, .section-heading { display: flex; gap: 12px; align-items: center; }
+.locale-switcher { min-width: 104px; }
+.locale-switcher select { min-width: 104px; padding: 8px 9px; }
 .section-heading { justify-content: space-between; margin-bottom: 18px; }
 .task-type-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .task-type-controls select { width: min(280px, 100%); }

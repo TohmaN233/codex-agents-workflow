@@ -304,6 +304,34 @@ test('Grok runtime monitor catches an ignored outside write that bypasses ACP pe
   assert.equal(await readFile(join(fx.workspace, 'ignored-grok.txt'), 'utf8'), 'grok ignored outside\n');
 });
 
+test('Workflow control preserves immutable receipts across recovery annotations and still rejects a different session', async t => {
+  const fx = await fixture(t);
+  const service = new WorkflowService({ configPath: fx.configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: fx.env, registry: fx.registry });
+  await service.call('migrate_v6', {}, { human: true });
+  const run = await service.call('start', { workflow_id: 'grok-readonly-advice', workspace: fx.workspace, access: 'read_only', main_actor: 'root', inputs: { task: 'HANG' } });
+  const authority = { run_id: run.run_id, control_token: run.control_token };
+  await service.call('approve', { ...authority, approval_id: 'implementation:1', decision: true });
+  const lease = await service.call('claim_node', { ...authority, node_id: 'implementation', owner: 'worker', request_id: 'recovery-annotation' });
+  const args = { ...authority, node_id: lease.node_id, attempt_id: lease.attempt_id, lease_token: lease.lease_token };
+  const dispatched = await service.call('dispatch', args);
+  await service.call('control_connector', { ...args, control: { action: 'disconnect', confirm: true } });
+  const recovered = await service.call('control_connector', { ...args, control: { action: 'reconcile' } });
+  assert.equal(recovered.task.remote_identity.recovered_attachment, true);
+  assert.equal(recovered.task.state, 'needs_attention');
+  const pending = await service.call('collect_connector', args);
+  assert.equal(pending.pending, true);
+  assert.deepEqual(pending.receipt, dispatched.receipt);
+  const status = fx.registry.status.bind(fx.registry);
+  fx.registry.status = async (...values) => { const task = await status(...values); return { ...task, remote_identity: { ...task.remote_identity, session_id: 'different-session' } }; };
+  await assert.rejects(service.call('collect_connector', args), { code: 'CONNECTOR_IDENTITY' });
+  await assert.rejects(service.call('control_connector', { ...args, control: { action: 'cancel', confirm: true, expected_session_id: dispatched.receipt.remote_identity.session_id, expected_run_id: dispatched.receipt.remote_identity.run_id } }), { code: 'CONNECTOR_IDENTITY' });
+  fx.registry.status = status;
+  const cancelled = await service.call('control_connector', { ...args, control: { action: 'cancel', confirm: true, expected_session_id: dispatched.receipt.remote_identity.session_id, expected_run_id: dispatched.receipt.remote_identity.run_id } });
+  assert.equal(cancelled.task.state, 'cancelling');
+  assert.equal(cancelled.remote_cancel_confirmed, false);
+  await fx.registry.control(lease.attempt_id, { action: 'abandon', confirm: true, acknowledge_may_still_run: true, reason: 'Dispose synthetic protocol fixture' });
+});
+
 test('Grok restart reconciliation reattaches the exact session without duplicate task submission', async (t) => {
   const fx = await fixture(t);
   const started = await startScenario(fx, 'grok-readonly-advice', 'HANG');

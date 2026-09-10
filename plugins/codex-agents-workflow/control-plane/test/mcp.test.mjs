@@ -10,6 +10,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { createStdioRequestScheduler } from '../server.mjs';
+import { buildBootstrapSource, canonicalLf } from '../../scripts/build-mcp-entry.mjs';
 
 const controlDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const pluginDir = dirname(controlDir);
@@ -21,7 +22,11 @@ test('plugin MCP uses a stable parent and fresh registry resolution with the glo
   assert.equal(server.enabled, true);
   assert.equal(server.cwd, '../../..');
   const bootstrap=await readFile(join(pluginDir,'scripts/mcp-bootstrap.cjs'),'utf8');
-  assert.ok(server.args[1].startsWith(bootstrap));
+  // Compare the exact canonical source used by the builder: CRLF checkout
+  // conversion is allowed, while meaningful source drift remains a failure.
+  assert.equal(server.args[1], buildBootstrapSource(bootstrap));
+  assert.equal(canonicalLf('first\r\nsecond\rthird'), 'first\nsecond\nthird');
+  assert.notEqual(buildBootstrapSource(bootstrap.replace('const fs = require', 'const fs = require_changed')), server.args[1]);
   assert.equal(server.args[0], '-e'); // The subprocess regression verifies the packaged bootstrap.
   assert.ok(server.env_vars.includes('CODEX_HOME'));
   assert.ok(server.env_vars.includes('USERPROFILE'));
@@ -76,7 +81,7 @@ function makeClient(child) {
   };
 }
 
-test('stdio scheduler bounds work, keeps a control lane, and drains in-flight requests on shutdown', async () => {
+for (const controlTool of ['workflow_cancel', 'workflow_recover_control']) test(`stdio scheduler reserves a lane for ${controlTool} and drains in-flight requests`, async () => {
   const writes = [];
   const resolvers = new Map();
   const scheduler = createStdioRequestScheduler({
@@ -89,7 +94,7 @@ test('stdio scheduler bounds work, keeps a control lane, and drains in-flight re
   assert.equal(scheduler.submit({ id: 1, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
   assert.equal(scheduler.submit({ id: 2, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
   assert.equal(scheduler.submit({ id: 3, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
-  assert.equal(scheduler.submit({ id: 4, method: 'tools/call', params: { name: 'workflow_cancel' } }), true);
+  assert.equal(scheduler.submit({ id: 4, method: 'tools/call', params: { name: controlTool } }), true);
   assert.equal(scheduler.submit({ id: 5, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), true);
   assert.equal(scheduler.submit({ id: 6, method: 'tools/call', params: { name: 'codex_agents_workflow_invoke' } }), false);
   await new Promise((resolve) => setImmediate(resolve));

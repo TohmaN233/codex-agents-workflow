@@ -2,7 +2,7 @@
 
 The plugin version is0.8.0, control-plane server/package0.5.0. Workflow IR and Run
 schema are version1; user configuration becomes version7 through explicit migration.
-Release gates and actual evidence are recorded in V7_RELEASE_EVIDENCE.md.
+
 
 ## Upgrade and first use
 
@@ -14,12 +14,12 @@ Node20+ is required at runtime. The committed web assets require no npm install.
 
 The bundled v6 file is deliberately retained as the migration seed and legacy
 compatibility fixture. New installations and existing v6 users first see an explicit
-“备份并迁移到 v7” action. It creates a v6 backup, stages all Workflow Packs and commits
+“备份并迁移” action. It creates a v6 backup, stages all Workflow Packs and commits
 one generation pointer. Repeating migration is safe. It preserves exact Provider
 bindings, disabled entries, templates, optional approvals and per-Run write scopes.
 No real user configuration is migrated by installing the plugin or running its tests.
 
-After migration use `$codex-agents-workflow:codex-agents-workflow` and the `workflow_*` tools.
+After migration use `$codex-agents-workflow:workflow-control-plane` and the `workflow_*` tools.
 The native-only orchestration skill remains available. The old Task Type resolve
 API rejects v7 instead of executing a second mutable definition.
 

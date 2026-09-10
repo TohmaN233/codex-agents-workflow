@@ -94,7 +94,7 @@ export function compileExpansion(pack, resources, proposal, context = {}) {
       requireValue(['read','write'].includes(mode),'EXPANSION_OPERATION_MODE','Agent operation_mode must be read or write');
       const review = node.task_type === 'review' || inferred.role === 'reviewer';
       requireValue(!review || mode==='read','EXPANSION_REVIEW_WRITE','Independent reviewers must remain read-only');
-      if(mode==='write' && inferred.executor.kind==='provider')requireValue(context.providers?.find(p=>p.id===inferred.executor.provider_id)?.capabilities?.write,'EXPANSION_WRITE_PROVIDER','Write tasks need a registered write-capable Provider');
+      if(mode==='write' && ['provider','thread'].includes(inferred.executor.kind))requireValue(context.providers?.find(p=>p.id===inferred.executor.provider_id)?.capabilities?.write,'EXPANSION_WRITE_PROVIDER','Write tasks need a registered write-capable Provider');
       inferred.access = mode==='write' ? 'bounded_write' : 'read_only';
       if(mode==='write')inferred.path_scope={binding:'run.allowed_paths'};
     }

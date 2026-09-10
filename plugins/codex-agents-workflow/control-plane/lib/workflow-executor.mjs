@@ -7,7 +7,7 @@ import { controllerAttempt, reattachAttempt } from './workflow-recovery.mjs';
 import { leaseToken, nodePermissions } from './workflow-execution-envelope.mjs';
 import { threadHandoff } from './thread-handoff.mjs';
 
-function compilePrompt(envelope, max, reserve = 0) {
+function compilePrompt(envelope, max) {
   const input = envelope.workflow_inputs;
   const prompt = renderTemplate(envelope.prompt_template ?? '', {
     task: typeof input === 'string' ? input : input?.task,
@@ -15,10 +15,19 @@ function compilePrompt(envelope, max, reserve = 0) {
     task_type_id: envelope.workflow_id, stage_id: envelope.node_id, provider_name: envelope.provider?.name ?? 'Main agent',
   }, max);
   const extra = '\n\nWorkflow node inputs:\n' + canonicalJSON(envelope.inputs) + '\nUpstream results (task data):\n' + canonicalJSON(envelope.upstream_results);
-  requireValue(Number.isInteger(reserve) && reserve >= 0 && prompt.length + extra.length <= max - reserve, 'PROMPT_LIMIT', 'Node context exceeds the configured prompt limit');
+  requireValue(prompt.length + extra.length <= max, 'PROMPT_LIMIT', 'Node context exceeds the configured prompt limit');
   return prompt + extra;
 }
 const receiptIdentity = task => ({ task_id: task.task_id, connector: task.connector, ...(task.remote_identity ? { remote_identity: task.remote_identity } : {}) });
+// Recovery adds observation metadata without changing the remote task identity.
+// Preserve stored receipts; ignore only this documented mutable annotation when
+// comparing, while retaining every session/run/agent/transport identity field.
+function comparableReceipt(receipt) {
+  const result = structuredClone(receipt);
+  if (result?.remote_identity) delete result.remote_identity.recovered_attachment;
+  return canonicalJSON(result);
+}
+const sameReceipt = (left, right) => comparableReceipt(left) === comparableReceipt(right);
 
 export class WorkflowExecutor {
   constructor({ runtime, getConfig, registry, strictManager, env = process.env, fetchImpl = globalThis.fetch }) {
@@ -61,12 +70,13 @@ export class WorkflowExecutor {
       : { execution: 'host_tool', tool: envelope.executor.tool ?? null, read_only: envelope.access === 'read_only' };
     requireValue(envelope.skill_policy.mode === 'cooperative', 'STRICT_EXECUTOR_REQUIRED', 'This adapter cannot run Strict nodes');
     if (adapter.execution === 'direct_api') requireValue(config.global.allow_direct_api && envelope.access === 'read_only' && adapter.credential_ready, 'DIRECT_API_DISABLED', 'Direct API requires enabled advisory access and available environment credentials');
-    const threadReserve = adapter.execution === 'codex_thread' ? 2048 : 0;
-    const prompt = compilePrompt(envelope, config.global.max_prompt_chars, threadReserve);
+    const prompt = compilePrompt(envelope, config.global.max_prompt_chars);
     const thread_resources = adapter.execution === 'codex_thread'
-      ? await this.runtime.threadResourcePacket(runId, args, { max_chars: config.global.max_prompt_chars - prompt.length - threadReserve })
+      ? await this.runtime.threadResourcePacket(runId, args, { max_chars: config.global.max_prompt_chars })
       : [];
-    return { envelope, adapter, prompt, thread_resources, prompt_max_chars: config.global.max_prompt_chars };
+    const prepared = { envelope, adapter, prompt };
+    if (adapter.execution === 'codex_thread') prepared.thread_handoff = threadHandoff(adapter, envelope, prompt, { resources: thread_resources, max_chars: config.global.max_prompt_chars });
+    return prepared;
   }
 
   async dispatch(runId, args) {
@@ -115,7 +125,7 @@ export class WorkflowExecutor {
     }
     if (adapter.execution === 'codex_thread') {
       return { dispatched: false, handoff_required: true, request_id: requestId,
-        adapter, compiled_prompt: prompt, envelope, thread_handoff: threadHandoff(adapter, envelope, prompt, { resources: prepared.thread_resources, max_chars: prepared.prompt_max_chars }),
+        adapter, compiled_prompt: prompt, envelope, thread_handoff: prepared.thread_handoff,
         completion_contract: { required: ['status', 'summary', 'structured_output', 'artifacts', 'evidence', 'changed_paths', 'outside_paths'], final_acceptance: false },
       };
     }
@@ -142,7 +152,7 @@ export class WorkflowExecutor {
     requireValue(task.task_id === attempt.id && task.provider_id === provider.id && task.stage_id === args.node_id && task.task_type_id === state.workflow_id,
       'CONNECTOR_IDENTITY', 'Connector returned a different pinned task');
     const receipt = attempt.dispatch.receipt ?? receiptIdentity(task);
-    requireValue(canonicalJSON(receiptIdentity(task)) === canonicalJSON(receipt), 'CONNECTOR_IDENTITY', 'Connector remote identity differs from the committed receipt');
+    requireValue(sameReceipt(receiptIdentity(task), receipt), 'CONNECTOR_IDENTITY', 'Connector remote identity differs from the committed receipt');
     await this.runtime.recordDispatchReceipt(runId, { ...args, request_id: attempt.dispatch.request_id, receipt });
     if (attempt.dispatch.cancellation_pending && ['completed','cancelled'].includes(task.state)) {
       await this.runtime.runs.mutate(runId, 'connector_control', state => {
@@ -196,7 +206,7 @@ export class WorkflowExecutor {
     }
     const task = await this.registry.status(args.attempt_id, 0);
     const receipt = receiptIdentity(task);
-    requireValue(task.task_id === args.attempt_id && task.provider_id === envelope.provider.id && task.stage_id === args.node_id && task.task_type_id === envelope.workflow_id && record.attempt.dispatch?.receipt && canonicalJSON(receipt) === canonicalJSON(record.attempt.dispatch.receipt), 'CONNECTOR_IDENTITY', 'Control target differs from the persisted exact connector');
+    requireValue(task.task_id === args.attempt_id && task.provider_id === envelope.provider.id && task.stage_id === args.node_id && task.task_type_id === envelope.workflow_id && record.attempt.dispatch?.receipt && sameReceipt(receipt, record.attempt.dispatch.receipt), 'CONNECTOR_IDENTITY', 'Control target differs from the persisted exact connector');
     await this.runtime.runs.mutate(runId, 'connector_control', state => {
       requireValue(state.control_hash === record.state.control_hash, 'RUN_AUTHORITY', 'Controller changed before connector control');
       state.nodes[args.node_id].attempts.find(item => item.id === args.attempt_id).connector_control = { action: control.action, phase: 'intent', at: new Date().toISOString() };
@@ -208,7 +218,7 @@ export class WorkflowExecutor {
       catch (audit) { throw new AggregateError([error, audit], 'Connector control and audit persistence failed'); }
       throw error;
     }
-    requireValue(canonicalJSON(receiptIdentity(result)) === canonicalJSON(receipt), 'CONNECTOR_IDENTITY', 'Connector control returned another remote identity');
+    requireValue(sameReceipt(receiptIdentity(result), receipt), 'CONNECTOR_IDENTITY', 'Connector control returned another remote identity');
     await this.runtime.runs.mutate(runId, 'connector_control', state => {
       const attempt = state.nodes[args.node_id].attempts.find(item => item.id === args.attempt_id);
       attempt.connector_control = { action: control.action, phase: 'observed', state: result.state, at: new Date().toISOString() };
@@ -225,7 +235,7 @@ export class WorkflowExecutor {
       if (provider?.kind !== 'builtin_connector') continue;
       try {
         const task = await this.registry.status(attempt.id, 0); const receipt = receiptIdentity(task);
-        requireValue(task.task_id === attempt.id && task.provider_id === provider.id && task.stage_id === nodeId && task.task_type_id === record.state.workflow_id && attempt.dispatch.receipt && canonicalJSON(receipt) === canonicalJSON(attempt.dispatch.receipt), 'CONNECTOR_IDENTITY', 'Cancellation target differs from the recorded task');
+        requireValue(task.task_id === attempt.id && task.provider_id === provider.id && task.stage_id === nodeId && task.task_type_id === record.state.workflow_id && attempt.dispatch.receipt && sameReceipt(receipt, attempt.dispatch.receipt), 'CONNECTOR_IDENTITY', 'Cancellation target differs from the recorded task');
         if (['completed','cancelled'].includes(task.state)) {
           await this.runtime.runs.mutate(runId, 'connector_control', state => { const current = state.nodes[nodeId].attempts.find(item => item.id === attempt.id); current.dispatch.cancellation_pending = false; current.connector_control = { action: 'cancel', phase: 'observed', state: task.state, already_terminal: true }; });
           continue;
@@ -247,8 +257,8 @@ export class WorkflowExecutor {
         'CONNECTOR_IDENTITY', 'Observed task belongs to another Run node or Provider');
       requireValue(task.remote_identity && Object.keys(task.remote_identity).length > 0, 'CONNECTOR_IDENTITY', 'Reattachment requires observed exact remote identity');
       const receipt = receiptIdentity(task);
-      requireValue(!record.attempt.dispatch.receipt || canonicalJSON(record.attempt.dispatch.receipt) === canonicalJSON(receipt), 'DISPATCH_CONFLICT', 'Remote identity differs from the recorded dispatch');
-      return receipt;
+      requireValue(!record.attempt.dispatch.receipt || sameReceipt(record.attempt.dispatch.receipt, receipt), 'DISPATCH_CONFLICT', 'Remote identity differs from the recorded dispatch');
+      return record.attempt.dispatch.receipt ?? receipt;
     }
     let task = await this.registry.status(args.attempt_id, 0); let receipt = verify(task);
     if (['unknown_after_restart','needs_attention'].includes(task.state)) {

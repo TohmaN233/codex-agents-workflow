@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const files = [
+  'i18n.test.mjs',
+  'thread-protocol.test.mjs',
+  'thread-handoff.test.mjs',
+  'thread-source-options.test.mjs',
   'execution-envelope-resources.test.mjs',
   'workflow-presets.test.mjs',
   'native-binding.test.mjs',
@@ -21,6 +25,7 @@ const files = [
   'task-inputs.test.mjs',
   'console.test.mjs',
   'mcp.test.mjs',
+  'conversation-control-recovery.test.mjs',
   'mcp-startup.test.mjs',
   'plugin-bootstrap.test.mjs',
   'run-absolute-scope.test.mjs',

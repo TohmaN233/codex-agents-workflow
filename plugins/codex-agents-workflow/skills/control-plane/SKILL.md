@@ -47,12 +47,21 @@ when the probe succeeds but host tools remain missing.
    for `thread_handoff.operation: create_thread`, call
    `mcp__codex_app__create_thread` with the returned title, prompt, model and
    thinking. Use the current project task context when one exists; otherwise use
-   a projectless task. Then persist its exact `threadId`.
+   a projectless task. Preserve the returned `task_context` and entire prompt,
+   including resolved workspace, output-write scope and current access on every
+   continuation. Persist the actual `threadId` as `receipt.thread_id`; a queued
+   `clientThreadId` is not an established task identity.
    For `send_message_to_thread`, call `mcp__codex_app__send_message_to_thread`
    only for the returned exact `thread_id`; never create a replacement task.
    Wait with `mcp__codex_app__wait_threads`, read the same thread with
    `mcp__codex_app__read_thread`, then complete the node with observed output and
-   evidence. When the handoff includes pinned source snapshots, they are already
+   evidence. Follow the pinned collection contract: protocol v2 requires the actual
+   completed `turn_id` for this prompt's dispatch marker and its
+   `dispatch_request_id`, alongside `kind: codex_thread`, exact `thread_id` and
+   `observed: completed`. Never invent a turn ID or reuse an earlier result; if the
+   host cannot expose the matching turn, leave collection pending with that reason.
+   This is host attestation, not independent conversation verification. Historical
+   unversioned Runs retain their original collection contract. When the handoff includes pinned source snapshots, they are already
    included in the returned task prompt; do not replace them with local paths or
    attempt to rediscover original Skill files. Never fabricate a receipt or silently substitute a Provider.
    Main-node leases stay with the main agent. Pinned Workflow resources

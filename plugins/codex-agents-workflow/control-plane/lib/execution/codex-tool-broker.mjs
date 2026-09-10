@@ -1,5 +1,5 @@
 import { lstat, readFile, readdir, open, rename, unlink, realpath } from 'node:fs/promises';
-import { dirname, join, resolve, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { resourcePath, requireValue, noSymlinks, insideRoot, canonicalNoLinks } from '../workflow-paths.mjs';
 import { pathBoundaries } from '../workflow-bindings.mjs';

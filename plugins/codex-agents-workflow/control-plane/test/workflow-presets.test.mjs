@@ -7,6 +7,7 @@ import { WorkflowService } from '../lib/workflow-service.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 import { createWorkflowPreset } from '../lib/workflow-presets.mjs';
+import { createThreadStartupSmokeWorkflow } from './fixtures/thread-startup-smoke-workflow.mjs';
 import { defaultRoutingRules } from '../lib/skill-import/routing-rules.mjs';
 
 async function fixture(t,preset_id='collaborative-image') {
@@ -19,7 +20,7 @@ async function fixture(t,preset_id='collaborative-image') {
   const {runtime,executor}=await service.open();
   const run=await runtime.start({workflow_id:pack.workflow.id,workspace,access:'bounded_write',allowed_paths:['edit'],main_actor:'root',inputs:{task:'Synthetic delivery'}});
   const claim=node_id=>runtime.claimNode(run.run_id,{node_id,owner:'root',request_id:'claim-'+node_id,control_token:run.control_token});
-  const complete=(lease,output,accept=false,thread_id)=>runtime.completeNode(run.run_id,{...lease,completion:{status:'succeeded',summary:'Synthetic scheduling evidence',structured_output:output,artifacts:[],evidence:thread_id?[{kind:'codex_thread',thread_id,observed:'completed'}]:[{check:'scheduler fixture'}],changed_paths:[],outside_paths:[],...(accept?{acceptance:{accepted:true}}:{})}});
+  const complete=(lease,output,accept=false,thread_id)=>runtime.completeNode(run.run_id,{...lease,completion:{status:'succeeded',summary:'Synthetic scheduling evidence',structured_output:output,artifacts:[],evidence:thread_id?[{kind:'codex_thread',thread_id,observed:'completed',dispatch_request_id:'dispatch-'+lease.attempt_id,turn_id:'turn-'+lease.attempt_id}]:[{check:'scheduler fixture'}],changed_paths:[],outside_paths:[],...(accept?{acceptance:{accepted:true}}:{})}});
   return {service,runtime,executor,run,pack,workspace,claim,complete};
 }
 
@@ -121,9 +122,26 @@ test('mathematical research hybrid separates parallel one-off probes from a pers
   assert.equal(byId.research_mode.default_label,'one_shot');
 });
 
-test('thread startup smoke test reaches a real create-task handoff',async t=>{
+test('production preset catalog excludes smoke and video-use packs',async t=>{
   const f=await fixture(t);
-  const pack=await f.service.call('install_preset',{preset_id:'thread-startup-smoke-test'},{human:true});
+  const config=await f.service.config(); const rules=defaultRoutingRules(config.providers);
+  const presets=await f.service.call('presets');
+  assert.deepEqual(presets.map(item=>item.id),['collaborative-task','collaborative-image','mathematical-research-hybrid']);
+  assert.equal(presets.some(item=>/thread-startup-smoke-test|video-use/i.test(JSON.stringify(item))),false);
+  for(const preset of presets){
+    const workflow=createWorkflowPreset(preset.id,config.providers,rules);
+    assert.deepEqual(workflow.requirements.executables,[]);
+    assert.doesNotMatch(JSON.stringify(workflow),/video-use/i);
+  }
+  await assert.rejects(f.service.call('install_preset',{preset_id:'thread-startup-smoke-test'},{human:true}),{code:'WORKFLOW_PRESET_MISSING'});
+  assert.throws(()=>createWorkflowPreset('thread-startup-smoke-test',config.providers,rules),{code:'WORKFLOW_PRESET_MISSING'});
+});
+
+test('test-only thread startup smoke fixture reaches a real create-task handoff',async t=>{
+  const f=await fixture(t);
+  const config=await f.service.config();
+  const planning=config.providers.find(provider=>provider.id===defaultRoutingRules(config.providers).routes.planning.provider_id);
+  const pack=await f.service.call('create',{workflow:createThreadStartupSmokeWorkflow(planning)});
   assert.equal((await f.service.call('read',{workflow_id:pack.workflow.id})).validation.valid,true);
   assert.equal(pack.workflow.status,'ready');
   assert.match(pack.workflow.name,/Thread startup smoke test/);

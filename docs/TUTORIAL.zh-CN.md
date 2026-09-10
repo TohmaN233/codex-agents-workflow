@@ -1,211 +1,152 @@
-# Codex Agents Workflow 使用教程
+# 工作台操作教程
 
-[English version](TUTORIAL.md)
+[返回 README](../README.md) · [English](TUTORIAL.md)
 
-## 安装后会不会自动调用子 Agent？
+在工作台中配置模型、导入 Skill，并把流程用于实际任务。
 
-不会对所有对话全局自动调用。安装并启用插件只会让 Codex 在**新任务**中可以发现
-`$codex-agents-workflow:codex-agents-workflow` skill 和控制平面工具。如果从插件卡片的默认提示创建任务，默认提示会引用该 skill；其他任务则推荐在第一条消息中明确写：
+## 1. 安装与第一次打开
 
-```text
-Use $codex-agents-workflow:codex-agents-workflow. Keep the primary agent in charge, read metadata once,
-select one matching Task Type, and verify every auxiliary claim.
-```
+按 [README 的安装步骤](../README.md#先装起来)安装，随后新建 Codex task。
 
-skill 激活后，主 Agent 会在第一次仓库/任务工具调用前读取一次经过清理的配置元数据，并选择路线：
+直接对 Codex 说：
 
-- `solo`：仅在用户明确要求主 Agent 独立完成时使用，不能作为插件激活失败的兜底。
-- `delegate`：轻量或普通任务的默认流程，执行一个实现或分析 Stage。
-- `audit`：主 Agent 完成主要工作后，执行一个只读审阅 Stage。
-- `full`：困难、高风险或大范围任务，依次执行实现和独立审阅。
+~~~text
+使用 $codex-agents-workflow:workflow-control-plane，打开工作台。
+~~~
 
-只有同时满足以下条件，某个子 Agent 才可能被调用：
+Windows 从克隆的仓库根目录运行：
 
-1. 当前任务启用了 control-plane skill；
-2. 存在与当前任务语义匹配且已启用的 Task Type；
-3. 对应 Stage 固定绑定了一个已启用、能力匹配的 Provider；
-4. 选中的 Provider 或 Stage 开启额外批准门时，用户在**当前任务**中明确批准；
-5. 写任务还提供了非空、最小化、仓库相对的 `allowed_paths`。
+~~~powershell
+.\plugins\codex-agents-workflow\scripts\open-control-console.cmd
+~~~
 
-仅启用 Provider 不会触发调用、收费或后台运行。主 Agent 不能临时换 Provider，也不能失败后静默回退。
+启动器根据 Codex 安装记录选择插件版本，在本机端口 58712 打开带认证的页面。不要从缓存目录猜一个“最新版本”，也不要公开分享启动器给出的含 token 的地址。保持启动器进程运行。
 
-## 安装并校验原生角色
+macOS / Linux 可从仓库根目录启动：
 
-原生 Luna、Terra 和审阅角色文件统一通过跨平台 Node 入口安装。PowerShell
-不需要 Git Bash、WSL、`sh`、`jq`、`find` 或 `grep`：
+~~~sh
+./plugins/codex-agents-workflow/scripts/open-control-console.sh
+~~~
 
-```powershell
-$plugin = (codex plugin list --json | ConvertFrom-Json).installed |
-  Where-Object pluginId -eq 'codex-agents-workflow@codex-agents-workflow'
-if (-not $plugin) { throw 'codex-agents-workflow is not installed' }
-$installer = Join-Path $plugin.source.path 'scripts\install-agents.mjs'
-if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'native role installer is missing' }
-node $installer
-node $installer --check
-```
+该脚本从源码目录启动工作台，需要 Node.js 20+。
 
-Linux 和 macOS 使用同一个 Node 入口；随包提供的 `.sh` 只作为兼容包装器：
+默认进入流程库；Provider 设置在导航中。中文 / English 选择保存在浏览器，两个页面同步，不会保存配置或丢弃未保存草稿。
 
-```sh
-plugin_dir="$(codex plugin list --json | jq -r '.installed[] | select(.pluginId == "codex-agents-workflow@codex-agents-workflow") | .source.path')"
-test -n "$plugin_dir" && test "$plugin_dir" != null || { echo 'codex-agents-workflow is not installed' >&2; exit 1; }
-node "$plugin_dir/scripts/install-agents.mjs"
-node "$plugin_dir/scripts/install-agents.mjs" --check
-```
+![节点模型设置](assets/tutorial/workbench-node-model.png)
 
-如果可选校验器或运行时检查器不存在、或在当前平台无法执行，skill 会报告
-`ROLE VALIDATION UNAVAILABLE`、说明哪些证据未校验，然后继续任务；它不会假装
-校验已经通过。只有实际执行的校验明确发现 role、model 或 effort 不匹配时，才停止
-对应 native lane。
+## 2. 区分三种模型配置
 
-## 一键打开真实配置控制台
+| 配置 | 负责什么 | 在哪里改 |
+| --- | --- | --- |
+| 主 Agent 的模型 | 理解用户目标、控制流程、验收 | Codex 当前 task 的模型设置 |
+| 生成器 / 审核器 | 把 Skill 转成 Workflow，并检查转换结果 | 导入审查的高级选项中选择已注册原生配置 |
+| 工作流节点的 Provider | 真正执行该节点的任务 | Provider 设置定义模型；画布节点固定绑定 |
 
-以下脚本读取真实用户配置：
+生成模型不等于执行模型。不要为了用强模型拆解 Skill，就把整理材料等所有执行步骤都交给它。
 
-```text
-$CODEX_HOME/codex-agents-workflow/control-plane.json
-```
+在 **Provider 设置** 中启用所需配置，填写原生模型 ID、推理强度、用途说明和读写能力，然后保存。用途说明帮助自动路由判断哪些节点适合这个配置。
 
-未设置 `CODEX_HOME` 时使用：
+Cursor / Grok 属于额外执行端，需要相应客户端和连接条件。Cursor CDP 使用客户端的模型设置，插件没有对应的本地模型选择器；它不继承 Codex 主 Agent 的模型。当前 Skill 自动生成按钮的生成器和审核器使用已注册原生配置，不支持把这些客户端直接当作转换执行器。
 
-```text
-~/.codex/codex-agents-workflow/control-plane.json
-```
+仅打开工作台、启用 Provider 或保存配置不会调用模型。
 
-这是用户级全局配置，与当前仓库和工作目录无关；保存后，其他项目和新任务读取的是同一份配置。
-控制台顶部会明确显示 **Global user configuration** 和实际文件路径。只有开发或测试时显式设置
-绝对路径 `CODEX_WORKFLOW_CONFIG`（旧版别名 `SOL_CONTROL_CONFIG`），或由代码传入覆盖路径，才会显示红色的
-**Override/test configuration**；这种覆盖不会改写全局配置，不应作为日常入口使用。
+## 3. 从 Skill 开始
 
-控制台概览（截图使用内置默认配置，不包含本机 token 或私人设置）：
+1. 点击 **从 Skill 导入**，扫描默认目录或填写自己的绝对文件夹路径。
+2. 在结果里核对名称和路径，再选择 **导入此版本**。缓存可能有多个版本，导入的是你选中的版本。
+3. 打开 **导入审查**。先看来源、资源和待处理事项。
+4. 展开 **高级选项：执行设置、路由规则与导入诊断**。
+5. 选择 **默认生成执行者（已注册模型配置）** 和 **审核执行者（已注册模型配置）**，检查 skill2workflow 路由规则。模型名称与推理强度在 Provider 设置里编辑。
+6. 点击 **自动生成 Workflow**。工作目录通常自动准备；默认复用现有 Codex 登录。
+7. 查看生成的步骤、连线、人工确认点和审核证据。通过模型审核不等于已经完成原来的业务任务。
+8. 确认后保存为可编辑草稿，再在画布调整。
 
-![Codex Agents Workflow 控制台概览](assets/sol-subagent-control-console.png)
+![自动生成与审核过程](assets/tutorial/skill2workflow-generation.png)
 
-Task Type 预设、自定义入口与 Stage 列表：
+*作者提供的旧版录屏节选，显示生成进行中；当前界面已支持中英切换。*
 
-![Task Type 与 Stage 配置区](assets/sol-subagent-task-types.png)
+Skill 的指令与相关资源会形成固定快照。导入不修改原文件，也不自动安装 Skill 要求的外部程序。更新源 Skill 后，已有 Run 仍使用原先固定的版本。
 
-### Windows
+**检查转换时，重点看这些内容：**
 
-安装后可直接双击插件目录中的：
+- 先后顺序是否符合原 Skill；真正独立的工作才并行。
+- 硬性规则、验收标准与用户确认点是否保留。
+- 哪些步骤交给主 Agent、一次性子 Agent或独立 task，是否合理。
+- 输入与上游输出是否接对；不能凭空编造用户要求。
+- 外部工具、文件和服务是否仍然可用。
 
-```text
-scripts\open-control-console.cmd
-```
+![video-use 转换后的工作流](assets/tutorial/workbench-video.png)
 
-也可以从 PowerShell 一键定位并运行：
+## 4. 保存、发布与执行是三件事
 
-```powershell
-$plugin = (codex plugin list --json | ConvertFrom-Json).installed |
-  Where-Object pluginId -eq 'codex-agents-workflow@codex-agents-workflow'
-if (-not $plugin) { throw 'codex-agents-workflow is not installed' }
-& "$($plugin.source.path)\scripts\open-control-console.cmd"
-```
+**保存**保留编辑。**发布**验证并固定可启动的版本。**启动**创建一次新的 Run，开始为具体任务工作。
 
-### Linux / macOS / Git Bash
+你可以在工作台发布后填写本次任务描述和实际项目目录，按提示准备输入并启动。普通任务默认使用 Cooperative；读写范围跟随本次任务，不要把自己电脑上的项目路径写死到可复用的工作流中。
 
-```sh
-plugin_dir="$(codex plugin list --json | jq -r '.installed[] | select(.pluginId == "codex-agents-workflow@codex-agents-workflow") | .source.path')"
-test -n "$plugin_dir" && test "$plugin_dir" != null || { echo 'codex-agents-workflow is not installed' >&2; exit 1; }
-sh "$plugin_dir/scripts/open-control-console.sh"
-```
+也可以从 Codex 直接调用：
 
-脚本默认绑定固定回环地址 `127.0.0.1:58712` 并打开浏览器。终端必须保持运行；按 `Ctrl+C` 会关闭本地服务。
-不要分享终端可能显示的带 token 本地 URL。只有明确需要随机空闲端口时才使用 `--port 0`，也可以指定其他固定端口，例如：
+~~~text
+使用 $codex-agents-workflow:workflow-control-plane。
+执行已发布的 Bounded code change，为当前项目修复这个明确的问题：……
+按工作台绑定的模型执行，并给出验证证据。
+~~~
 
-```powershell
-& "$($plugin.source.path)\scripts\open-control-console.cmd" --port 58046
-```
+调用已经导入的业务工作流：
 
-```sh
-sh "$plugin_dir/scripts/open-control-console.sh" --port 58046
-```
+~~~text
+使用 $codex-agents-workflow:workflow-control-plane。
+调用 video-use，读取 D:/demo/recordings/剪辑需求.txt。
+按配置的步骤剪辑，需要我确认时停下来。
+~~~
 
-在 Codex 对话中说“打开 Codex Agents Workflow 配置控制台”仍然是等价的推荐入口。
+video-use 不随插件发布，需要你自行准备并导入。工作台不是使用工作流的唯一入口，Codex 会发现合适的已注册定义、准备环境、启动运行并收集结果。没有匹配流程时，应说明情况，不能假装某条工作流已经存在或静默更换 Provider。
 
-如果某个任务看不到 `codex_agents_workflow_*` 工具，说明该任务创建时没有挂载插件 MCP，不代表配置恢复默认；
-已有任务不会热加载后来安装的工具。不要从项目 shell 手动启动服务器，也不要声明成功的 solo
-兜底；先重新加载或更新插件并新建任务。若读取
-全局配置只因 `EPERM`/`EACCES` 失败，应只批准上述全局配置目录并重试一次。
+示例 Skill：[browser-use/video-use](https://github.com/browser-use/video-use)。先按源仓库说明安装，再导入工作台。
 
-## 配置 Task Type、Stage 与 Provider
+## 5. 用户确认、反馈与继续
 
-Provider 只描述“由谁、通过什么连接工作”；Task Type 描述“什么任务、按什么步骤工作”。
+有些节点只是补齐信息，有些节点明确要求批准后才执行。示例会话先询问声音偏好，再在剪辑方案完成后请求批准，这两者目的不同。
 
-1. 在 **Providers** 中启用准备使用的 Provider。
-2. 在 **Task Types and stages** 中使用内置预设、复制现有任务或创建空白任务；新任务类型默认为 delegate。
-3. 困难任务需要 full 时，开启 **Independent review stage**。工作流由 Stage 自动推导，不再单独选择 Route。
-4. 在每个 Stage 内选择唯一的 **Pinned provider**。
-5. 只读工作选择 `read_only`，修改仓库选择 `bounded_write`。批准门默认关闭；只有希望每次额外确认时才开启。
-6. 保存配置。
+确认节点不是任意结构的问卷。补充需求可以在会话中说明，由主 Agent 整理成后续执行所需的输入；需要改动已固定计划时，使用明确的新版本或后续运行。
 
-内置预设是起点，不是封闭清单。可以删除、重新添加、复制、改名、改模板或创建完全自定义的任务类型。
-Cursor、Grok、网页审阅和 native agent 都是 Provider，不应该出现在任务类型名称里。
+[完整视频示例及三张截图](../README.md#示例二在-codex-中直接执行-video-use)展示了委派、确认和返回预览。第三张图展示返回预览、等待定稿确认。
 
-从旧配置升级时，仍保留标准任务身份的 judgment-heavy 预设会增加独立审阅 Stage，同时保留自定义的实现 Provider、权限、批准规则和模板；如果改过 Task Type 的名称、说明、标签或整体语义，则保持原工作流。
+## 6. Thread：续聊同一个独立 task
 
-### 示例：翻译与独立校对
+Thread 节点可以启动一个侧栏可见的 Codex task。后续继续节点指向之前的启动节点，主 Agent 等待依赖完成，再续聊那个确切的 task。
 
-翻译很适合作为自定义 Task Type，因为“产出译文”和“验收译文质量”应由不同职责完成：
+例如：方案 task 与执行准备 task 并行；方案通过后，把方案交给原执行准备 task 继续制作。主 Agent 收集当前这次工作的完成结果，再验收。
 
-1. 复制 **Implementation with independent review**，改名为 `translation-with-review` 并启用。
-2. 将 implementation Stage 固定到具备翻译能力的 Provider；选择 `bounded_write`，并把 `allowed_paths` 限定为目标语言文件。除非希望额外确认，否则保持批准门关闭。
-3. 在模板中要求 Provider 保持原有行序与行数、占位符、标签和控制码，遵循提供的术语表与角色说明；遇到不确定术语必须报告，不能静默猜测。
-4. 将 review Stage 固定到另一个只读 Reviewer；要求逐项对照源文和译文，检查漏译、误译、人名或术语不一致、语气偏移以及占位符损坏。Reviewer 只报告问题，不修改自己的审阅结果。
-5. 最终验收仍由主 Agent 负责：运行结构校验、检查真实 diff，并解决所有阻塞性审阅发现。
+一次性子 Agent 更适合独立、短小的分析；长期 task 更适合保留研究板、方案或持续迭代的产物。数学混合研究示例把两者结合起来，并让用户决定是否进入持续研究。
 
-例如：
+Thread 当前是 Cooperative 能力。它记录交接身份与完成证据，但不是操作系统级隔离，也不代表取消一个 Run 就能证明所有远程任务已停止。
 
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-选择我配置的 translation-with-review Task Type，把 localization/source.txt 翻译到 localization/zh-CN.txt。
-我只批准写入 localization/zh-CN.txt。每个源文本行必须对应一个输出行，并保留所有占位符、标签、控制码以及提供的术语表。
-翻译 Stage 完成后，执行固定绑定的独立只读 review Stage；结构检查通过且所有阻塞问题解决前，不得接受结果。
-```
+## 7. 常见问题
 
-## 第一次实际测试
+| 现象 | 应检查什么 |
+| --- | --- |
+| 刚安装后 Codex 找不到工具 | 新建 task；仍失败时检查插件连接，使用仓库的 MCP 启动检查脚本 |
+| 自动生成停止 | 看页面停止原因；检查生成器和审核器是否已注册、启用、可读，模型与登录是否可用 |
+| 画布显示结构有效但不能启动 | 检查发布状态、未保存修改、Provider 能力、所需工具和待确认事项 |
+| 缺少视频或其他处理工具 | 由任务 Agent 查找实际安装位置；确实缺失时先说明并征得安装同意 |
+| 页面断开或运行中断 | 告诉 Codex 原运行 ID 并授权恢复；主会话用 `workflow_recover_control` 接管后核对真实任务和产物，也可用工作台接管按钮 |
+| 更新后仍看到旧界面 | 重新通过启动器打开已安装版本；有未保存草稿时先处理草稿 |
 
-建议使用一次性 Git 仓库，先只启用一个 Provider。
+## 8. 更新
 
-### 1. 连接探测
+如果按 README 的本地克隆方式安装，先保持克隆目录干净，再拉取并更新：
 
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-只读取一次 metadata；对 grok-local 调用 codex_agents_workflow_connector_probe，workspace 使用当前 Git 仓库根目录。
-不要发送任务，也不要把 probe 成功当成任务完成。
-```
+~~~sh
+git pull --ff-only origin main
+~~~
 
-### 2. 只读任务
+Windows 使用仓库的保留式安装器，避免活动 Codex 宿主仍引用旧插件入口时丢失文件：
 
-创建一个 `read_only` Task Type Stage 并绑定 `grok-local` 或 `cursor-local`，然后说：
+~~~powershell
+node plugins/codex-agents-workflow/scripts/install-local.mjs
+node plugins/codex-agents-workflow/scripts/install-agents.mjs
+~~~
 
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-选择我配置的只读测试 Task Type，让其读取 README 的第一个标题。
-等待任务完成，报告真实远端身份，并核验 Git 状态完全没有变化。
-```
+保留式安装器目前面向 Windows。其他平台在结束使用旧插件的宿主后，通过 Codex CLI 重新安装本地 marketplace 中的插件，并安装角色文件。更新后新建 task 读取新 Skills / 工具，再通过启动器打开工作台。
 
-Cursor 应返回 `task_id`、`agent_id`、`target_id`；Grok 应返回 `task_id`、`session_id`、`run_id`。
-
-### 3. 有界写任务
-
-创建一个 `bounded_write` Stage，绑定待测 Provider，并保持 Provider 与 Stage 的批准门关闭，以测试不会额外询问的正常流程。然后在任务中授权一个最小路径：
-
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-我明确批准当前任务调用 grok-local，并且只允许修改 smoke/grok.txt。
-选择我配置的有界写测试 Task Type；allowed_paths 必须严格为 ["smoke/grok.txt"]。
-完成后检查真实 diff、changed_paths、outside_paths 和 Git 状态，不要只相信子 Agent 的文字结论。
-```
-
-只有指定文件发生变化、`outside_paths` 为空、身份连续且主 Agent 完成独立验证时，才算通过。
-
-## 临时关闭
-
-- 控制台中关闭 **Control plane enabled**：不再解析任何控制平面任务。
-- 关闭单个 Provider：保留其配置但禁止使用。
-- 启动 Codex 前设置 `CODEX_WORKFLOW_DISABLED=1`：环境级 kill switch，控制台不能绕过。旧版 `SOL_CONTROL_DISABLED` 名称仍作为兼容别名接受。
-- 关闭一键控制台的终端或按 `Ctrl+C`：只停止配置网页，不会改变已经保存的启用状态。
-
-配置网页只是策略编辑器；真正的调用由新 Codex 任务中的 control-plane skill 和 MCP 工具执行。
-主代理负责需求、验证与验收。默认审阅节点使用 Astra / medium；各节点按其固定的 Provider 设置执行。
+工作流和模型配置保存在你的本机。打开已安装的工作台无需运行 npm install。

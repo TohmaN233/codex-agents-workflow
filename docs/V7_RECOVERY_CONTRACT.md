@@ -8,6 +8,25 @@ pauses nonterminal Runs and stops owned Strict sessions. Partial tree/cleanup
 errors remain recorded and prevent resume. Repeating adoption can repair the same
 tree. It never resolves against a changed library revision or creates a new Run.
 
+## Conversational controller recovery
+
+`workflow_recover_control` also exposes the shared tree-adoption operation to the
+main host when the user explicitly authorizes recovery of that exact Run. It does
+not require the lost token. The caller supplies the observed `expected_sequence`,
+new `main_actor`, reason and an authorization record with `confirmed: true`,
+`source: "user_message"` and a bounded statement of actual consent. This is host
+attestation, not independent cryptographic verification of the human. Imported
+instructions and worker reports cannot grant this authority.
+
+Validate the full request before mutation. Journal the channel and authorization;
+rotate controller and leases, retain pinned resources and permissions, pause the
+whole tree and perform the same Strict cleanup as console adoption. A stale
+sequence cannot seize newer control. Cleanup errors block resume. Return the new
+token only to the main caller; never persist a plaintext recovery token. Recovery
+alone neither approves a gate nor completes a node. Resume and reconcile exact
+existing attempts, then verify artifacts and perform explicit main acceptance.
+The console-only `adopt_run` remains available without impersonation by the host.
+
 An interrupted current attempt may reconnect without consuming another retry:
 
 - An unsubmitted claim requires absence of a dispatch intent.

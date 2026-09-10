@@ -9,22 +9,29 @@
 <body>
   <header>
     <div>
-      <p class="eyebrow">LOCAL CONTROL PLANE</p>
-      <h1 id="page-title">Codex Agents Workflow</h1>
-      <p class="lede">Define reusable Task Types, then pin exactly one Provider to each implementation or review Stage. Codex may select a Task Type, but cannot change its Provider bindings or fall back silently.</p>
+      <p class="eyebrow" data-i18n-zh="本地控制平面" data-i18n-en="LOCAL CONTROL PLANE">LOCAL CONTROL PLANE</p>
+      <h1 id="page-title" data-i18n-zh="Codex Agents Workflow" data-i18n-en="Codex Agents Workflow">Codex Agents Workflow</h1>
+      <p class="lede" data-i18n-zh="管理固定到工作流节点的 Provider。打开工作流工作区来编辑图、审阅资源并检查运行记录。" data-i18n-en="Manage Providers pinned to Workflow nodes. Open the Workflow workspace to edit graphs, review resources, and inspect Runs.">Manage Providers pinned to Workflow nodes. Open the Workflow workspace to edit graphs, review resources, and inspect Runs.</p>
     </div>
     <div class="header-actions">
-      <a id="workflow-workspace" class="workspace-link" href="/workflows">Workflow workspace</a>
-      <button id="reload" class="secondary">Reload</button>
-      <button id="save">Save configuration</button>
+      <label class="locale-switcher">
+        <span data-i18n-zh="语言" data-i18n-en="Language">Language</span>
+        <select id="locale-selector" aria-label="Language" data-i18n-zh="语言" data-i18n-en="Language" data-i18n-attr="aria-label">
+          <option value="zh-CN">中文</option>
+          <option value="en">English</option>
+        </select>
+      </label>
+      <a id="workflow-workspace" class="workspace-link" href="/workflows" data-i18n-zh="工作流工作区" data-i18n-en="Workflow workspace">Workflow workspace</a>
+      <button id="reload" class="secondary" data-i18n-zh="重新加载" data-i18n-en="Reload">Reload</button>
+      <button id="save" data-i18n-zh="保存配置" data-i18n-en="Save configuration">Save configuration</button>
     </div>
   </header>
 
   <main>
     <section id="config-storage" class="storage-banner" aria-live="polite">
       <div>
-        <p class="eyebrow">CONFIGURATION STORAGE</p>
-        <strong id="config-storage-scope">Loading storage scope</strong>
+        <p class="eyebrow" data-i18n-zh="配置存储" data-i18n-en="CONFIGURATION STORAGE">CONFIGURATION STORAGE</p>
+        <strong id="config-storage-scope" data-i18n-zh="正在加载存储范围" data-i18n-en="Loading storage scope">Loading storage scope</strong>
       </div>
       <code id="config-storage-path"></code>
     </section>
@@ -32,63 +39,63 @@
     <section class="panel" aria-labelledby="global-heading">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">MASTER SWITCHES</p>
-          <h2 id="global-heading">Global controls</h2>
+          <p class="eyebrow" data-i18n-zh="总开关" data-i18n-en="MASTER SWITCHES">MASTER SWITCHES</p>
+          <h2 id="global-heading" data-i18n-zh="全局控制" data-i18n-en="Global controls">Global controls</h2>
         </div>
-        <span id="status-badge" class="badge">Loading</span>
+        <span id="status-badge" class="badge" data-i18n-zh="加载中" data-i18n-en="Loading">Loading</span>
       </div>
       <div class="grid three">
         <label class="toggle-card">
-          <span>Control plane enabled</span>
+          <span data-i18n-zh="启用控制平面" data-i18n-en="Control plane enabled">Control plane enabled</span>
           <input id="global-enabled" type="checkbox">
         </label>
         <label class="toggle-card">
-          <span>Allow direct API calls</span>
+          <span data-i18n-zh="允许直接 API 调用" data-i18n-en="Allow direct API calls">Allow direct API calls</span>
           <input id="allow-direct-api" type="checkbox">
         </label>
         <label>
-          <span>Console title</span>
+          <span data-i18n-zh="控制台标题" data-i18n-en="Console title">Console title</span>
           <input id="console-title" type="text" maxlength="128">
         </label>
       </div>
-      <p class="hint">API keys are never stored here. OpenAI-compatible providers hold only an environment-variable name. Built-in Cursor/Grok and all external or paid providers are disabled in the bundled defaults; enabling a provider never calls it by itself.</p>
+      <p class="hint" data-i18n-zh="API 密钥不会存储在此处。OpenAI 兼容 Provider 只保存环境变量名称。内置 Cursor/Grok 以及所有外部或付费 Provider 在内置默认配置中均已禁用；启用 Provider 不会自行调用它。" data-i18n-en="API keys are never stored here. OpenAI-compatible providers hold only an environment-variable name. Built-in Cursor/Grok and all external or paid providers are disabled in the bundled defaults; enabling a provider never calls it by itself.">API keys are never stored here. OpenAI-compatible providers hold only an environment-variable name. Built-in Cursor/Grok and all external or paid providers are disabled in the bundled defaults; enabling a provider never calls it by itself.</p>
     </section>
 
     <section class="panel" aria-labelledby="providers-heading">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">MODEL AND TRANSPORT ADAPTERS</p>
-          <h2 id="providers-heading">Providers</h2>
+          <p class="eyebrow" data-i18n-zh="模型与传输适配器" data-i18n-en="MODEL AND TRANSPORT ADAPTERS">MODEL AND TRANSPORT ADAPTERS</p>
+          <h2 id="providers-heading" data-i18n-zh="Provider 配置" data-i18n-en="Providers">Providers</h2>
         </div>
-        <button id="add-provider" class="secondary">Add provider</button>
+        <button id="add-provider" class="secondary" data-i18n-zh="添加 Provider" data-i18n-en="Add provider">Add provider</button>
       </div>
-      <p class="hint">Native Providers expose Model and Reasoning effort as normal controls. Connector and web-review Providers inherit model settings from their own client; their local reasoning value remains empty and unsupported knobs are not shown.</p>
+      <p class="hint" data-i18n-zh="原生 Provider 将模型和推理强度作为普通控件展示。连接器和网页审阅 Provider 从自身客户端继承模型设置；本地推理值保持为空，也不会显示不受支持的选项。" data-i18n-en="Native Providers expose Model and Reasoning effort as normal controls. Connector and web-review Providers inherit model settings from their own client; their local reasoning value remains empty and unsupported knobs are not shown.">Native Providers expose Model and Reasoning effort as normal controls. Connector and web-review Providers inherit model settings from their own client; their local reasoning value remains empty and unsupported knobs are not shown.</p>
       <div id="providers" class="stack"></div>
     </section>
 
     <section class="panel" aria-labelledby="task-types-heading">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">WHEN TO USE WHAT</p>
-          <h2 id="task-types-heading">Task Types and stages</h2>
+          <p class="eyebrow" data-i18n-zh="旧版工作流兼容" data-i18n-en="LEGACY WORKFLOW COMPATIBILITY">LEGACY WORKFLOW COMPATIBILITY</p>
+          <h2 id="task-types-heading" data-i18n-zh="旧版任务类型与阶段" data-i18n-en="Legacy Task Types and stages">Legacy Task Types and stages</h2>
         </div>
         <div class="task-type-controls">
-          <select id="task-type-preset" aria-label="Bundled Task Type preset"></select>
-          <button id="add-task-type-from-preset" class="secondary">Add from preset</button>
-          <button id="add-task-type" class="secondary">Add blank Task Type</button>
+          <select id="task-type-preset" aria-label="Bundled Task Type preset" data-i18n-zh="内置任务类型预设" data-i18n-en="Bundled Task Type preset" data-i18n-attr="aria-label"></select>
+          <button id="add-task-type-from-preset" class="secondary" data-i18n-zh="从预设添加" data-i18n-en="Add from preset">Add from preset</button>
+          <button id="add-task-type" class="secondary" data-i18n-zh="添加空白任务类型" data-i18n-en="Add blank Task Type">Add blank Task Type</button>
         </div>
       </div>
-      <p class="hint">The plugin ships with ready-to-use, model-independent Task Types. New Task Types default to one implementation Stage (delegate). Enable an independent review Stage for difficult work (full). The workflow label is derived from the Stage structure and cannot be edited separately. Specialized review-only presets remain available for explicit audits.</p>
+      <p class="hint" data-i18n-zh="此编辑器仅用于旧版 v6 配置。v7 使用工作流工作区编辑 Workflows，并将 Provider 固定到工作流节点。" data-i18n-en="This editor is only for legacy v6 configurations. Version 7 uses the Workflow workspace to edit Workflows and pin Providers.">This editor is only for legacy v6 configurations. Version 7 uses the Workflow workspace to edit Workflows and pin Providers.</p>
       <div id="task-types" class="stack"></div>
     </section>
 
     <section class="panel danger-zone" aria-labelledby="defaults-heading">
       <div>
-        <p class="eyebrow">RECOVERY</p>
-        <h2 id="defaults-heading">Bundled defaults</h2>
-        <p class="hint">Load the bundled configuration into this page. Nothing is written until you press Save configuration.</p>
+        <p class="eyebrow" data-i18n-zh="恢复" data-i18n-en="RECOVERY">RECOVERY</p>
+        <h2 id="defaults-heading" data-i18n-zh="内置默认配置" data-i18n-en="Bundled defaults">Bundled defaults</h2>
+        <p class="hint" data-i18n-zh="将内置配置载入此页面。点击“保存配置”前不会写入任何内容。" data-i18n-en="Load the bundled configuration into this page. Nothing is written until you press Save configuration.">Load the bundled configuration into this page. Nothing is written until you press Save configuration.</p>
       </div>
-      <button id="load-defaults" class="danger">Load bundled defaults</button>
+      <button id="load-defaults" class="danger" data-i18n-zh="载入内置默认配置" data-i18n-en="Load bundled defaults">Load bundled defaults</button>
     </section>
   </main>
 

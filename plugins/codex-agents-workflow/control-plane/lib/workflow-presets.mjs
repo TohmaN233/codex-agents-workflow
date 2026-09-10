@@ -6,7 +6,6 @@ export const WORKFLOW_PRESETS = [
   {id:'collaborative-task',name:'多角色协作',description:'主会话并行管理方案与执行准备两个 Codex task；方案完成后续聊执行 task，主 Agent 验收。'},
   {id:'collaborative-image',name:'协作生图',description:'主会话并行管理提示词与图片准备两个 Codex task；提示词完成后续聊图片 task 完成生图。'},
   {id:'mathematical-research-hybrid',name:'Mathematical Research Hybrid',description:'An English example that runs independent one-off research workers in parallel, then keeps a single evolving research board only when the human confirms a persistent route.'},
-  {id:'thread-startup-smoke-test',name:'Thread startup smoke test',description:'A minimal English Workflow that creates one visible Codex task and verifies the exact task identity needed for collection.'},
 ];
 
 const schema = properties => ({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
@@ -102,20 +101,6 @@ function mathematicalResearchHybrid(preset,providers,routingRules) {
     edges:[edge('start','freeze_problem_card'),edge('freeze_problem_card','survey_fork'),edge('survey_fork','literature_map','literature'),edge('survey_fork','toolbox_map','toolbox'),edge('survey_fork','analogy_bridge','analogy'),edge('survey_fork','counterexample_hunt','counterexamples'),edge('literature_map','survey_join'),edge('toolbox_map','survey_join'),edge('analogy_bridge','survey_join'),edge('counterexample_hunt','survey_join'),edge('survey_join','assemble_research_board'),edge('assemble_research_board','probe_fork'),edge('probe_fork','route_probe_a','route-a'),edge('probe_fork','route_probe_b','route-b'),edge('probe_fork','route_probe_c','route-c'),edge('route_probe_a','probe_join'),edge('route_probe_b','probe_join'),edge('route_probe_c','probe_join'),edge('probe_join','choose_research_mode'),edge('choose_research_mode','confirm_persistent_state'),edge('confirm_persistent_state','research_mode'),edge('research_mode','persistent_research_state','persistent'),edge('persistent_research_state','persistent_research_continue'),edge('persistent_research_continue','adversarial_review'),edge('adversarial_review','final'),edge('research_mode','one_shot_review','one_shot'),edge('one_shot_review','final'),edge('final','end')]});
 }
 
-function threadStartupSmokeTest(preset,providers,routingRules) {
-  const planning=selectNativeProvider(providers,routingRules,'planning','thread-startup');
-  const output=schema({status:text,evidence:text});
-  const smoke=agent('thread_smoke','Start one visible Codex task',thread(planning,'start'),
-    'This is a harmless English smoke test for a Workflow thread handoff. Confirm that you received this task. Do not write files or create another task. Return status and evidence showing that this exact Codex task was started.',output);
-  smoke.role=planning.config.role;
-  const final=mainAgent('final','Main agent · verify task identity',
-    'Verify that the collected result belongs to the exact Codex task started by this smoke test. Output status and evidence. Do not claim success without the exact task identity and observed completion evidence.',output,
-    {task:'/inputs/task',thread_result:'/nodes/thread_smoke/output'},'finalizer');
-  return cooperativePreset(preset,{tags:['builtin','example','thread','smoke-test'],outputs_schema:output,
-    output_bindings:{status:'/nodes/final/output/status',evidence:'/nodes/final/output/evidence'},finalization:{required:true,node_id:'final'},providers:[planning],
-    nodes:[{id:'start',type:'start'},smoke,final,{id:'end',type:'end'}],edges:[edge('start','thread_smoke'),edge('thread_smoke','final'),edge('final','end')]});
-}
-
 function collaborativePreset(preset,providers,routingRules) {
   const image=preset.id==='collaborative-image';
   const planningProvider=selectNativeProvider(providers,routingRules,'planning','planning');
@@ -148,6 +133,5 @@ export function createWorkflowPreset(presetId,providers,routingRules) {
   const preset=WORKFLOW_PRESETS.find(item=>item.id===presetId);
   requireValue(preset,'WORKFLOW_PRESET_MISSING','Unknown Workflow preset');
   if (presetId==='mathematical-research-hybrid') return mathematicalResearchHybrid(preset,providers,routingRules);
-  if (presetId==='thread-startup-smoke-test') return threadStartupSmokeTest(preset,providers,routingRules);
   return collaborativePreset(preset,providers,routingRules);
 }

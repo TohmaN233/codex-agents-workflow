@@ -47,7 +47,7 @@ const STDIO_CONTROL_TOOLS = new Set([
   'codex_agents_workflow_connector_control',
 ]);
 const STDIO_CONTROL_OPERATIONS = new Set([
-  'status', 'get', 'run_snapshot', 'next', 'events', 'pause', 'resume', 'cancel', 'approve',
+  'status', 'get', 'run_snapshot', 'next', 'events', 'pause', 'resume', 'cancel', 'approve', 'recover_control',
   'control_connector', 'reconcile_connector', 'strict_status',
 ]);
 
@@ -197,6 +197,7 @@ export async function startConsole({
     '/': ['index.html', 'text/html; charset=utf-8'],
     '/index.html': ['index.html', 'text/html; charset=utf-8'],
     '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+    '/i18n.js': ['i18n.js', 'text/javascript; charset=utf-8'],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
     '/workflows': ['workflows.html', 'text/html; charset=utf-8'],
     '/workflows.js': ['workflows.js', 'text/javascript; charset=utf-8'],

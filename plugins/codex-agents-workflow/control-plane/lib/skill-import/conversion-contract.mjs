@@ -3,9 +3,9 @@ export const CONVERSION_CONTRACT = {
   version: 2,
   checks: [
     'Analyze independent work versus data/order/shared-state dependencies. Use parallel/join for useful disjoint tasks and justify sequential decisions.',
-    'Decide main versus subagent for each responsibility. Main owns synthesis and user-facing decisions; delegate bounded independently verifiable work. In fixed mode use configured routes and omit automatic execution selection fields.',
+    'Decide Main versus a Codex task thread for each responsibility. Main owns synthesis and user-facing decisions; delegate bounded independently verifiable work to a user-visible task thread. Legacy Provider/subagent execution remains supported for existing definitions and fixed routes; in fixed mode use configured routes and omit automatic execution selection fields.',
     'Identify required human intervention and missing task answers before generating the graph; preserve decision timing and distinguish approval gates from input collection.',
-    'In automatic mode choose each subagent from the pinned registered catalog using suitability descriptions and actual capabilities with a task-specific reason. In fixed mode follow configured task routes. Never infer model quality from names.',
+    'In automatic mode choose each Codex task thread from the pinned registered native catalog using suitability descriptions and actual capabilities with a task-specific reason. In fixed mode follow configured task routes, including legacy Provider/subagent routes. Never infer model quality from names.',
 
     'Preserve all meaningful source phases and their dependency order: discovery, production, evaluation, feedback and delivery. Do not approve a plan before the source-required evidence gathering.',
     'Preserve hard rules either explicitly or through actionable instructions to read and apply exact pinned references. Reference inheritance is valid coverage; do not duplicate every implementation detail in every prompt.',

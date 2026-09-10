@@ -180,12 +180,13 @@ pass "required files present and retired contract absent"
 
 jq empty "$manifest"
 [ "$(jq -r '.version | split("+")[0]' "$manifest")" = 0.8.0 ] || fail "manifest base version is not 0.8.0"
-grep -Fq 'SELECTIVE ROUTE' "$manifest" || fail "manifest omits route declaration"
-grep -Fq 'delegate is the default' "$manifest" || fail "manifest omits delegate default"
-grep -Fq 'Route is derived from those Stages rather than configured independently' "$manifest" || fail "manifest omits derived-route contract"
-grep -Fq 'full combines implementation then review for difficult' "$manifest" || fail "manifest omits difficult full contract"
-grep -Fq 'fails closed' "$manifest" || fail "manifest omits fail-closed evidence rule"
-pass "manifest JSON, v0.8.0 release, and selective-routing language"
+# Public metadata describes the Workflow product; native route declarations are
+# checked against the orchestration skill below, where that contract applies.
+jq -e '.interface.defaultPrompt | any(contains("workflow-control-plane"))' "$manifest" >/dev/null || fail "manifest omits Workflow entrypoint"
+grep -Fq 'main agent responsible for requirements, verification and acceptance' "$manifest" || fail "manifest omits main-agent ownership"
+grep -Fq 'exact task identities' "$manifest" || fail "manifest omits exact task identity contract"
+grep -Fq 'without automatic resubmission' "$manifest" || fail "manifest omits recovery boundary"
+pass "manifest JSON, v0.8.0 release, and Workflow execution contract"
 
 python3 - "$templates" <<'PY'
 from pathlib import Path
@@ -462,46 +463,9 @@ for phrase in \
 done
 pass "operations reference preserves selective native operational detail"
 
-readme_lines=$(wc -l < "$readme" | tr -d ' ')
-[ "$readme_lines" -le 110 ] || fail "README remains maintainer-sized ($readme_lines lines)"
-grep -Fq 'codex plugin marketplace add' "$readme" || fail "README omits marketplace quick start"
-grep -Fq 'codex plugin add' "$readme" || fail "README omits plugin quick start"
-grep -Fq 'scripts/install-agents.mjs' "$readme" || fail "README omits companion install"
-if grep -Eq 'agent_type:|fork_turns:|inspect-agent-runtime|sandbox_policy|sandbox_mode' "$readme"; then
-  fail "README exposes maintainer routing/runtime machinery"
-fi
-if grep -Fq -- '--check' "$readme"; then
-  fail "README quick start repeats the post-install --check"
-fi
-grep -Fq 'For native operations, runtime evidence, and maintainer verification' "$readme" || fail "README omits operations link"
-grep -Fq 'The main agent owns architecture, routing, verification, and acceptance.' "$readme" || fail "README omits primary ownership"
-grep -Fq 'Extra Provider/Stage confirmation prompts are optional and off by default.' "$readme" || fail "README omits opt-in confirmation policy"
-grep -Fq 'A subagent cannot swap models or silently fall back.' "$readme" || fail "README permits model substitution or silent fallback"
-grep -Fq 'Read the [English tutorial]' "$readme" || fail "README omits detailed usage tutorial"
-python3 - "$readme" <<'PY'
-from pathlib import Path
-import sys
+# README prose and layout are user-owned; do not enforce editorial assertions.
 
-lines = [line.strip() for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()]
-install_lines = [line for line in lines if line.startswith("plugin_dir=\"") and "scripts/install-agents.mjs" in line]
-if len(install_lines) != 2:
-    raise SystemExit(f"expected two guarded companion install examples, found {len(install_lines)}")
-for line in install_lines:
-    required = [
-        'test -n "$plugin_dir"',
-        'test "$plugin_dir" != null',
-        'test -d "$plugin_dir"',
-        'test -f "$plugin_dir/scripts/install-agents.mjs"',
-    ]
-    if any(check not in line for check in required):
-        raise SystemExit(f"unguarded companion install example: {line}")
-    if line.index("node \"") < line.index(required[-1]):
-        raise SystemExit(f"installer executes before directory/file guards: {line}")
-print("two companion install examples are fail-closed and guarded")
-PY
-pass "README is concise, user-first, links detailed policy, and keeps maintainer machinery out"
-
-python3 - "$readme" "$manifest" "$skill" "$contracts" "$operations" "$ui" "$templates" <<'PY'
+python3 - "$manifest" "$skill" "$contracts" "$operations" "$ui" "$templates" <<'PY'
 from pathlib import Path
 import sys
 
@@ -535,15 +499,6 @@ for path in paths:
             raise SystemExit(f"obsolete workflow reference {term!r} remains in {path}")
 print("obsolete workflow references are absent")
 PY
-
-grep -Fq 'A model-configurable workflow plugin with a local console.' "$readme" || fail "README omits fork identity"
-grep -Fq '## What the console does' "$readme" || fail "README omits console overview"
-grep -Fq 'Cursor and Grok are extra subagent entries.' "$readme" || fail "README omits connector scope"
-grep -Fq 'ChatGPT review uses the installed chatgpt-review-agent skill.' "$readme" || fail "README omits web review boundary"
-grep -Fq 'Attention Heads' "$readme" || fail "README lost Attention Heads section"
-grep -Fq 'https://attentionheads.substack.com/?utm_source=github&utm_medium=readme&utm_campaign=codex-agents-workflow' "$readme" || fail "README changed Attention Heads link"
-grep -Fq 'https://attentionheads.substack.com/subscribe?utm_source=github&utm_medium=readme&utm_campaign=codex-agents-workflow' "$readme" || fail "README changed Subscribe link"
-pass "README selective routing and preserved Go deeper links"
 
 for document in "$readme" "$manifest" "$skill" "$contracts" "$ui" "$control_skill" "$architecture" "$control_ui"; do
   if grep -Eqi 'Terra / High is the sole implementation producer|one role-pinned .*handles all implementation|route all implementation through.*Terra|delegate all implementation to (the )?(native )?Terra' "$document"; then

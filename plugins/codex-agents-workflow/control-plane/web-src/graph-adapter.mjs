@@ -1,15 +1,16 @@
 // Domain objects remain authoritative. React Flow's measurements and selection
 // state never become workflow fields. Layout changes are explicit user edits.
+import { t } from '../web/i18n.js';
 export function canvasIssues(workflow) {
   const issues = []; const nodes = new Set(); const edges = new Set();
-  if (!Array.isArray(workflow?.nodes) || !Array.isArray(workflow?.edges)) return ['nodes 和 edges 必须是数组'];
+  if (!Array.isArray(workflow?.nodes) || !Array.isArray(workflow?.edges)) return [t('nodes 和 edges 必须是数组', 'nodes and edges must be arrays')];
   for (const [index, node] of workflow.nodes.entries()) {
-    if (!node || typeof node.id !== 'string' || !node.id || typeof node.type !== 'string' || nodes.has(node.id)) { issues.push(`nodes[${index}] 缺少唯一 ID 或类型`); continue; }
+    if (!node || typeof node.id !== 'string' || !node.id || typeof node.type !== 'string' || nodes.has(node.id)) { issues.push(`nodes[${index}] ${t('缺少唯一 ID 或类型', 'is missing a unique ID or type')}`); continue; }
     nodes.add(node.id);
-    if (node.ui?.position && (!Number.isFinite(node.ui.position.x) || !Number.isFinite(node.ui.position.y))) issues.push(`nodes[${index}] 的坐标必须是有限数字`);
+    if (node.ui?.position && (!Number.isFinite(node.ui.position.x) || !Number.isFinite(node.ui.position.y))) issues.push(`nodes[${index}] ${t('的坐标必须是有限数字', 'coordinates must be finite numbers')}`);
   }
   for (const [index, edge] of workflow.edges.entries()) {
-    if (!edge || typeof edge.id !== 'string' || !edge.id || edges.has(edge.id) || !nodes.has(edge.source) || !nodes.has(edge.target)) { issues.push(`edges[${index}] 缺少唯一 ID 或有效端点`); continue; }
+    if (!edge || typeof edge.id !== 'string' || !edge.id || edges.has(edge.id) || !nodes.has(edge.source) || !nodes.has(edge.target)) { issues.push(`edges[${index}] ${t('缺少唯一 ID 或有效端点', 'is missing a unique ID or valid endpoints')}`); continue; }
     edges.add(edge.id);
   }
   return issues;
@@ -22,12 +23,12 @@ export function toCanvas(workflow, runtime = {}) {
       position: node.ui?.position ?? displayLayout.nodes[index].ui.position,
       data: { definition: structuredClone(node), status: runtime[node.id]?.status ?? null } })),
     edges: workflow.edges.map(edge => ({ id: edge.id, source: edge.source, target: edge.target,
-      label: [edge.label, edge.on && edge.on !== 'success' ? edge.on : ''].filter(Boolean).join(' · '),
+      label: [edge.label, edge.on && edge.on !== 'success' ? ({ failure: t('失败', 'Failure'), always: t('始终', 'Always') }[edge.on] ?? edge.on) : ''].filter(Boolean).join(' · '),
       data: { definition: structuredClone(edge) } })),
   };
 }
 export function moveNode(workflow, id, position) {
-  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error('Invalid canvas position');
+  if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) throw new Error(t('画布坐标无效', 'Invalid canvas position'));
   return { ...workflow, nodes: workflow.nodes.map(node => node.id === id ? { ...node, ui: { ...node.ui, position: { x: position.x, y: position.y } } } : node) };
 }
 export function removeElements(workflow, nodeIds, edgeIds = []) {
@@ -35,7 +36,7 @@ export function removeElements(workflow, nodeIds, edgeIds = []) {
     edges: workflow.edges.filter(edge => !edgeIds.includes(edge.id) && !nodeIds.includes(edge.source) && !nodeIds.includes(edge.target)) };
 }
 export function connectNodes(workflow, source, target, id) {
-  if (!workflow.nodes.some(node => node.id === source) || !workflow.nodes.some(node => node.id === target)) throw new Error('Connection endpoint missing');
+  if (!workflow.nodes.some(node => node.id === source) || !workflow.nodes.some(node => node.id === target)) throw new Error(t('连接端点缺失', 'Connection endpoint missing'));
   return { ...workflow, edges: [...workflow.edges, { id, source, target, on: 'success' }] };
 }
 export function layoutGraph(workflow) {

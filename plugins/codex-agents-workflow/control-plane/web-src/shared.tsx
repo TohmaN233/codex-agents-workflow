@@ -1,11 +1,16 @@
-import { createContext, useContext, useEffect, useId, useState } from 'react';
+import { createContext, useContext, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { displayDetails } from './display-data.mjs';
+import { getLocale, subscribeLocale, t as translate } from '../web/i18n.js';
 export type Json = Record<string, any>; // Open versioned IR: unknown fields must round-trip.
+export function useLocale() {
+  const locale = useSyncExternalStore(subscribeLocale, getLocale, getLocale);
+  return (zh: string, en: string) => locale === 'zh-CN' ? zh : en;
+}
 const fragment = new URLSearchParams(location.hash.slice(1));
 export const token = fragment.get('token') ?? '';
 history.replaceState(null, '', location.pathname);
 export async function request(path: string, data?: unknown, method = 'POST'): Promise<any> {
-  if (!token) throw new Error('此页面没有控制台凭据。请从 Codex 重新打开控制台。');
+  if (!token) throw new Error(translate('此页面没有控制台凭据。请从 Codex 重新打开控制台。', 'This console page has no credentials. Reopen it from Codex.'));
   const response = await fetch(path, { method: data === undefined ? 'GET' : method,
     headers: { authorization: `Bearer ${token}`, ...(data === undefined ? {} : { 'content-type': 'application/json' }) },
     ...(data === undefined ? {} : { body: JSON.stringify(data) }), signal: AbortSignal.timeout(120000) });
@@ -23,27 +28,30 @@ export function download(name: string, value: unknown) {
 export const InvalidContext = createContext<(id: string, invalid: boolean) => void>(() => {});
 export const FormValidContext = createContext(true);
 export function JsonField({ label, value, onChange, rows = 5 }: { label: string, value: any, onChange: (value: any) => void, rows?: number }) {
+  const t = useLocale();
   const id = useId(); const invalid = useContext(InvalidContext); const [text, setText] = useState(pretty(value)); const [error, setError] = useState('');
   const serialized = pretty(value);
   useEffect(() => { setText(serialized); setError(''); invalid(id, false); }, [serialized]);
   useEffect(() => () => invalid(id, false), []);
-  return <label className="field">{label}<textarea rows={rows} value={text} spellCheck={false} aria-invalid={!!error} onChange={event => {
+  return <label className="field">{label}<textarea rows={rows} value={text} spellCheck={false} aria-label={label} aria-invalid={!!error} onChange={event => {
     const next = event.target.value; setText(next);
     try { const parsed = JSON.parse(next); invalid(id, false); setError(''); onChange(parsed); }
     catch (cause) { setError((cause as Error).message); invalid(id, true); }
-  }}/>{error && <small role="alert">JSON 格式错误：{error}</small>}</label>;
+  }}/>{error && <small role="alert">{t('JSON 格式错误：', 'Invalid JSON: ')}{error}</small>}</label>;
 }
 export function Field({ label, value, onChange, multiline = false, ...props }: { label: string, value: any, onChange: (value: string) => void, multiline?: boolean, placeholder?: string, readOnly?: boolean }) {
   return <label className="field">{label}{multiline ? <textarea value={value ?? ''} onChange={e => onChange(e.target.value)} rows={6} {...props}/> : <input value={value ?? ''} onChange={e => onChange(e.target.value)} {...props}/>}</label>;
 }
 export function Select({ label, value, onChange, options }: { label: string, value: string, onChange: (value: string) => void, options: (string | { value: string, label: string })[] }) {
+  const t = useLocale();
   const choices = options.map(option => typeof option === 'string' ? { value: option, label: option } : option);
-  if (!choices.some(choice => choice.value === value)) choices.unshift({ value, label: value ? `${value} · 缺失，需处理` : '请选择' });
+  if (!choices.some(choice => choice.value === value)) choices.unshift({ value, label: value ? `${value} · ${t('缺失，需处理', 'missing; needs attention')}` : t('请选择', 'Select an option') });
   return <label className="field">{label}<select value={value} onChange={e => onChange(e.target.value)}>{choices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</select></label>;
 }
-export function ProviderField({ providers, value, onChange, main = true, label='固定 Provider', emptyLabel }: { providers: Json[], value: string, onChange: (id: string) => void, main?: boolean, label?:string, emptyLabel?:string }) {
-  return <><Select label={label} value={value} onChange={onChange} options={[...(emptyLabel?[{value:'',label:emptyLabel}]:[]),...(main ? [{ value: '$main', label: 'Main · 主控制者' }] : []), ...providers.map(p => ({ value: p.id, label: `${p.name ?? p.id}${p.config?.model?' · '+p.config.model+(p.config.reasoning_effort?' / '+p.config.reasoning_effort:''):''}${p.enabled ? '' : ' · 已禁用'}` }))]}/>{providers.find(p=>p.id===value)?.description && <small>{providers.find(p=>p.id===value)?.description}</small>}</>;
+export function ProviderField({ providers, value, onChange, main = true, label, emptyLabel }: { providers: Json[], value: string, onChange: (id: string) => void, main?: boolean, label?:string, emptyLabel?:string }) {
+  const t = useLocale();
+  return <><Select label={label ?? t('固定 Provider', 'Fixed provider')} value={value} onChange={onChange} options={[...(emptyLabel?[{value:'',label:emptyLabel}]:[]),...(main ? [{ value: '$main', label: t('Main · 主控制者', 'Main · controller') }] : []), ...providers.map(p => ({ value: p.id, label: `${p.name ?? p.id}${p.config?.model?' · '+p.config.model+(p.config.reasoning_effort?' / '+p.config.reasoning_effort:''):''}${p.enabled ? '' : ' · '+t('已禁用', 'disabled')}` }))]}/>{providers.find(p=>p.id===value)?.description && <small>{providers.find(p=>p.id===value)?.description}</small>}</>;
 }
 export function Details({ title, value }: { title: string, value: any }) { return <details><summary>{title}</summary><pre>{displayDetails(value)}</pre></details>; }
-const statuses: Record<string, [string, string]> = { pending: ['○','等待'], ready: ['◇','就绪'], claimed: ['◈','已领取'], running: ['▶','运行中'], succeeded: ['✓','完成'], failed: ['×','失败'], skipped: ['↷','跳过'], blocked: ['⊘','阻塞'], cancelled: ['■','已取消'], interrupted: ['!','中断'], paused: ['Ⅱ','暂停'] };
-export function Status({ value }: { value?: string }) { const [icon, label] = statuses[value ?? ''] ?? ['○', value ?? '未运行']; return <span className={'status status-' + value} title={value} aria-label={label}>{icon} {label}</span>; }
+const statuses: Record<string, [string, string, string]> = { pending: ['○','等待','Waiting'], ready: ['◇','就绪','Ready'], claimed: ['◈','已领取','Claimed'], running: ['▶','运行中','Running'], succeeded: ['✓','完成','Succeeded'], failed: ['×','失败','Failed'], skipped: ['↷','跳过','Skipped'], blocked: ['⊘','阻塞','Blocked'], cancelled: ['■','已取消','Cancelled'], interrupted: ['!','中断','Interrupted'], paused: ['Ⅱ','暂停','Paused'] };
+export function Status({ value }: { value?: string }) { const t = useLocale(); const [icon, zh, en] = statuses[value ?? ''] ?? ['○', value ?? '未运行', value ?? 'Not run']; const label = t(zh, en); return <span className={'status status-' + value} title={label} aria-label={label}>{icon} {label}</span>; }

@@ -1,202 +1,130 @@
-# Codex Agents Workflow Tutorial
+# Using Codex Agents Workflow
 
-[中文版本](TUTORIAL.zh-CN.md)
+[README / 中文](../README.md) · [Detailed Chinese guide](TUTORIAL.zh-CN.md)
 
-## Will installation automatically call subagents?
+Codex Agents Workflow is the successor to **sol-subagent-control**. It adds a visual workbench, versioned workflows, Skill conversion, per-node model bindings, and coordination of separate Codex tasks.
 
-No. Installing and enabling the plugin does not automatically call subagents in every conversation. It only makes the `$codex-agents-workflow:codex-agents-workflow` skill and the control-plane tools discoverable to Codex in **new tasks**. If you create a task from the plugin card's default prompt, that prompt already references the skill. For other tasks, it is recommended to explicitly include this in the first message:
+## Why use it?
 
-```text
-Use $codex-agents-workflow:codex-agents-workflow. Keep the primary agent in charge, read metadata once,
-select one matching Task Type, and verify every auxiliary claim.
-```
+Astra can be valuable for difficult judgments, but using an expensive model for every preparation and execution step can be wasteful. Assign routine work to a suitable lighter model and reserve stronger models for the steps that need them.
 
-After the skill is activated, the primary agent reads sanitized configuration metadata once, before its first repository or task-tool call, and selects a route:
+Workers have their own contexts. The main agent coordinates the task and collects useful results and evidence instead of carrying every intermediate operation in its conversation. This can reduce expensive-model work and pressure on the main context. It is not a guarantee of fewer total tokens: excessive delegation and repeated handoffs also cost tokens.
 
-- `solo`: the primary agent works alone only when primary-only work was explicitly requested.
-- `delegate`: the default for light or ordinary work; execute one implementation or analysis Stage.
-- `audit`: the primary agent does the main work, followed by a read-only review Stage.
-- `full`: use for difficult, high-risk, or broad work; run implementation and independent review in sequence.
+## Install and open
 
-A subagent can be called only when all of the following are true:
+You need Codex with the required plugin/task capabilities, Node.js 20+, and Git.
 
-1. The current task has activated the control-plane skill.
-2. An enabled Task Type matches the semantics of the current task.
-3. Each selected Stage is pinned to one enabled Provider with the required capabilities.
-4. If either the selected Provider or Stage approval gate is enabled, the user explicitly approves it **in the current task**.
-5. A write task supplies non-empty, minimal, repository-relative `allowed_paths`.
+~~~sh
+git clone https://github.com/TohmaN233/codex-agents-workflow.git
+cd codex-agents-workflow
+codex plugin marketplace add .
+codex plugin add codex-agents-workflow@codex-agents-workflow
+node plugins/codex-agents-workflow/scripts/install-agents.mjs
+~~~
 
-Enabling a Provider by itself does not trigger a call, incur a charge, or start anything in the background. The primary agent cannot swap Providers on the fly or silently fall back after a failure.
+Start a fresh Codex task after installation. Ask:
 
-## Install and validate the native roles
+~~~text
+Use $codex-agents-workflow:workflow-control-plane and open the workbench.
+~~~
 
-The native Luna, Terra, and reviewer role files are installed by one cross-platform Node
-entry. PowerShell does not need Git Bash, WSL, `sh`, `jq`, `find`, or `grep`:
+On Windows, run this from the cloned repository or double-click the file:
 
-```powershell
-$plugin = (codex plugin list --json | ConvertFrom-Json).installed |
-  Where-Object pluginId -eq 'codex-agents-workflow@codex-agents-workflow'
-if (-not $plugin) { throw 'codex-agents-workflow is not installed' }
-$installer = Join-Path $plugin.source.path 'scripts\install-agents.mjs'
-if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'native role installer is missing' }
-node $installer
-node $installer --check
-```
+~~~powershell
+.\plugins\codex-agents-workflow\scripts\open-control-console.cmd
+~~~
 
-Linux and macOS use the same Node entry. The shipped `.sh` file is only a compatibility
-wrapper:
+The Windows launcher opens the installed workbench. On macOS/Linux, run `plugins/codex-agents-workflow/scripts/open-control-console.sh` from the repository. Keep its process running.
 
-```sh
-plugin_dir="$(codex plugin list --json | jq -r '.installed[] | select(.pluginId == "codex-agents-workflow@codex-agents-workflow") | .source.path')"
-test -n "$plugin_dir" && test "$plugin_dir" != null || { echo 'codex-agents-workflow is not installed' >&2; exit 1; }
-node "$plugin_dir/scripts/install-agents.mjs"
-node "$plugin_dir/scripts/install-agents.mjs" --check
-```
+![Per-node model selection](assets/tutorial/workbench-node-model.png)
 
-If the optional checker or runtime inspector cannot be found or executed, the skill
-reports `ROLE VALIDATION UNAVAILABLE`, identifies the unverified evidence, and continues
-the task. It does not pretend the check passed. An executed check that returns an
-explicit role, model, or effort mismatch still stops that native lane.
+Both pages offer 中文 / English. Your language preference persists in the browser; changing it preserves unsaved edits and does not translate your stored prompts, workflow names, or model IDs.
 
-## Open the real configuration console with one command
+## Configure models before generating
 
-The following scripts use the real user configuration:
+The workbench needs valid model configuration before its **Generate workflow automatically** button can run. Your current Codex model is not automatically the workbench's generator.
 
-```text
-$CODEX_HOME/codex-agents-workflow/control-plane.json
-```
+1. Open **Provider settings**, enable the native configurations you want, and save their model IDs, reasoning levels, suitability descriptions, and capabilities.
+2. Import a Skill and open **Import review → Advanced options: execution settings, routing rules, and import diagnostics**.
+3. Select **Default generation executor (registered model configuration)** and **Review executor (registered model configuration)**.
+4. Check the skill2workflow routing rules. These choose execution bindings by responsibility; the generator does not become the executor of every node.
+5. Click **Generate workflow automatically**. Inspect progress, review evidence, and any required repair or sign-in actions.
 
-When `CODEX_HOME` is not set, the path is:
+Automatic conversion currently uses registered native configurations for generation and independent review. Cursor and Grok can be separately configured execution endpoints, but are not the generator/reviewer adapters for this button. Cursor CDP inherits its client-side model choice, not the main Codex task's model.
 
-```text
-~/.codex/codex-agents-workflow/control-plane.json
-```
+Enabling a Provider or saving settings alone does not call a model.
 
-This is user-level global configuration, independent of the current repository and working directory. After you save it, other projects and new tasks read the same configuration. The top of the console explicitly shows **Global user configuration** and the actual file path. Only an explicitly configured absolute `CODEX_WORKFLOW_CONFIG` path (or the legacy `SOL_CONTROL_CONFIG` alias), or an override path passed by code for development/testing, is shown in red as **Override/test configuration**. An override does not modify the global configuration and should not be used as the normal entry point.
+## Convert a Skill into a workflow
 
-Console overview (the screenshot uses bundled defaults and contains no local tokens or private settings):
+In the library, choose **Import from Skill**, scan the default Codex folders or your own folder, inspect the exact version, and import it. The source files remain unchanged; the imported instructions and resources form a pinned snapshot.
 
-![Codex Agents Workflow console overview](assets/sol-subagent-control-console.png)
+Generate the workflow, then inspect:
 
-Task Type presets, custom entry points, and the Stage list:
+- step order and truly independent parallel work;
+- the original Skill's hard rules and human approval points;
+- main-agent, worker, and separate-task responsibilities;
+- model bindings, inputs, outputs, and required tools.
 
-![Task Type and Stage configuration](assets/sol-subagent-task-types.png)
+Accept the shown graph as an editable draft, adjust nodes, save, and publish. **Publishing does not execute the business task.** Launching creates a separate Run for a concrete request.
 
-### Windows
+![Skill conversion in progress](assets/tutorial/skill2workflow-generation.png)
 
-After installation, you can double-click the following file in the plugin directory:
+Open the generated graph to adjust dependencies, approval points and node models.
 
-```text
-scripts\open-control-console.cmd
-```
+![Converted video workflow](assets/tutorial/workbench-video.png)
 
-You can also locate and run it from PowerShell with one command:
+You can also ask Codex to import and convert a specified Skill, inspect the draft, and stop before running it.
 
-```powershell
-$plugin = (codex plugin list --json | ConvertFrom-Json).installed |
-  Where-Object pluginId -eq 'codex-agents-workflow@codex-agents-workflow'
-if (-not $plugin) { throw 'codex-agents-workflow is not installed' }
-& "$($plugin.source.path)\scripts\open-control-console.cmd"
-```
+## Run a workflow directly in Codex
 
-### Linux / macOS / Git Bash
+The workbench is not mandatory for each invocation. For a published definition:
 
-```sh
-plugin_dir="$(codex plugin list --json | jq -r '.installed[] | select(.pluginId == "codex-agents-workflow@codex-agents-workflow") | .source.path')"
-test -n "$plugin_dir" && test "$plugin_dir" != null || { echo 'codex-agents-workflow is not installed' >&2; exit 1; }
-sh "$plugin_dir/scripts/open-control-console.sh"
-```
+~~~text
+Use $codex-agents-workflow:workflow-control-plane.
+Run Bounded code change for this specific issue in the current project: …
+Use the configured node bindings and verify the result.
+~~~
 
-The script binds to the stable loopback port `127.0.0.1:58712` and opens the browser. Keep the terminal running; pressing `Ctrl+C` stops the local service. Do not share a local URL that may contain the console token. Use `--port 0` only when you explicitly want a random free port, or choose another fixed port, for example:
+For a separately imported video workflow:
 
-```powershell
-& "$($plugin.source.path)\scripts\open-control-console.cmd" --port 58046
-```
+~~~text
+Use $codex-agents-workflow:workflow-control-plane.
+Run my published video-use workflow.
+Read D:/demo/recordings/剪辑需求.txt and prepare an introduction video.
+Pause at the workflow's plan and preview approval points.
+~~~
 
-```sh
-sh "$plugin_dir/scripts/open-control-console.sh" --port 58046
-```
+**video-use is not bundled.** You must supply and import that Skill yourself. The [real example and three screenshots](../README.md#示例二在-codex-中直接执行-video-use) show delegation, user approval, and the returned video previews. The example uses the original [browser-use/video-use Skill](https://github.com/browser-use/video-use).
 
-In a Codex conversation, saying “Open the Codex Agents Workflow configuration console” is still the equivalent recommended entry point.
+## Separate tasks and the mathematics example
 
-If a task cannot see the `codex_agents_workflow_*` tools, the plugin MCP server was not attached when that task started; this does not mean that the configuration reverted to defaults. Existing tasks do not gain newly installed tools. Do not start the server manually or declare a successful solo fallback. Reload or update the plugin, then create a new task. If reading the global configuration fails only with `EPERM` or `EACCES`, approve access to the global configuration directory above and retry once.
+A thread node starts a visible Codex task. A later continuation sends new input to that same recorded task after its dependencies complete. The controller checks the exact task and corresponding completion rather than substituting a new conversation.
 
-## Configure Task Types, Stages, and Providers
+This fits planning/preparation workflows and long-lived research. One-off workers are often enough for independent investigations. The bundled **Mathematical Research Hybrid** example starts with parallel literature, toolbox, analogy, counterexample, and route probes. Only after human confirmation does it retain a persistent research task; the main agent still accepts the final result.
 
-A Provider describes “who does the work and through which connection”; a Task Type describes “what kind of task this is and which steps it follows.”
+If that definition is not in your saved library, ask Codex to create a draft from the repository's [example definition](../plugins/codex-agents-workflow/control-plane/lib/workflow-presets.mjs), then review your own bindings and publish it. Updates do not overwrite customized definitions or automatically reinstall deleted examples. The thread startup smoke workflow is a developer test fixture, not a production preset.
 
-1. In **Providers**, enable the Providers you are ready to use.
-2. In **Task Types and stages**, use a bundled preset, copy an existing task, or create a blank task. A new Task Type starts as delegate.
-3. Enable **Independent review stage** when difficult work should use full. The displayed workflow is derived from the Stages; there is no separate Route selector.
-4. Select exactly one **Pinned provider** inside each Stage.
-5. Select `read_only` for read-only work or `bounded_write` for repository changes. Approval gates default off; enable one only when you want an extra per-task confirmation.
-6. Save the configuration.
+Thread execution is Cooperative, not OS-level isolation. Main-agent acceptance and observed execution evidence remain necessary.
 
-Bundled presets are starting points, not a closed list. You can delete, restore, copy, rename, or edit them, change their templates, or create entirely custom Task Types. Cursor, Grok, web review, and native agents are Providers; they should not be encoded into Task Type names.
+## Updating and troubleshooting
 
-When upgrading an earlier configuration, a legacy judgment-heavy preset with the standard task identity gains an independent review Stage while preserving its customized implementation Stage. If you changed the Task Type's name, description, tags, or broader semantics, its workflow is preserved instead.
+For the local-clone installation, keep the clone clean and run git pull --ff-only origin main. On Windows, then run:
 
-### Example: translation with independent proofreading
+~~~powershell
+node plugins/codex-agents-workflow/scripts/install-local.mjs
+node plugins/codex-agents-workflow/scripts/install-agents.mjs
+~~~
 
-Translation is a useful custom Task Type because producing the target text and accepting its quality are separate responsibilities:
+The retaining installer preserves old entrypoints needed by active hosts. It is Windows-specific. On other platforms, stop hosts using the old plugin before reinstalling through the Codex CLI. Start a new task after updating.
 
-1. Copy **Implementation with independent review**, rename it `translation-with-review`, and enable it.
-2. Pin the implementation Stage to a translation-capable Provider. Use `bounded_write` and limit `allowed_paths` to the target-language files. Leave approval off unless an extra confirmation is desired.
-3. In its template, require the Provider to preserve line order and count, placeholders, tags, and control codes; follow the supplied glossary and character notes; and report uncertain terms instead of silently guessing.
-4. Pin the review Stage to a separate read-only Reviewer. Require a source/target comparison for omissions, mistranslations, inconsistent names or terminology, tone drift, and damaged placeholders. The Reviewer reports findings but does not rewrite its own findings.
-5. Keep final acceptance with the primary agent: run structural validation, inspect the actual diff, and resolve every blocking review finding.
+Generation failures should show a reason: check configured models, native Provider eligibility, authentication, and runtime requirements. Structural validity alone is not launch readiness. A failed connector must not silently switch Providers.
 
-For example:
+Configuration defaults to ~/.codex/codex-agents-workflow/control-plane.json, or the corresponding CODEX_HOME directory. User workflows and runs are separate from the distributable repository.
 
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-Select my translation-with-review Task Type to translate localization/source.txt into localization/zh-CN.txt.
-I approve only localization/zh-CN.txt for writes. Preserve one output line per source line, all placeholders/tags/control codes, and the supplied glossary.
-After the translation Stage, run the pinned independent read-only review Stage. Do not accept the result until structural checks and every blocking finding are resolved.
-```
+See [connector setup](../plugins/codex-agents-workflow/skills/control-plane/references/provider-contracts.md) for execution backends.
 
-## First real-world test
+![Parallel mathematical research](assets/tutorial/workbench-math.png)
 
-Use a disposable Git repository for the first test, and enable only one Provider at a time.
+## Resume after losing controller state
 
-### 1. Probe the connection
-
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-Read metadata once; call codex_agents_workflow_connector_probe for grok-local, using the current Git repository root as the workspace.
-Do not send a task, and do not treat a successful probe as task completion.
-```
-
-### 2. Read-only task
-
-Create a `read_only` Task Type Stage and pin it to `grok-local` or `cursor-local`, then say:
-
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-Select the read-only test Task Type I configured and have it read the first heading in README.
-Wait for completion, report the real remote identity, and verify that Git status is completely unchanged.
-```
-
-Cursor should return `task_id`, `agent_id`, and `target_id`. Grok should return `task_id`, `session_id`, and `run_id`.
-
-### 3. Bounded write task
-
-Create a `bounded_write` Stage, pin it to the Provider under test, and leave both approval gates off to test normal no-extra-prompt execution. Then authorize one minimal path in the task:
-
-```text
-Use $codex-agents-workflow:codex-agents-workflow.
-I explicitly approve calling grok-local for this task, and it may modify only smoke/grok.txt.
-Select the bounded-write test Task Type I configured; allowed_paths must be exactly ["smoke/grok.txt"].
-After completion, inspect the real diff, changed_paths, outside_paths, and Git status. Do not rely only on the subagent's text result.
-```
-
-The test passes only if the specified file is the only changed path, `outside_paths` is empty, task identity remains continuous, and the primary agent completes independent verification.
-
-## Temporarily disable the control plane
-
-- Turn off **Control plane enabled** in the console: no control-plane task is parsed.
-- Turn off an individual Provider: its configuration remains, but it cannot be selected.
-- Set `CODEX_WORKFLOW_DISABLED=1` before starting Codex: this is an environment-level kill switch that the console cannot bypass. The legacy `SOL_CONTROL_DISABLED` name remains accepted for compatibility.
-- Close the terminal running the one-click console or press `Ctrl+C`: this stops only the configuration webpage and does not change saved enablement state.
-
-The configuration webpage is only a policy editor. Actual calls are made by the control-plane skill and MCP tools in a new Codex task. The main agent owns requirements, verification and acceptance. The bundled reviewer defaults to Astra / medium; each node executes its pinned Provider configuration.
+Give Codex the original Run ID and explicitly authorize recovery. The main conversation can call `workflow_recover_control` without the lost token; existing authorization need not be requested again. The workbench also offers **Take control and pause Run**. Both paths invalidate old control and leases and pause the pinned Run tree. They preserve approvals and outputs, and do not automatically retry, approve or complete work. The main controller must reconcile the original tasks and verify artifacts before acceptance.

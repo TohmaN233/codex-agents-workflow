@@ -11,6 +11,7 @@ import { pathBoundaries, resolveBindings } from './workflow-bindings.mjs';
 import { validateData } from './workflow-data-schema.mjs';
 import { runPermissions, nodePermissions, approvalBinding, leaseToken, executionEnvelope } from './workflow-execution-envelope.mjs';
 import { assertThreadReceipt, isThreadExecutor, threadResourcePacketText } from './thread-handoff.mjs';
+import { assertThreadDispatchAvailable, assertThreadStartIdentity, assertThreadCompletion } from './thread-protocol.mjs';
 import { initialRunState, advanceRun, graphInfo, setOutcome, interruptActiveNodes, EXECUTOR_NODES } from './workflow-state.mjs';
 import { resolveWorkflowPins } from './workflow-pins.mjs';
 import { childIdentity, childPermissions, validateChildClosure } from './workflow-subworkflow.mjs';
@@ -97,7 +98,7 @@ export class WorkflowRuntime {
     const providers = (this.context.providers ?? []).filter(provider => providerIds.has(provider.id));
     for (const pack of closure.packs) if (pack.workflow.skill_policy.mode === 'strict') requireValue(await this.strictCapability(pack, { skills: closure.skills, providers }), 'STRICT_UNAVAILABLE', 'No qualified Strict executor is available; imported Workflows cannot silently downgrade');
     const blobs = closure.blobs;
-    const pins = { schema_version: 1, ...(this.generationPolicy ? {generation:structuredClone(this.generationPolicy)} : {}), root, providers: structuredClone(providers), children: closure.children, skills: closure.skills, resources: closure.resources };
+    const pins = { schema_version: 1, thread_protocol_version: 2, ...(this.generationPolicy ? {generation:structuredClone(this.generationPolicy)} : {}), root, providers: structuredClone(providers), children: closure.children, skills: closure.skills, resources: closure.resources };
     const controlToken = randomBytes(32).toString('hex');
     const state = initialRunState({ runId: run_id, pinsHash: digest(canonicalJSON(pins)), pins, inputs: structuredClone(inputs), permissions, constraints: structuredClone(constraints), controlHash: digest(controlToken), mainActor: main_actor, requireApproval: require_approval });
     const scopes = validateChildClosure(pins, state);
@@ -333,13 +334,13 @@ export class WorkflowRuntime {
       requireValue(definition.type !== 'subworkflow' || authority === CHILD_COMPLETION, 'CHILD_ACCEPTANCE_REQUIRED', 'SubWorkflow output must be collected from its exact accepted child Run');
       validateData(payload.structured_output, definition.outputs_schema);
       if (['provider', 'thread'].includes(definition.executor?.kind)) requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Provider or Codex task-thread completion requires a persisted exact task identity');
-      if (definition.executor?.kind === 'thread') requireValue(payload.evidence.some(item => item && item.kind === 'codex_thread' && item.thread_id === attempt.dispatch.receipt.thread_id && item.observed === 'completed'), 'THREAD_COLLECTION_EVIDENCE', 'Codex task-thread completion requires evidence from the exact recorded task');
+      if (definition.executor?.kind === 'thread') assertThreadCompletion(state, pins, attempt, payload);
       const permission = nodePermissions(definition, state);
       requireValue(!payload.outside_paths.length, 'SCOPE_VIOLATION', 'Completion reports writes outside the permitted scope');
       const changed = pathBoundaries(payload.changed_paths);
       requireValue(permission.access === 'bounded_write' || !changed.length, 'SCOPE_VIOLATION', 'Read-only node reports filesystem changes');
       const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
-      requireValue(changed.every(path => permission.allowed_paths.some(root => key(path) === key(root) || key(path).startsWith(key(root) + '/'))), 'SCOPE_VIOLATION', 'Changed paths exceed the exact execution envelope');
+      requireValue(changed.every(path => permission.allowed_paths.some(root => root === '.' || key(path) === key(root) || key(path).startsWith(key(root) + '/'))), 'SCOPE_VIOLATION', 'Changed paths exceed the exact execution envelope');
       if (node_id === pins.root.workflow.finalization.node_id) requireValue(definition.executor.kind === 'main' && attempt.owner === state.main_actor && payload.acceptance?.accepted === true, 'FINAL_ACCEPTANCE_REQUIRED', 'Finalization requires explicit main-agent acceptance');
       node.output = payload.structured_output; node.error = null;
       attempt.status = 'succeeded'; attempt.finished_at = new Date().toISOString(); attempt.completion_hash = fingerprint; attempt.completion = payload;
@@ -377,6 +378,7 @@ export class WorkflowRuntime {
       }
       if (previous?.dispatch) {
         requireValue(reconciliation?.attempt_id === previous.id && reconciliation.dispatch_request_id === previous.dispatch.request_id && ['not_started', 'terminated', 'explicit_retry'].includes(reconciliation.outcome) && Array.isArray(reconciliation.evidence) && reconciliation.evidence.length, 'DISPATCH_RECONCILIATION_REQUIRED', 'Uncertain external work must be reconciled or explicitly retried with evidence');
+        if (definition.executor?.kind === 'thread') requireValue(['not_started', 'terminated'].includes(reconciliation.outcome), 'THREAD_RECONCILIATION_REQUIRED', 'A task turn must be observed not started or terminated before retry; explicit retry cannot release a shared task lane');
         previous.reconciliation = structuredClone(reconciliation);
       }
       for (const descendant of graph.visit(node_id)) {
@@ -457,10 +459,11 @@ export class WorkflowRuntime {
 
   async recordDispatchIntent(runId, { node_id, attempt_id, lease_token, request_id, envelope_hash, control_token }) {
     requireValue(typeof request_id === 'string' && request_id && request_id.length <= 128 && /^[a-f0-9]{64}$/.test(envelope_hash), 'DISPATCH_INTENT', 'Dispatch requires a stable request ID and envelope fingerprint');
-    const result = await this.transition(runId, 'dispatch_intent', state => {
+    const result = await this.transition(runId, 'dispatch_intent', (state, pins) => {
       authorize(state, control_token); const { attempt } = attemptFor(state, node_id, attempt_id, lease_token);
       if (attempt.dispatch) { requireValue(attempt.dispatch.request_id === request_id && attempt.dispatch.envelope_hash === envelope_hash, 'DISPATCH_CONFLICT', 'Attempt already has a different dispatch intent'); return; }
       requireValue(state.status === 'running', 'RUN_NOT_RUNNING', 'Paused or terminal Runs cannot dispatch new external work');
+      assertThreadDispatchAvailable(state, pins, node_id, attempt_id);
       attempt.dispatch = { request_id, envelope_hash, phase: 'intent', receipt: null, cancellation_pending: false }; touch(state);
     });
     return { ...publicRun(result), idempotent: result.idempotent ?? false };
@@ -475,7 +478,10 @@ export class WorkflowRuntime {
       requireValue(attempt.dispatch?.request_id === request_id, 'DISPATCH_INTENT_MISSING', 'Receipt does not match a persisted dispatch intent');
       if (attempt.dispatch.receipt) { requireValue(canonicalJSON(attempt.dispatch.receipt) === serialized, 'DISPATCH_CONFLICT', 'Receipt differs from the exact previously recorded task'); return; }
       const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
-      if (definition?.executor?.kind === 'thread') assertThreadReceipt(state, definition.executor, receipt);
+      if (definition?.executor?.kind === 'thread') {
+        assertThreadReceipt(state, definition.executor, receipt);
+        assertThreadStartIdentity(state, definition, attempt_id, receipt);
+      }
       attempt.dispatch.receipt = structuredClone(receipt); attempt.dispatch.phase = 'acknowledged';
       if (node.active_attempt_id === attempt_id && node.status === 'claimed') { node.status = 'running'; attempt.status = 'running'; }
       else attempt.dispatch.cancellation_pending = true;

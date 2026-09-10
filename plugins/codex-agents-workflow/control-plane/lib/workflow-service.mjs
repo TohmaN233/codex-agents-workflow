@@ -34,7 +34,7 @@ import { inlineSkillReference } from './skill-import/inline-skill.mjs';
 import { parallelManagerFor } from './parallel/worktree-manager.mjs';
 import { readEditorResource, writeEditorResource, publishEditorWorkflow } from './workflow-editor.mjs';
 import { QUALIFIED_CODEX, qualifiedStrictSettings } from './execution/strict-config.mjs';
-import { adoptRunTree, controllerAttempt, reattachAttempt } from './workflow-recovery.mjs';
+import { adoptRunTree, conversationControlRecoveryRequest, controllerAttempt, reattachAttempt } from './workflow-recovery.mjs';
 import { childIdentity } from './workflow-subworkflow.mjs';
 import { nodePermissions } from './workflow-execution-envelope.mjs';
 import { effectiveSkillPolicy } from './workflow-reference-schema.mjs';
@@ -49,6 +49,16 @@ function inventorySelection(service, args) {
     return {inventory:service.skillInventory, path:args.workspace};
   }
   return {inventory:service.folderInventory,path:args.folder};
+}
+
+async function recoverControllerTree(strictManager, runtime, args) {
+  const recovered = await adoptRunTree(runtime, args.run_id, args); const errors = [...recovered.errors];
+  const recoveredAuthorities = [...recovered.authorities];
+  const stopped = await Promise.allSettled(recoveredAuthorities.map(async ([id, authority]) => { await strictManager.stopRecovered(id, authority); return id; }));
+  stopped.forEach((result, index) => { if (result.status === 'rejected') errors.push({ run_id: recoveredAuthorities[index][0], code: result.reason.code ?? 'RECOVERY_CLEANUP_FAILED', message: result.reason.message }); });
+  await runtime.runs.mutate(args.run_id, 'control_recovery', state => { requireValue(state.control_hash === digest(recovered.run.control_token), 'RUN_AUTHORITY', 'Another controller recovery replaced this controller during cleanup'); state.control_recovery.errors = errors; });
+  return { ...await runtime.get(args.run_id), control_token: recovered.run.control_token, recovery_errors: errors,
+    stopped_run_ids: stopped.filter(result => result.status === 'fulfilled').map(result => result.value) };
 }
 
 export class WorkflowService {
@@ -96,6 +106,7 @@ export class WorkflowService {
   async call(operation, args = {}, { human = false } = {}) {
     if (operation === 'migrate_v6') { requireValue(human, 'HUMAN_CONFIGURATION_REQUIRED', 'Migration is a user-owned console action'); await this.config(); return migrateV6OnDisk({ configPath: this.configPath }); }
     if (operation === 'restore_v6') { requireValue(human, 'HUMAN_CONFIGURATION_REQUIRED', 'Backup restoration is a user-owned console action'); return restoreV6Backup({ configPath: this.configPath, expected_current_sha256: args.expected_current_sha256 }); }
+    const conversationalRecovery = operation === 'recover_control' ? conversationControlRecoveryRequest(args) : null;
     const { config, context, store, runtime, executor } = await this.open();
     if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
@@ -320,13 +331,9 @@ export class WorkflowService {
       }
       case 'adopt_run': {
         requireValue(human, 'HUMAN_CONTROL_RECOVERY_REQUIRED', 'Only the authenticated local human console can replace a lost main controller');
-        const recovered = await adoptRunTree(runtime, args.run_id, args); const errors = [...recovered.errors];
-        const stopped = await Promise.allSettled([...recovered.authorities].map(async ([id, authority]) => { await this.strictManager.stopRecovered(id, authority); return id; }));
-        stopped.forEach((result, index) => { if (result.status === 'rejected') errors.push({ run_id: [...recovered.authorities.keys()][index], code: result.reason.code ?? 'RECOVERY_CLEANUP_FAILED', message: result.reason.message }); });
-        await runtime.runs.mutate(args.run_id, 'control_recovery', state => { requireValue(state.control_hash === digest(recovered.run.control_token), 'RUN_AUTHORITY', 'Another human recovery replaced this controller during cleanup'); state.control_recovery.errors = errors; });
-        return { ...await runtime.get(args.run_id), control_token: recovered.run.control_token, recovery_errors: errors,
-          stopped_run_ids: stopped.filter(result => result.status === 'fulfilled').map(result => result.value) };
+        return recoverControllerTree(this.strictManager, runtime, args);
       }
+      case 'recover_control': return recoverControllerTree(this.strictManager, runtime, conversationalRecovery);
       case 'recover_claim': {
         const record = await executor.recoveryPreparation(args.run_id, args);
         requireValue(!record.attempt.dispatch, 'DISPATCH_UNCERTAIN', 'This attempt has dispatch intent; inspect its exact executor instead');

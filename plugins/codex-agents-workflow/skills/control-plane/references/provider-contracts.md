@@ -26,6 +26,21 @@ Generic agents receive explicit model/effort overrides with a fresh context; fix
 roles receive no overrides and must match their registered model/effort. A requested sandbox is not proof of the host
 policy. Reviewers remain behaviorally read-only and do not implement their own fixes.
 
+## `codex_thread`
+
+Use the returned create-or-continue handoff through the Codex task tools. Preserve
+its entire prompt, resolved workspace, access and output-write boundaries; these
+are Cooperative instructions, not an OS sandbox. Record the actual `threadId` as
+`receipt.thread_id`. A continuation retains that exact task and Provider; a start
+requires a fresh task identity. Queued `clientThreadId` values cannot be receipts.
+
+New Runs pin thread protocol v2. Inspect the exact dispatch marker in the task's
+user prompt and its completed assistant turn. Submit the actual `turn_id` and
+`dispatch_request_id` in the `codex_thread` completion observation. Earlier turns,
+generic task completion, or missing host turn identity are insufficient. The host
+attests this correlation; the runtime checks dispatch identity and rejects reused
+turns. Existing unversioned Runs retain their original evidence requirements.
+
 ## Built-in connector operations
 
 Both built-in connectors use:

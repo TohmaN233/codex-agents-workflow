@@ -30,7 +30,6 @@ import {
   selectNewCursorAgent,
 } from './cursor-profile.mjs';
 
-const execFileAsync = promisify(execFile);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'scope_violation', 'abandoned']);
 
 function sleep(ms) {
