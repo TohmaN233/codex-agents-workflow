@@ -56,7 +56,7 @@ const files = [
   'skill-import.test.mjs',
 ].map((name) => join(root, name));
 
-const child = spawn(process.execPath, ['--test', ...files], {
+const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...files], {
   stdio: 'inherit',
   windowsHide: true,
   env: process.env,

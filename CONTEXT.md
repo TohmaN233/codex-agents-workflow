@@ -9,7 +9,8 @@ capabilities and permissions are checked again at launch. Strict means qualified
 catalog/explicit-injection/broker control, never an OS ACL. Recovery reconnects
 exact identities, never latest or automatically resubmitted tasks.
 
-Read docs/V7_UPGRADE.md and the V7_*_CONTRACT documents for current definitions.
+Read plugins/codex-agents-workflow/skills/control-plane/SKILL.md and its linked
+references for current execution, editing, Provider and recovery contracts.
 The language below is retained only for v6 compatibility and the native-only skill.
 
 This context defines the control-plane language used to bind reusable work semantics to concrete auxiliary execution backends without giving the Workflow layer provider-selection authority.

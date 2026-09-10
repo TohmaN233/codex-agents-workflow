@@ -1,6 +1,6 @@
 # Using Codex Agents Workflow
 
-[README / 中文](../README.md) · [Detailed Chinese guide](TUTORIAL.zh-CN.md)
+[English README](../README.en.md) · [中文](../README.md) · [Detailed Chinese guide](TUTORIAL.zh-CN.md)
 
 Codex Agents Workflow is the successor to **sol-subagent-control**. It adds a visual workbench, versioned workflows, Skill conversion, per-node model bindings, and coordination of separate Codex tasks.
 
@@ -34,7 +34,13 @@ On Windows, run this from the cloned repository or double-click the file:
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd
 ~~~
 
-The Windows launcher opens the installed workbench. On macOS/Linux, run `plugins/codex-agents-workflow/scripts/open-control-console.sh` from the repository. Keep its process running.
+On macOS / Linux, run this from the repository root:
+
+~~~sh
+sh plugins/codex-agents-workflow/scripts/open-control-console.sh
+~~~
+
+The Windows launcher opens the installed plugin; the `.sh` script starts the workbench from the current clone. Keep the terminal process running.
 
 ![Per-node model selection](assets/tutorial/workbench-node-model.png)
 

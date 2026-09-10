@@ -4,7 +4,7 @@
 
 这是 **sol-subagent-control 的升级版**：从控制子 Agent 的分工，发展为带可视化工作台的 Workflow 插件。你可以把已有 Skill 转成流程图，为不同节点指定模型与推理强度，让主 Agent 按依赖调度子 Agent，或创建、续聊独立的 Codex task，最后检查成果。
 
-[中文操作教程](docs/TUTORIAL.zh-CN.md) · [English guide](docs/TUTORIAL.md)
+[中文](README.md) · [English](README.en.md) · [中文操作教程](docs/TUTORIAL.zh-CN.md) · [English guide](docs/TUTORIAL.md)
 
 ## 为什么做这个
 
@@ -72,7 +72,13 @@ plugins\codex-agents-workflow\scripts\open-control-console.cmd
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd
 ```
 
-启动器会打开本地工作台。其他平台的打开方法见[操作教程](docs/TUTORIAL.zh-CN.md)。
+macOS / Linux 从仓库根目录运行：
+
+```sh
+sh plugins/codex-agents-workflow/scripts/open-control-console.sh
+```
+
+Windows 启动器打开已安装的插件；`.sh` 脚本启动当前克隆目录中的工作台。需要 Node.js 20+，启动后保持终端进程运行。
 
 ![在工作台中给执行节点选择模型](docs/assets/tutorial/workbench-node-model.png)
 

@@ -94,15 +94,14 @@ The v0.8.0 candidate is `plugins/codex-agents-workflow`; its control-plane packa
 installation and tests must not migrate real user configuration automatically.
 The current language is in CONTEXT.md and runtime contracts. Do not describe pending CI or release steps as complete.
 
-Current runtime contracts and ADR0002–0007 define the maintained architecture.
+The shipped control-plane Skill references and runtime modules define the maintained architecture.
 Use separate branches for large changes. Fix root causes, surface failures and
 keep meaningful journal/audit diagnostics. Never suppress audit durability errors.
 
 Workflow Packs have immutable whole-content revisions, CAS writes, bounded resource
 manifests and delete-to-trash. Runs pin the complete dependency closure and use a
 fsynced hash-chain journal, writer lock and explicit recovery. Definitions edited
-or deleted after Run start never replace its intact pinned material. See
-V7_CORE_CONTRACT, V7_RUN_CONTRACT and V7_SERVICE_CONTRACT.
+or deleted after Run start never replace its intact pinned material.
 
 Run-pinned resources are logical identifiers such as `source/SKILL.md`, never
 filesystem paths. Native execution handoffs expose those IDs and the audited resource
@@ -122,8 +121,7 @@ orchestrator.skills and orchestrator.mcp namespaces. Its boundary covers verifie
 catalogs, explicit injection and the controlled workspace/resource broker, not an
 OS ACL. Unsupported tools, platforms and admin roots fail closed. Never use the
 old current-thread adapter as imported Strict or copy shared auth into profiles.
-Actual local and three synthetic official-login qualification cases are recorded
-under docs/baselines/v7-strict-2026-09-04. A fixture pass is not new qualification.
+Qualification is pinned in strict-config.mjs. A fixture pass is not new qualification.
 
 Skill import discovery defaults to bounded scans of CODEX_HOME/skills and plugins/cache,
 with optional user-provided folders. This is not an executor enabled-Skill inventory.
@@ -133,13 +131,14 @@ expansion uses a selected native Provider and its own read-only planning Run. It
 requires main acceptance and exact-source CAS before another unreviewed Draft.
 SkillRef pins explicit source/name/hash/nested snapshots; SubWorkflow inherits exact
 permissions and child revisions. Source status observes SKILL.md hashes only.
-Read V7_SKILL_IMPORT_CONTRACT before changing these rules.
+Read the shipped control-plane references/editing.md before changing these rules.
 
 Parallel writers need qualified Strict brokers and owned detached Git worktrees.
 Join requires exact patch review, acceptance and target CAS. Never clean an
 unaccepted or changed worktree. Git helper uncertainty persists and blocks all
-further integration/cleanup until reconciled. See V7_PARALLEL_CONTRACT and
-V7_RECOVERY_CONTRACT for controller/lease rotation, exact reattachment and cancellation.
+further integration/cleanup until reconciled. See the shipped control-plane
+references/parallel.md and references/recovery.md for controller/lease rotation,
+exact reattachment and cancellation.
 Cursor runtime scope violations persist evidence before Stop and share manual
 cancel's exact-identity confirmation. A Stop click alone is not terminal evidence;
 identity loss keeps the task unconfirmed and blocks acceptance.
@@ -181,6 +180,9 @@ platform evidence from emulation.
 
 Review regression evidence must use actual independent OS processes for connector
 store contention, and real manager-created worktrees for relocation checks.
+The core suite serializes test files because each file can own multiple subprocesses;
+contention tests still create concurrent OS processes explicitly. Packaged MCP tests
+use an isolated registry fixture and never depend on a developer's Codex installation.
 RunPanel refresh publishes state/next/events/live as one generation-fenced snapshot;
 Run sequence cannot regress and disposed Run callbacks cannot restart refreshes.
 The stdio drain process test uses an OS SIGTERM on POSIX. On Windows it injects
@@ -341,3 +343,6 @@ Public documentation is a screenshot-led usage tutorial. Keep maintenance diarie
 repair histories and submitted development plans outside the repository. Do not
 enforce README length, frozen prose or historical version narratives in verification
 scripts. Link third-party Skills to their original repositories; do not bundle them.
+Keep docs limited to the current Chinese/English usage tutorials and their referenced
+screenshots. Remove obsolete PNGs, architecture diaries, ADRs, historical baselines
+and duplicate contract documents; runtime guidance belongs in the shipped Skills.

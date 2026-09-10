@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,rm,realpath} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {discoverRuntimeEnvironment} from '../lib/runtime-environment.mjs';
@@ -17,7 +17,7 @@ test('dependency discovery searches host installations and supplied directories 
   assert.equal(missing.status,'installation_approval_required');assert.deepEqual(missing.missing,['media-tool']);
   assert.equal(missing.installation_performed,false);assert.equal(missing.tools[0].status,'found');
   const ready=await discoverRuntimeEnvironment({executables:['python','media-tool','python']},{env,extraDirectories:[custom]});
-  assert.equal(ready.status,'ready');assert.equal(ready.tools.length,2);assert.equal(ready.tools[1].path,join(custom,'media-tool'+suffix));
+  assert.equal(ready.status,'ready');assert.equal(ready.tools.length,2);assert.equal(ready.tools[1].path,await realpath(join(custom,'media-tool'+suffix)));
  } finally {await rm(root,{recursive:true,force:true});}
 });
 

@@ -7,9 +7,8 @@ authentication and only synthetic fixtures. None copies shared credentials,
 installs a plugin, or changes real user configuration. No production code imports
 this directory.
 
-The combined evidence supports a bounded Windows implementation candidate; see
-`../../docs/baselines/v6-2026-09-04/M1-FEASIBILITY.md`. A zero exit code is a successful
-probe, never permission to execute a production Strict workflow. Reports retain
+Historical probe results are kept outside the repository. A zero exit code is a
+successful probe, never permission to execute a production Strict workflow. Reports retain
 `strict_proven: false` and `m1_gate: "incomplete"` independently of the combined
 development decision.
 

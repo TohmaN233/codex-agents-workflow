@@ -26,8 +26,6 @@ tutorial=$repo_dir/docs/TUTORIAL.zh-CN.md
 for required in \
   "$manifest" "$mcp_manifest" "$marketplace" "$config" "$server" "$skill" "$architecture" \
   "$contracts" "$ui" "$workflow" "$tutorial" \
-  "$repo_dir/docs/assets/sol-subagent-control-console.png" \
-  "$repo_dir/docs/assets/sol-subagent-task-types.png" \
   "$control/package.json" \
   "$control/open-console.mjs" \
   "$control/connectors/cursor-cdp.mjs" \
@@ -62,7 +60,8 @@ jq empty "$control/package.json"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].command' "$mcp_manifest")" = node ] || fail "control-plane MCP does not use node"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].enabled' "$mcp_manifest")" = true ] || fail "control-plane MCP is disabled"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].cwd' "$mcp_manifest")" = ../../.. ] || fail "control-plane MCP must launch outside disposable version directories"
-node "$script_dir/check-mcp-startup.mjs" || fail "packaged MCP handshake failed"
+# The suite below probes the packaged MCP with an isolated installation registry.
+# check-mcp-startup.mjs remains the diagnostic for a real installed host.
 jq -e '.name == "codex-agents-workflow" and (.plugins[] | select(.name == "codex-agents-workflow"))' "$marketplace" >/dev/null || fail "local marketplace still exposes the retired predecessor identity"
 jq -e '.mcpServers["codex-agents-workflow"].env_vars | index("CODEX_HOME") and index("USERPROFILE")' "$mcp_manifest" >/dev/null || fail "control-plane MCP does not inherit the global Codex environment"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].default_tools_approval_mode' "$mcp_manifest")" = approve ] || fail "control-plane MCP is not approval-gated"

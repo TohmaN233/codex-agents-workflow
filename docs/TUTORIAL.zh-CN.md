@@ -25,7 +25,7 @@ Windows 从克隆的仓库根目录运行：
 macOS / Linux 可从仓库根目录启动：
 
 ~~~sh
-./plugins/codex-agents-workflow/scripts/open-control-console.sh
+sh plugins/codex-agents-workflow/scripts/open-control-console.sh
 ~~~
 
 该脚本从源码目录启动工作台，需要 Node.js 20+。
