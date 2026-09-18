@@ -115,6 +115,7 @@
         "environment_mode": "inherit",
         "startup_timeout_ms": 15000,
         "task_timeout_ms": 600000,
+        "max_task_duration_ms": 21600000,
         "max_result_chars": 131072,
         "single_active_run": true
       }

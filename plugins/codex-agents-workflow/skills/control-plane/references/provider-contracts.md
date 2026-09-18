@@ -117,7 +117,10 @@ The connector starts a dedicated Leader and ACP child and uses `initialize`,
 - An in-scope write permission is still surfaced for explicit option selection.
 - Cancellation requires `confirm=true`, `expected_session_id`, and `expected_run_id`.
   It is terminal only after ACP prompt evidence proves the outcome.
-- Timeout enters `needs_attention`; no replacement run is created.
+- `task_timeout_ms` is an inactivity deadline: every exact-session ACP update renews
+  it, and it pauses while an exact permission/input decision is pending. A separate
+  `max_task_duration_ms` bounds the underlying prompt RPC as a long absolute safety
+  limit. Inactivity timeout enters `needs_attention`; no replacement run is created.
 - After restart, `reconcile` attaches an ACP child to the persisted Leader socket and
   loads the exact session. Because ACP does not prove the prior run state, it reports
   `RECOVERED_RUN_STATE_UNKNOWN` and permits exact inspection/cancellation rather than

@@ -307,6 +307,31 @@ test('timeout is ambiguous and never auto-resubmits', async () => {
   });
 });
 
+test('Grok ACP activity renews the inactivity deadline beyond the original timeout', async () => {
+  const fx = await fixture();
+  const started = await start(fx, 'ACTIVITY_THEN_COMPLETE');
+  const done = await fx.registry.status(started.task_id, 5000);
+  assert.equal(done.state, 'completed', JSON.stringify(done.error));
+  assert.match(done.result.text, /active fixture result/);
+});
+
+test('Grok inactivity timeout pauses while an exact permission decision is pending', async () => {
+  const fx = await fixture();
+  const started = await start(fx, 'ASK_PERMISSION');
+  const waiting = await fx.registry.status(started.task_id, 5000);
+  assert.equal(waiting.state, 'needs_permission');
+  assert.equal(waiting.deadline_at, null);
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  const stillWaiting = await fx.registry.status(started.task_id);
+  assert.equal(stillWaiting.state, 'needs_permission');
+  await fx.registry.control(started.task_id, {
+    action: 'respond_permission', request_id: waiting.pending_request.request_id,
+    decision: 'select', option_id: 'allow-once',
+  });
+  const done = await fx.registry.status(started.task_id, 5000);
+  assert.equal(done.state, 'completed', JSON.stringify(done.error));
+});
+
 test('read-only workspace mutation produces scope_violation', async () => {
   const fx = await fixture();
   const started = await start(fx, 'WRITE_FILE');

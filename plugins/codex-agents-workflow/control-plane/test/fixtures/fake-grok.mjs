@@ -95,6 +95,19 @@ if (args[0] === 'agent' && args[1] === 'leader') {
       } else if (text.includes('WRITE_FILE')) {
         await writeFile(join(process.cwd(), 'unexpected.txt'), 'changed\n');
         complete('wrote unexpected file');
+      } else if (text.includes('ACTIVITY_THEN_COMPLETE')) {
+        let count = 0;
+        const timer = setInterval(() => {
+          count += 1;
+          send({ jsonrpc: '2.0', method: 'session/update', params: {
+            sessionId: '11111111-1111-7111-8111-111111111111',
+            update: { sessionUpdate: 'tool_call_update', toolCallId: 'fixture-active-tool', status: 'in_progress' },
+          } });
+          if (count === 4) {
+            clearInterval(timer);
+            complete('active fixture result');
+          }
+        }, 400);
       } else if (!text.includes('HANG') && !text.includes('WAIT_FOR_CANCEL')) {
         complete();
       }

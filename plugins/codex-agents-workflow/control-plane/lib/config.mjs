@@ -168,12 +168,13 @@ function validateBuiltinConnector(raw) {
   const connector = text(raw.connector, 'provider.config.connector', { required: true, max: 64 });
   assert(['grok_acp', 'cursor_cdp'].includes(connector),
     'provider.config.connector must be grok_acp or cursor_cdp');
+  const taskTimeoutMax = connector === 'grok_acp' ? 3_600_000 : 900_000;
   const common = {
     connector,
     environment_mode: 'inherit',
     startup_timeout_ms: integer(raw.startup_timeout_ms, 15_000, 1_000, 120_000,
       'provider.config.startup_timeout_ms'),
-    task_timeout_ms: integer(raw.task_timeout_ms, 600_000, 1_000, 900_000,
+    task_timeout_ms: integer(raw.task_timeout_ms, 600_000, 1_000, taskTimeoutMax,
       'provider.config.task_timeout_ms'),
     max_result_chars: integer(raw.max_result_chars, 131_072, 1_024, 524_288,
       'provider.config.max_result_chars'),
@@ -188,7 +189,13 @@ function validateBuiltinConnector(raw) {
       'provider.config.transport', { required: true, max: 64 });
     assert(transport === 'leader_acp_stdio',
       'provider.config.transport must be leader_acp_stdio for grok_acp');
-    return { ...common, binary_env: binaryEnv, transport };
+    return {
+      ...common,
+      max_task_duration_ms: integer(raw.max_task_duration_ms, 21_600_000,
+        common.task_timeout_ms, 86_400_000, 'provider.config.max_task_duration_ms'),
+      binary_env: binaryEnv,
+      transport,
+    };
   }
   const executableEnv = text(raw.executable_env ?? 'CURSOR_EXE',
     'provider.config.executable_env', { required: true, max: 128 });

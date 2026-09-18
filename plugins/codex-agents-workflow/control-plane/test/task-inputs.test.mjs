@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {prepareTaskInputs,generateTaskBrief} from '../lib/task-inputs.mjs';
 import {pathBoundaries,intersectBoundaries} from '../lib/workflow-bindings.mjs';
-import {pathAllowed} from '../connectors/scope-guard.mjs';
+import {pathAllowed,runtimeWatchReasonIsViolation} from '../connectors/scope-guard.mjs';
 
 test('task input preparation preserves schema and invokes main only when needed',async()=>{
   const base={inputs:{task:'Translate foo.txt into Chinese'},schema:{type:'object',additionalProperties:false,required:['file','language'],properties:{file:{type:'string'},language:{type:'string'}}}};
@@ -21,6 +21,15 @@ test('whole-project boundary intersects narrower scopes without allowing escapes
   assert(!pathAllowed('C:/outside.txt',['.']));
   assert.throws(()=>pathBoundaries(['']),{code:'PATH_SCOPE'});
   assert.throws(()=>pathBoundaries(['../outside']),{code:'PATH_SCOPE'});
+});
+
+test('runtime scope watch defers filename-less events to the terminal snapshot',()=>{
+  assert.equal(runtimeWatchReasonIsViolation('unknown_path'),false);
+  assert.equal(runtimeWatchReasonIsViolation('allowed_path'),false);
+  assert.equal(runtimeWatchReasonIsViolation('allowed_path_ancestor'),false);
+  assert.equal(runtimeWatchReasonIsViolation('outside_allowed_paths'),true);
+  assert.equal(runtimeWatchReasonIsViolation('read_only'),true);
+  assert.equal(runtimeWatchReasonIsViolation('watch_error:boom'),true);
 });
 
 test('task brief generation uses registered Luna settings and returns an editable task',async()=>{

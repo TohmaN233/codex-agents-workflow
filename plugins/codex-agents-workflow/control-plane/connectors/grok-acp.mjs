@@ -326,6 +326,8 @@ export class GrokAcpConnector {
         initializing: true,
         processExit: null,
         timeout: null,
+        inactivityGeneration: 0,
+        deadlinePersistTimer: null,
       };
       if (startupError) throw startupError;
       this.active.set(task.task_id, active);
@@ -353,8 +355,10 @@ export class GrokAcpConnector {
             details: { prevented_attempts: scopeMonitor.violations },
           });
       }
+      const inactivityDeadline = this.#nextInactivityDeadline(active);
       await this.store.update(task.task_id, {
         state: 'running',
+        deadline_at: inactivityDeadline,
         remote_identity: {
           session_id: sessionId,
           run_id: runId,
@@ -373,11 +377,11 @@ export class GrokAcpConnector {
         return this.publicTask(await this.store.get(task.task_id));
       }
       this.#signal(task.task_id);
-      active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), provider.config.task_timeout_ms);
+      this.#armInactivityTimeout(active, inactivityDeadline);
       void this.#background(active, () => peer.request('session/prompt', {
         sessionId,
         prompt: [{ type: 'text', text: boundedPrompt }],
-      }, provider.config.task_timeout_ms + 60_000)
+      }, provider.config.max_task_duration_ms ?? 21_600_000)
         .then((result) => this.#complete(active, result))
         .catch((error) => this.#fail(active, error)));
       return this.publicTask(await this.store.get(task.task_id));
@@ -562,6 +566,8 @@ export class GrokAcpConnector {
   }
 
   async #onSessionUpdate(active, params) {
+    if (params?.sessionId && params.sessionId !== active.sessionId) return;
+    this.#recordActivity(active);
     const chunk = textChunk(params);
     if (!chunk) return;
     const max = active.provider.config.max_result_chars;
@@ -699,7 +705,8 @@ export class GrokAcpConnector {
 
   async #persistPendingRequest(active, pending, fields) {
     try {
-      await this.store.update(active.taskId, fields);
+      this.#pauseInactivityTimeout(active);
+      await this.store.update(active.taskId, { ...fields, deadline_at: null });
       if (active.pendingRequest?.requestId === pending.requestId) this.#signal(active.taskId);
     } catch (error) {
       if (active.pendingRequest?.requestId === pending.requestId) {
@@ -720,6 +727,7 @@ export class GrokAcpConnector {
     // durable publication still gate acceptance, but are not a remote timeout.
     active.terminalObservedAt = new Date().toISOString();
     clearTimeout(active.timeout);
+    clearTimeout(active.deadlinePersistTimer);
     const current = await this.store.get(active.taskId);
     if (current && RESULT_STATES.has(current.state)) {
       await this.#cleanup(active);
@@ -832,17 +840,62 @@ export class GrokAcpConnector {
     this.#signal(active.taskId);
   }
 
-  async #timeout(active) {
-    if (active.processExit || active.terminalObservedAt) return;
+  #nextInactivityDeadline(active) {
+    return new Date(Date.now() + active.provider.config.task_timeout_ms).toISOString();
+  }
+
+  #armInactivityTimeout(active, deadlineAt = this.#nextInactivityDeadline(active)) {
+    clearTimeout(active.timeout);
+    const generation = ++active.inactivityGeneration;
+    active.timeout = setTimeout(
+      () => this.#background(active, () => this.#timeout(active, generation)),
+      Math.max(0, new Date(deadlineAt).getTime() - Date.now()),
+    );
+    return deadlineAt;
+  }
+
+  #pauseInactivityTimeout(active) {
+    clearTimeout(active.timeout);
+    clearTimeout(active.deadlinePersistTimer);
+    active.timeout = null;
+    active.deadlinePersistTimer = null;
+    active.inactivityGeneration += 1;
+  }
+
+  #recordActivity(active) {
+    if (active.intentionalCleanup || active.terminalObservedAt || active.pendingRequest
+      || this.active.get(active.taskId) !== active) return;
+    const deadlineAt = this.#armInactivityTimeout(active);
+    clearTimeout(active.deadlinePersistTimer);
+    const generation = active.inactivityGeneration;
+    active.deadlinePersistTimer = setTimeout(() => {
+      active.deadlinePersistTimer = null;
+      void this.#background(active, async () => {
+        await this.store.update(active.taskId, { deadline_at: deadlineAt }, {
+          guard: current => this.active.get(active.taskId) === active
+            && !active.intentionalCleanup && !active.terminalObservedAt
+            && active.inactivityGeneration === generation
+            && !RESULT_STATES.has(current.state),
+        });
+        this.#signal(active.taskId);
+      });
+    }, 250);
+  }
+
+  async #timeout(active, generation) {
+    if (active.processExit || active.terminalObservedAt
+      || active.inactivityGeneration !== generation) return;
     const current = await this.store.get(active.taskId);
-    if (!current || RESULT_STATES.has(current.state) || active.terminalObservedAt) return;
+    if (!current || RESULT_STATES.has(current.state) || active.terminalObservedAt
+      || active.inactivityGeneration !== generation) return;
     await this.store.update(active.taskId, {
       state: 'needs_attention',
       error: publicConnectorError(connectorError('TIMEOUT_UNCONFIRMED',
-        'The Grok task exceeded its deadline without a confirmed terminal state.', {
+        'The Grok task produced no ACP activity before the configured inactivity deadline.', {
           actionRequired: 'Inspect or cancel the exact session/run; do not resubmit automatically.',
         })),
-    }, { guard: current => !active.terminalObservedAt && !RESULT_STATES.has(current.state) });
+    }, { guard: current => !active.terminalObservedAt
+      && active.inactivityGeneration === generation && !RESULT_STATES.has(current.state) });
     this.#signal(active.taskId);
   }
 
@@ -915,7 +968,7 @@ export class GrokAcpConnector {
     });
     const active = {
       taskId: task.task_id,
-      provider: { config: { max_result_chars: 131_072 } },
+      provider: { config: { max_result_chars: 131_072, task_timeout_ms: 600_000 } },
       stage: { read_only: task.read_only },
       workspace: task.workspace,
       baseline: task.baseline_snapshot,
@@ -935,6 +988,8 @@ export class GrokAcpConnector {
       resultText: '',
       intentionalCleanup: false,
       timeout: null,
+      inactivityGeneration: 0,
+      deadlinePersistTimer: null,
       sessionId: identity.session_id,
       runId: identity.run_id,
       recovered: true,
@@ -987,8 +1042,9 @@ export class GrokAcpConnector {
     if (pending.committing) throw connectorError('CONTROL_IN_PROGRESS', 'This decision is already being committed');
     pending.committing = true;
     try {
+      const inactivityDeadline = this.#nextInactivityDeadline(active);
       const committed = await this.store.update(active.taskId, {
-        state: 'running', pending_request: null,
+        state: 'running', pending_request: null, deadline_at: inactivityDeadline,
         last_decision: { request_id: pending.requestId, kind: pending.kind,
           decision: pending.kind === 'permission' ? response.outcome.outcome : response.action,
           ...(pending.kind === 'permission' && response.outcome.optionId ? { option_id: response.outcome.optionId } : {}),
@@ -1004,6 +1060,7 @@ export class GrokAcpConnector {
         throw connectorError('DECISION_NOT_DELIVERED', 'Task ownership changed before decision delivery; reconcile the task');
       }
       active.pendingRequest = null;
+      this.#armInactivityTimeout(active, inactivityDeadline);
       pending.resolve(response);
       return committed;
     } catch (error) {
@@ -1017,6 +1074,7 @@ export class GrokAcpConnector {
     if (this.active.get(active.taskId) !== active) return;
     active.intentionalCleanup = true;
     clearTimeout(active.timeout);
+    clearTimeout(active.deadlinePersistTimer);
     active.scopeMonitor?.close();
     if (active.pendingRequest) {
       active.pendingRequest.resolve(active.pendingRequest.kind === 'permission'

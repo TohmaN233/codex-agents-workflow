@@ -307,6 +307,10 @@ export async function verifyWorkspaceScope(workspace, baseline, {
   };
 }
 
+export function runtimeWatchReasonIsViolation(reason) {
+  return !['allowed_path', 'allowed_path_ancestor', 'unknown_path'].includes(reason);
+}
+
 export function startWorkspaceScopeMonitor(workspace, {
   readOnly,
   allowedPaths = [],
@@ -332,7 +336,11 @@ export function startWorkspaceScopeMonitor(workspace, {
       observed_at: new Date().toISOString(),
     };
     observed.push(entry);
-    if (!['allowed_path', 'allowed_path_ancestor'].includes(reason)) {
+    // fs.watch may occasionally omit the filename on Windows. Keep that event
+    // as telemetry, but defer the decision to the terminal full-workspace
+    // snapshot, which still rejects every actual changed path outside scope.
+    // Known outside paths and watcher errors continue to fail closed at once.
+    if (runtimeWatchReasonIsViolation(reason)) {
       violations.push(entry);
       if (typeof onViolation === 'function') {
         Promise.resolve(onViolation(entry)).catch(() => {});
