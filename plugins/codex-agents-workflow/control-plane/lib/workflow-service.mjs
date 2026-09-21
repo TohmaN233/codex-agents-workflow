@@ -335,7 +335,9 @@ export class WorkflowService {
         }
         return applyExpansion(store, args.workflow_id, proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null });
       }
-      case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: args.routing_rules } });
+      case 'apply_expansion':
+        requireValue(false,'AUTHORING_ENTRY_RETIRED','Direct proposal application was retired because it bypasses the pinned authoring Workflow and its shared validation gate; use create_authoring_run and apply_authoring_result');
+        break;
       case 'list': return Promise.all((await store.list()).map(async pack => ({ id: pack.workflow.id, name: pack.workflow.name, status: pack.workflow.status, enabled: pack.workflow.enabled, revision_hash: pack.revision_hash, description: pack.workflow.description, skill_policy: pack.workflow.skill_policy, validation: (await this.validationContext(store, pack.workflow, context)).validation })));
       case 'read': {
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);

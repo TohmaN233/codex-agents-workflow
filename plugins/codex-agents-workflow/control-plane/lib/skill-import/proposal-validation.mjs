@@ -38,7 +38,7 @@ export function validateGenerationProposal(output,{pack,resources,provenance,con
       let authoringPlan=null,semantic=payload,repairs=[];
       if(payload.contract===SEMANTIC_REPAIR_CONTRACT){
         validateData(payload,SEMANTIC_REPAIR_SCHEMA);
-        requireValue(previousPlan?.contract===SEMANTIC_BLUEPRINT_CONTRACT,'AUTHORING_SEMANTIC','Semantic repair has no pinned compact blueprint to update');
+        requireValue(previousPlan?.contract===SEMANTIC_BLUEPRINT_CONTRACT,'AUTHORING_REPAIR_STATE','Semantic repair has no pinned compact blueprint to update');
         authoringPlan=applySemanticRepair(previousPlan,payload);validateData(authoringPlan,SEMANTIC_BLUEPRINT_SCHEMA);semantic=authoringPlan;repairs.push({kind:'host_semantic_delta_applied'});
       } else if(payload.contract===SEMANTIC_BLUEPRINT_CONTRACT){validateData(payload,SEMANTIC_BLUEPRINT_SCHEMA);authoringPlan=structuredClone(payload);}
       const normalized=normalizeSemanticBlueprint(semantic);validateData(normalized,INTERNAL_SEMANTIC_BLUEPRINT_SCHEMA);

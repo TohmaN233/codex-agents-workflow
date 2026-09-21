@@ -3,18 +3,26 @@ import { requireValue } from '../workflow-paths.mjs';
 import { SEMANTIC_BLUEPRINT_CONTRACT, SEMANTIC_REPAIR_CONTRACT } from './blueprint-contract.mjs';
 import { MAX_PLANNER_ATTEMPTS } from '../skill-import/generation-retry-policy.mjs';
 
+// `stages` and `edges` describe the nodes that are actually pinned in every
+// authoring Run.  Source capture, deterministic compilation, bounded repair
+// and publication are Host lifecycle operations around this graph; presenting
+// them as graph nodes would make the public contract lie about what executes.
 const stages=Object.freeze([
-  Object.freeze({id:'source_snapshot',owner:'host',kind:'source_adapter'}),
+  Object.freeze({id:'start',owner:'host',kind:'start'}),
   Object.freeze({id:'expand',owner:'planner',kind:'semantic_plan'}),
-  Object.freeze({id:'compile_candidate',owner:'host',kind:'deterministic_compile'}),
   Object.freeze({id:'final',owner:'reviewer',kind:'semantic_review'}),
-  Object.freeze({id:'semantic_repair',owner:'planner',kind:'semantic_delta',maximum:1}),
-  Object.freeze({id:'publish',owner:'human',kind:'explicit_acceptance'}),
+  Object.freeze({id:'end',owner:'host',kind:'end'}),
 ]);
-const stageEdges=Object.freeze([['source_snapshot','expand'],['expand','compile_candidate'],['compile_candidate','final'],['final','semantic_repair'],['semantic_repair','compile_candidate'],['final','publish']].map(([source,target])=>Object.freeze({source,target})));
+const stageEdges=Object.freeze([['start','expand'],['expand','final'],['final','end']].map(([source,target])=>Object.freeze({source,target})));
+const hostLifecycle=Object.freeze([
+  Object.freeze({id:'source_snapshot',when:'before_run',owner:'host',kind:'source_adapter'}),
+  Object.freeze({id:'compile_candidate',when:'after_expand',owner:'host',kind:'deterministic_compile'}),
+  Object.freeze({id:'semantic_repair',when:'semantic_failure',owner:'host',kind:'bounded_rewind',planner_attempts:1}),
+  Object.freeze({id:'publish',when:'after_run',owner:'human',kind:'explicit_acceptance'}),
+]);
 const shared=Object.freeze({
   contract:'codex-authoring-workflow/v1',
-  pipeline:'host-source-adapter -> semantic-planner -> host-compiler -> semantic-review -> human-publish',
+  pipeline:'semantic-planner -> semantic-review',
   semantic_contract:SEMANTIC_BLUEPRINT_CONTRACT,
   repair_contract:SEMANTIC_REPAIR_CONTRACT,
   mechanical_owner:'host',
@@ -24,6 +32,7 @@ const shared=Object.freeze({
   configurable_slots:Object.freeze(['planner_provider_id','review_provider_id','routing_rules','max_rounds']),
   stages,
   edges:stageEdges,
+  host_lifecycle:hostLifecycle,
 });
 
 export const AUTHORING_WORKFLOWS=Object.freeze([

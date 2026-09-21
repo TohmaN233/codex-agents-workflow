@@ -44,7 +44,6 @@ const specs = [
   ['import_review', 'Read unresolved import observations and exact inferred nodes/edges for human review. This does not confirm or publish them.', ['workflow_id'], ['revision_hash']],
   ['inline_skill', 'Convert one exact SkillRef and its explicitly pinned nested Skills to editable resource-backed instructions. Always creates a Draft and never runs source scripts.', ['workflow_id', 'node_id', 'expected_revision'], []],
   ['prepare_expansion', 'Prepare a read-only expansion packet for the user-selected Provider. This does not invoke that Provider or grant approval.', ['workflow_id', 'revision_hash', 'provider_id'], ['routing_rules']],
-  ['apply_expansion', 'Validate an inferred graph against its exact coarse revision and save another Draft. Never changes Provider/write/finalizer authority.', ['workflow_id', 'expected_revision', 'proposal'], ['routing_rules']],
   ['create_authoring_run', 'Instantiate system.skill2workflow or system.build-workflow as a read-only authoring Workflow Run. Its source Draft is unchanged.', ['workflow_id', 'revision_hash', 'provider_id', 'run_id', 'workspace', 'main_actor'], ['routing_rules']],
   ['apply_authoring_result', 'Apply a human-accepted authoring Workflow result to its exact source revision as an unreviewed Draft. Never dispatches or retries a model.', [...main, 'workflow_id', 'expected_revision'], []],
   ['list', 'List Workflow metadata and structural/environment readiness, without prompt bodies.', [], []],

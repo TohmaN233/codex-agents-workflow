@@ -14,6 +14,8 @@ export const MAX_PLANNER_ATTEMPTS=2;
 // stop visibly, never be converted into planner feedback, and never spend the
 // one semantic repair even if their code shares the EXPANSION_ namespace.
 const MECHANICAL_CODES=new Set([
+  'AUTHORING_FORMAT',
+  'AUTHORING_REPAIR_STATE',
   'DATA_INVALID',
   'GENERATION_PROPOSAL_ENVELOPE',
   'GENERATION_PROPOSAL_JSON',

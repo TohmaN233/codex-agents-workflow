@@ -37,6 +37,7 @@ function activity(key,instructions,sections,{kind='work',operation='read',owners
 
 function dispositions(sections,keys){return sections.map(item=>({section_id:item.section_id,disposition:'workflow',activity_keys:keys,trigger:'',reason:'Required by the brief.'}));}
 function blueprint(fields){return {contract:SEMANTIC_BLUEPRINT_CONTRACT,purpose:fields.purpose,source_dispositions:fields.source_dispositions,semantic_rules:[],requirement_assignments:[],data_types:fields.data_types??[],activities:fields.activities,approvals:[],sequences:fields.sequences??[],parallels:fields.parallels??[],choices:fields.choices??[],root:fields.root};}
+const activityNode=(proposal,key)=>proposal.nodes.find(node=>node.name===key);
 
 test('compact authoring contract derives the root and semantic repair changes only named entities',()=>{
   const {pack,resources}=sourceFixture(),sections=sourceSectionInventory(resources),ids=sections.map(item=>item.section_id);
@@ -46,7 +47,7 @@ test('compact authoring contract derives the root and semantic repair changes on
   ],approvals:[],sequences:[{key:'delivery',members:['implement','review'],failure_meaning:'all_required'}],parallels:[],choices:[]};
   validateData(compact,SEMANTIC_BLUEPRINT_SCHEMA);
   const forged=new WorkflowForge().compile({pack,resources,blueprint:compact,context:{routing_rules:rules,routing_catalog:providers,providers}});
-  assert.equal(forged.compiled.validation.valid,true);assert(forged.proposal.edges.some(edge=>edge.source==='implement'&&edge.target==='review'));
+  assert.equal(forged.compiled.validation.valid,true);const [implement,review]=forged.proposal.nodes;assert(forged.proposal.edges.some(edge=>edge.source===implement.id&&edge.target===review.id));
   const empty={source_dispositions:[],requirement_assignments:[],records:[],lists:[],enums:[],activities:[],approvals:[],sequences:[],parallels:[],choices:[]};
   const repaired=applySemanticRepair(compact,{contract:SEMANTIC_REPAIR_CONTRACT,purpose:'',upsert:{...structuredClone(empty),activities:[{...compact.activities[1],instructions:'Review exact implementation evidence and report gaps.'}]},remove:empty});
   assert.equal(repaired.activities[0].instructions,compact.activities[0].instructions);assert.match(repaired.activities[1].instructions,/exact implementation evidence/);
@@ -61,8 +62,8 @@ test('WorkflowForge lowers a brief semantic blueprint and owns every mechanical 
   ],sequences:[{key:'root_sequence',members:['implement','review'],failure_meaning:'all_required'}],root:'root_sequence'});
   const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}});
   assert.equal(forged.compiled.validation.valid,true);
-  assert.deepEqual(forged.proposal.nodes.map(node=>node.id),['implement','review']);
-  assert.equal(forged.proposal.nodes[1].input_bindings.implementation,'/nodes/implement/output/result');
+  assert.deepEqual(forged.proposal.nodes.map(node=>node.id),['activity_001','activity_002']);
+  assert.equal(forged.proposal.nodes[1].input_bindings.implementation,'/nodes/activity_001/output/result');
   assert.equal(forged.proposal.nodes[0].source_span.start_line,sections[0].source_span.start_line);
   assert.equal(forged.proposal.nodes[0].source_span.end_line,sections.at(-1).source_span.end_line);
   assert(forged.proposal.edges.every(edge=>/^edge_\d{3}$/.test(edge.id)));
@@ -77,7 +78,8 @@ test('WorkflowForge derives parallel/join and conditional fan-in without model-a
   const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}});
   assert.equal(forged.compiled.validation.valid,true);
   assert.equal(forged.proposal.nodes.filter(node=>node.type==='condition').length,1);
-  assert.deepEqual(forged.compiled.workflow.nodes.find(node=>node.id==='final').input_bindings.upstream_result.coalesce.sort(),['/nodes/branch_a/output','/nodes/branch_b/output'].sort());
+  const branchA=activityNode(forged.proposal,'branch_a'),branchB=activityNode(forged.proposal,'branch_b');
+  assert.deepEqual(forged.compiled.workflow.nodes.find(node=>node.id==='final').input_bindings.upstream_result.coalesce.sort(),[`/nodes/${branchA.id}/output`,`/nodes/${branchB.id}/output`].sort());
 });
 
 test('WorkflowForge derives a structured parallel region and aggregate bindings',()=>{
@@ -91,10 +93,11 @@ test('WorkflowForge derives a structured parallel region and aggregate bindings'
   const fork=forged.proposal.nodes.find(node=>node.type==='parallel'),join=forged.proposal.nodes.find(node=>node.type==='join'),summary=forged.proposal.nodes.find(node=>node.name==='summarize');
   assert.equal(fork.join_id,join.id);assert.equal(join.parallel_id,fork.id);
   assert.equal(summary.input_bindings.task,'/inputs/task');
-  assert.equal(summary.input_bindings.a,'/nodes/check_a/output/a');
-  assert.equal(summary.input_bindings.b,'/nodes/check_b/output/b');
-  assert.equal(summary.input_bindings.upstream_check_a,'/nodes/check_a/output');
-  assert.equal(summary.input_bindings.upstream_check_b,'/nodes/check_b/output');
+  const checkA=activityNode(forged.proposal,'check_a'),checkB=activityNode(forged.proposal,'check_b');
+  assert.equal(summary.input_bindings.a,`/nodes/${checkA.id}/output/a`);
+  assert.equal(summary.input_bindings.b,`/nodes/${checkB.id}/output/b`);
+  assert.equal(summary.input_bindings[`upstream_${checkA.id}`],`/nodes/${checkA.id}/output`);
+  assert.equal(summary.input_bindings[`upstream_${checkB.id}`],`/nodes/${checkB.id}/output`);
 });
 
 test('WorkflowForge lowers converging choice branches to one shared semantic body',()=>{
@@ -106,10 +109,11 @@ test('WorkflowForge lowers converging choice branches to one shared semantic bod
   ],choices:[{key:'root_choice',decision_activity:'decide',output:'outcome',branches:[{value:'pass',body:'deliver'},{value:'issues',body:'unresolved'}],default_body:'unresolved'}],root:'root_choice'});
   const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}});
   assert.equal(forged.compiled.validation.valid,true);
-  assert.equal(forged.proposal.nodes.filter(node=>node.id==='unresolved').length,1);
+  const unresolved=activityNode(forged.proposal,'unresolved');assert(unresolved);
+  assert.equal(forged.proposal.nodes.filter(node=>node.name==='unresolved').length,1);
   const condition=forged.proposal.nodes.find(node=>node.type==='condition');
   assert.equal(condition.cases.length,1);
-  assert.equal(forged.proposal.edges.filter(edge=>edge.source===condition.id&&edge.target==='unresolved').length,1);
+  assert.equal(forged.proposal.edges.filter(edge=>edge.source===condition.id&&edge.target===unresolved.id).length,1);
 });
 
 test('WorkflowForge reuses an explicitly sequenced decision and downstream body without duplicate nodes or self edges',()=>{
@@ -125,10 +129,11 @@ test('WorkflowForge reuses an explicitly sequenced decision and downstream body 
   ],root:'root_sequence'});
   const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}});
   assert.equal(forged.compiled.validation.valid,true);
-  assert.equal(forged.proposal.nodes.filter(node=>node.id==='decide').length,1);
-  assert.equal(forged.proposal.nodes.filter(node=>node.id==='plan').length,1);
+  assert.equal(forged.proposal.nodes.filter(node=>node.name==='decide').length,1);
+  assert.equal(forged.proposal.nodes.filter(node=>node.name==='plan').length,1);
   assert.equal(forged.proposal.edges.some(edge=>edge.source===edge.target),false);
-  assert.equal(forged.proposal.nodes.find(node=>node.id==='deliver').input_bindings.plan,'/nodes/plan/output/plan');
+  const plan=activityNode(forged.proposal,'plan'),deliver=activityNode(forged.proposal,'deliver');
+  assert.equal(deliver.input_bindings.plan,`/nodes/${plan.id}/output/plan`);
 });
 
 test('WorkflowForge accepts nested mutually exclusive choice exits without treating them as parallel fan-in',()=>{
@@ -145,7 +150,8 @@ test('WorkflowForge accepts nested mutually exclusive choice exits without treat
   ],root:'mode_choice'});
   const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}});
   assert.equal(forged.compiled.validation.valid,true);
-  assert.deepEqual(forged.compiled.workflow.nodes.find(node=>node.id==='final').input_bindings.upstream_result.coalesce.sort(),['/nodes/deliver/output','/nodes/setup/output','/nodes/unresolved/output'].sort());
+  const exits=['deliver','setup','unresolved'].map(key=>`/nodes/${activityNode(forged.proposal,key).id}/output`).sort();
+  assert.deepEqual(forged.compiled.workflow.nodes.find(node=>node.id==='final').input_bindings.upstream_result.coalesce.sort(),exits);
 });
 
 test('WorkflowForge discards model-authored semantic ordinals instead of cross-wiring Host requirement IDs',()=>{
@@ -158,7 +164,7 @@ test('WorkflowForge discards model-authored semantic ordinals instead of cross-w
   ];
   const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}}),mapping=forged.proposal.requirement_mappings.find(item=>item.requirement_id==='semantic_rule_001');
   assert.equal(forged.compiled.validation.valid,true);
-  assert.deepEqual(mapping.node_ids,['work']);
+  assert.deepEqual(mapping.node_ids,[activityNode(forged.proposal,'work').id]);
   assert.deepEqual(mapping.binding_names,[]);
   assert.equal(forged.proposal.requirement_mappings.some(item=>item.requirement_id==='semantic_rule_017'),false);
 });
@@ -175,8 +181,8 @@ test('WorkflowForge projects an observed approval to its unique gate and only po
   semantic.requirement_assignments=[{requirement_id:approvalRequirement.requirement_id,activity_keys:['propose','implement'],binding_names:['plan'],runtime_guards:[]}];
   const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}}),mapping=forged.proposal.requirement_mappings.find(item=>item.requirement_id===approvalRequirement.requirement_id),gate=forged.proposal.nodes.find(item=>item.type==='human_gate');
   assert.equal(forged.compiled.validation.valid,true);
-  assert.deepEqual(mapping.node_ids.sort(),[gate.id,'implement'].sort());
-  assert.equal(mapping.node_ids.includes('propose'),false);
+  assert.deepEqual(mapping.node_ids.sort(),[gate.id,activityNode(forged.proposal,'implement').id].sort());
+  assert.equal(mapping.node_ids.includes(activityNode(forged.proposal,'propose').id),false);
 });
 
 test('WorkflowForge derives continuation only for a direct same-Provider isolated-worker successor',()=>{
@@ -186,10 +192,10 @@ test('WorkflowForge derives continuation only for a direct same-Provider isolate
     activity('implement','Implement the task.',ids,{ownership:'isolated_worker',operation:'write',complexity:'complex',continues:'finish'}),
     activity('finish','Finish routine output.',ids,{ownership:'isolated_worker',operation:'write'}),
   ],sequences:[{key:'root_sequence',members:['analyze','implement','finish'],failure_meaning:'all_required'}],root:'root_sequence'});
-  const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}}),implementation=forged.proposal.nodes.find(node=>node.id==='implement'),finish=forged.proposal.nodes.find(node=>node.id==='finish');
+  const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}}),implementation=activityNode(forged.proposal,'implement'),finish=activityNode(forged.proposal,'finish'),analyze=activityNode(forged.proposal,'analyze');
   assert.equal(forged.compiled.validation.valid,true);
   assert.equal(implementation.thread_lifecycle,'continue');
-  assert.equal(implementation.thread_source_node,'analyze');
+  assert.equal(implementation.thread_source_node,analyze.id);
   assert.equal(finish.thread_lifecycle,'start');
   assert.equal(finish.thread_source_node,undefined);
 });
@@ -203,7 +209,7 @@ test('WorkflowForge generates nested schemas from named semantic data types and 
     {key:'assertion_records',kind:'list',fields:[],item_type_ref:'assertion_record',values:[],openness:'closed'},
     {key:'evidence',kind:'object',fields:[{name:'seed',type_ref:'integer',required:true},{name:'assertions',type_ref:'assertion_records',required:true}],item_type_ref:'',values:[],openness:'closed'},
   ],activities:[activity('run','Run the pinned interface.',ids,{operation:'write',produces:[{name:'evidence',shape:{kind:'object',values:[],type_ref:'evidence'}}]})],root:'run'});
-  const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}}),node=forged.proposal.nodes.find(item=>item.id==='run');
+  const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}}),node=activityNode(forged.proposal,'run');
   assert.equal(forged.compiled.validation.valid,true);
   assert.deepEqual(node.resource_refs,['source/WORKFLOW.md','source/scripts/runner.py']);
   assert.deepEqual(node.outputs_schema.properties.evidence,{type:'object',properties:{seed:{type:'integer'},assertions:{type:'array',items:{type:'object',properties:{kind:{type:'string'},passed:{type:'boolean'}},required:['kind','passed'],additionalProperties:false}}},required:['seed','assertions'],additionalProperties:false});
@@ -222,11 +228,22 @@ test('WorkflowForge upgrades a persisted v2 blueprint without asking a model to 
   legacy.contract='workflow-semantic-blueprint/v2';delete legacy.data_types;for(const output of legacy.activities[0].produces)delete output.shape.type_ref;
   const forged=new WorkflowForge().compile({pack,resources,blueprint:legacy,context:{routing_rules:rules,routing_catalog:providers,providers}});
   assert.equal(forged.compiled.validation.valid,true);
-  assert.equal(forged.proposal.nodes.find(node=>node.id==='work').outputs_schema.properties.result.type,'string');
+  assert.equal(activityNode(forged.proposal,'work').outputs_schema.properties.result.type,'string');
+});
+
+test('WorkflowForge keeps semantic keys separate from Host node IDs',()=>{
+  const {pack,resources}=sourceFixture(),sections=sourceSectionInventory(resources),ids=sections.map(item=>item.section_id);
+  const semantic=blueprint({purpose:'Allow source vocabulary that overlaps control nodes.',source_dispositions:dispositions(sections,['final']),activities:[activity('final','Produce the final source-defined result.',ids,{produces:[{name:'result',shape:'text'}]})],root:'final'});
+  const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}});
+  const generated=activityNode(forged.proposal,'final');
+  assert.equal(generated.id,'activity_001');
+  assert.notEqual(generated.id,'final');
+  assert.equal(forged.compiled.workflow.nodes.filter(node=>node.id==='final').length,1);
+  assert.equal(forged.compiled.validation.valid,true);
 });
 
 test('authoring retry policy never retries mechanical failures and permits only one semantic repair',()=>{
-  for(const code of ['DATA_INVALID','STRICT_OUTPUT_JSON','GENERATION_PROPOSAL_CONTRACT','AUTHORING_BLUEPRINT','WORKFLOW_PACKAGE_INTEGRITY','EXPANSION_GRAPH_INVALID','ROUTING_CLASSIFICATION','EXPANSION_WRITE_PROVIDER','EXPANSION_THREAD_LIFECYCLE'])assert.equal(generationRetryClass({code}),'mechanical');
+  for(const code of ['DATA_INVALID','STRICT_OUTPUT_JSON','GENERATION_PROPOSAL_CONTRACT','AUTHORING_BLUEPRINT','AUTHORING_FORMAT','WORKFLOW_PACKAGE_INTEGRITY','EXPANSION_GRAPH_INVALID','ROUTING_CLASSIFICATION','EXPANSION_WRITE_PROVIDER','EXPANSION_THREAD_LIFECYCLE'])assert.equal(generationRetryClass({code}),'mechanical');
   for(const code of ['AUTHORING_SEMANTIC','GENERATION_REVIEW_FINDINGS','GENERATION_DETERMINISTIC_AUDIT','EXPANSION_SOURCE_DISPOSITIONS'])assert.equal(generationRetryClass({code}),'semantic');
   assert.equal(MAX_PLANNER_ATTEMPTS,2);
   assert.equal(isGenerationContractFailure({code:'AUTHORING_SEMANTIC'}),true);
@@ -245,6 +262,9 @@ test('Skill conversion and from-scratch authoring are two configurations of the 
   assert.equal(authoringWorkflowForPack({...pack,provenance:{kind:'skill_import',source_kind:'skill'}}).id,'system.skill2workflow');
   const job=authoringRunPack(pack,resources,providers[1],'authoring-contract',rules,false,null,providers);
   assert.equal(job.provenance.authoring_workflow_id,'system.build-workflow');
+  assert.deepEqual(AUTHORING_WORKFLOWS[1].stages.map(({id})=>id),job.workflow.nodes.map(({id})=>id));
+  assert.deepEqual(AUTHORING_WORKFLOWS[1].edges.map(({source,target})=>[source,target]),job.workflow.edges.map(({source,target})=>[source,target]));
+  assert.deepEqual(AUTHORING_WORKFLOWS[1].host_lifecycle.map(({id})=>id),['source_snapshot','compile_candidate','semantic_repair','publish']);
   assert.equal(job.workflow.nodes.find(item=>item.id==='expand').outputs_schema,AUTHORING_RUNTIME_ENVELOPE_SCHEMA);
   assert.doesNotThrow(()=>managedNativeResultSchema(job.workflow.nodes.find(item=>item.id==='expand')));
 });

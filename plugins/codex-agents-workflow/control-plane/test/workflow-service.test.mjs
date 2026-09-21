@@ -25,7 +25,7 @@ test('explicit host discovery never falls back to folder scanning for inventory 
   assert.equal((await f.service.call('skill_inventory',{discovery:'folders',workspace:f.workspace})).adapter,'folders');
 });
 
-test('folder import and prepare/apply preserve routing for Main and Provider coarse drafts', async t => {
+test('folder import prepares routing while the retired direct-apply entry stays closed', async t => {
   const f = await fixture(t); await f.migrate();
   const source = join(f.root,'skill-folder'); await mkdir(source);
   await writeFile(join(source,'SKILL.md'),'---\nname: routing-test\ndescription: Review results\n---\nReview the result.');
@@ -38,14 +38,12 @@ test('folder import and prepare/apply preserve routing for Main and Provider coa
     assert.equal(pack.provenance.compiler_version, 4);
     const packet = await f.service.call('prepare_expansion',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,provider_id:'native-terra'});
     assert.equal(packet.routing_rules.routes.review.provider_id,'native-reviewer');
+    assert.equal(packet.invoked,false);
     const origin = {confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
     const proposal = {source_revision:pack.revision_hash,planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
     const args = {workflow_id:pack.workflow.id,expected_revision:pack.revision_hash,proposal};
-    await assert.rejects(f.service.call('apply_expansion',args),{code:'ROUTING_RULES_REQUIRED'});
-    const applied = await f.service.call('apply_expansion',{...args,routing_rules:packet.routing_rules});
-    assert.deepEqual(applied.workflow.host_automation, pack.workflow.host_automation);
-    assert.equal(applied.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
-    assert.equal(applied.import_report.expansion.routing[0].reason,'Independent review');
+    assert.equal(workflowToolDefinitions().some(tool=>tool.name==='workflow_apply_expansion'),false);
+    await assert.rejects(f.service.call('apply_expansion',args),{code:'AUTHORING_ENTRY_RETIRED'});
   }
 });
 
@@ -102,8 +100,9 @@ test('service exposes both authoring Workflows and installs an exported package 
   assert.deepEqual(definitions.map(item=>item.id),['system.skill2workflow','system.build-workflow']);
   assert(definitions.every(item=>item.mechanical_repairs===0 && item.semantic_repairs===1));
   assert(definitions.every(item=>item.contract==='codex-authoring-workflow/v1'));
-  assert(definitions.every(item=>item.stages.map(stage=>stage.owner).join(',')==='host,planner,host,reviewer,planner,human'));
-  assert(definitions.every(item=>item.edges.some(edge=>edge.source==='semantic_repair'&&edge.target==='compile_candidate')));
+  assert(definitions.every(item=>item.stages.map(stage=>stage.owner).join(',')==='host,planner,reviewer,host'));
+  assert(definitions.every(item=>item.edges.map(edge=>`${edge.source}>${edge.target}`).join(',')==='start>expand,expand>final,final>end'));
+  assert(definitions.every(item=>item.host_lifecycle.some(stage=>stage.id==='semantic_repair'&&stage.when==='semantic_failure')));
   assert(definitions.every(item=>item.configurable_slots.includes('planner_provider_id')&&item.configurable_slots.includes('review_provider_id')));
   const built=await source.service.call('build_workflow',{workflow_id:'service-built',name:'Service built',brief:'# Workflow\n\n## Check\n\nInspect the change and report evidence.'});
   assert.equal(built.provenance.source_kind,'brief');assert.equal(built.workflow.import_status.mode,'authored');

@@ -16,24 +16,24 @@ const primitiveSchema=kind=>{
   return null;
 };
 function dataTypeResolver(definitions=[]){
-  requireValue(Array.isArray(definitions)&&definitions.every(item=>object(item)&&Array.isArray(item.fields)&&Array.isArray(item.values)&&typeof item.item_type_ref==='string'&&['closed','open'].includes(item.openness)),'AUTHORING_SEMANTIC','Named data types must use the fixed v3 shape');
+  requireValue(Array.isArray(definitions)&&definitions.every(item=>object(item)&&Array.isArray(item.fields)&&Array.isArray(item.values)&&typeof item.item_type_ref==='string'&&['closed','open'].includes(item.openness)),'AUTHORING_FORMAT','Named data types must use the fixed v3 shape');
   const types=new Map(definitions.map(item=>[item.key,item])),cache=new Map(),visiting=new Set();
-  requireValue(types.size===definitions.length&&definitions.every(item=>localKey(item.key)),'AUTHORING_SEMANTIC','Named data type keys must be unique local keys');
+  requireValue(types.size===definitions.length&&definitions.every(item=>localKey(item.key)),'AUTHORING_FORMAT','Named data type keys must be unique local keys');
   const resolve=ref=>{
     const builtin=primitiveSchema(ref);if(builtin)return builtin;
     requireValue(types.has(ref),'AUTHORING_SEMANTIC',`Unknown semantic data type ${ref}`);
     if(cache.has(ref))return structuredClone(cache.get(ref));
-    requireValue(!visiting.has(ref),'AUTHORING_SEMANTIC',`Semantic data types contain a cycle at ${ref}`);visiting.add(ref);
+    requireValue(!visiting.has(ref),'AUTHORING_FORMAT',`Semantic data types contain a cycle at ${ref}`);visiting.add(ref);
     const item=types.get(ref);let schema;
     if(item.kind==='object'){
-      requireValue(Array.isArray(item.fields)&&new Set(item.fields.map(field=>field.name)).size===item.fields.length&&item.fields.every(field=>localKey(field.name))&&!item.item_type_ref&&item.values.length===0,'AUTHORING_SEMANTIC',`Object data type ${ref} needs unique fields and no list/enum payload`);
+      requireValue(Array.isArray(item.fields)&&new Set(item.fields.map(field=>field.name)).size===item.fields.length&&item.fields.every(field=>localKey(field.name))&&!item.item_type_ref&&item.values.length===0,'AUTHORING_FORMAT',`Object data type ${ref} needs unique fields and no list/enum payload`);
       const properties=Object.fromEntries(item.fields.map(field=>[field.name,resolve(field.type_ref)])),required=item.fields.filter(field=>field.required).map(field=>field.name);
       schema={type:'object',properties,required,additionalProperties:item.openness==='open'};
     } else if(item.kind==='list'){
-      requireValue(typeof item.item_type_ref==='string'&&item.item_type_ref&&item.fields.length===0&&item.values.length===0&&item.openness==='closed','AUTHORING_SEMANTIC',`List data type ${ref} needs only an item type`);schema={type:'array',items:resolve(item.item_type_ref)};
+      requireValue(typeof item.item_type_ref==='string'&&item.item_type_ref&&item.fields.length===0&&item.values.length===0&&item.openness==='closed','AUTHORING_FORMAT',`List data type ${ref} needs only an item type`);schema={type:'array',items:resolve(item.item_type_ref)};
     } else if(item.kind==='enum'){
-      requireValue(Array.isArray(item.values)&&item.values.length>0&&new Set(item.values).size===item.values.length&&item.fields.length===0&&!item.item_type_ref&&item.openness==='closed','AUTHORING_SEMANTIC',`Enum data type ${ref} needs only unique values`);schema={type:'string',enum:[...item.values]};
-    } else {schema=primitiveSchema(item.kind);requireValue(schema&&item.fields.length===0&&!item.item_type_ref&&item.values.length===0&&item.openness==='closed','AUTHORING_SEMANTIC',`Primitive data type ${ref} cannot carry object, list or enum payload`);}
+      requireValue(Array.isArray(item.values)&&item.values.length>0&&new Set(item.values).size===item.values.length&&item.fields.length===0&&!item.item_type_ref&&item.openness==='closed','AUTHORING_FORMAT',`Enum data type ${ref} needs only unique values`);schema={type:'string',enum:[...item.values]};
+    } else {schema=primitiveSchema(item.kind);requireValue(schema&&item.fields.length===0&&!item.item_type_ref&&item.values.length===0&&item.openness==='closed','AUTHORING_FORMAT',`Primitive data type ${ref} cannot carry object, list or enum payload`);}
     visiting.delete(ref);cache.set(ref,schema);return structuredClone(schema);
   };
   for(const key of types.keys())resolve(key);
@@ -42,31 +42,31 @@ function dataTypeResolver(definitions=[]){
 const shapeSchema=(shape,resolveType)=>{
   if(typeof shape==='string')shape={kind:shape,values:[],type_ref:''};
   if(shape?.type_ref){const schema=resolveType(shape.type_ref),expected=shape.kind==='text'||shape.kind==='enum'?'string':shape.kind==='list'?'array':shape.kind;requireValue(schema.type===expected,'AUTHORING_SEMANTIC',`Produced shape ${shape.kind} conflicts with named type ${shape.type_ref}`);return schema;}
-  requireValue(object(shape) && ['text','boolean','number','integer','object','list','enum'].includes(shape.kind),'AUTHORING_SEMANTIC','Produced values need a supported semantic shape');
+  requireValue(object(shape) && ['text','boolean','number','integer','object','list','enum'].includes(shape.kind),'AUTHORING_FORMAT','Produced values need a supported semantic shape');
   const primitive=primitiveSchema(shape.kind);if(primitive)return primitive;
-  requireValue(Array.isArray(shape.values) && shape.values.length>0 && shape.values.every(value=>['string','number','boolean'].includes(typeof value)),'AUTHORING_SEMANTIC','Enum shapes need bounded scalar values');
+  requireValue(Array.isArray(shape.values) && shape.values.length>0 && shape.values.every(value=>['string','number','boolean'].includes(typeof value)),'AUTHORING_FORMAT','Enum shapes need bounded scalar values');
   return {type:typeof shape.values[0],enum:[...shape.values]};
 };
 
 function validateBlueprint(blueprint,resources){
-  requireValue(object(blueprint) && blueprint.contract===PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT && typeof blueprint.purpose==='string' && blueprint.purpose.trim() && object(blueprint.program),'AUTHORING_SEMANTIC','Authoring requires a normalized semantic blueprint');
+  requireValue(object(blueprint) && blueprint.contract===PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT && typeof blueprint.purpose==='string' && blueprint.purpose.trim() && object(blueprint.program),'AUTHORING_FORMAT','Authoring requires a normalized semantic blueprint');
   const sections=new Set(sourceSectionInventory(resources).map(item=>item.section_id));
   requireValue(Array.isArray(blueprint.source_dispositions) && blueprint.source_dispositions.length===sections.size,'AUTHORING_SEMANTIC','Blueprint must classify every source section exactly once');
   requireValue(blueprint.source_dispositions.every(item=>object(item)&&sections.has(item.section_id)&&['workflow','conditional','reference','omit'].includes(item.disposition)),'AUTHORING_SEMANTIC','Blueprint has an invalid source disposition');
-  requireValue(new Set(blueprint.source_dispositions.map(item=>item.section_id)).size===sections.size,'AUTHORING_SEMANTIC','Blueprint source dispositions must be unique');
-  requireValue(Array.isArray(blueprint.semantic_rules ?? []) && Array.isArray(blueprint.requirement_assignments ?? []),'AUTHORING_SEMANTIC','Blueprint semantic rule and requirement assignment lists must be arrays');
+  requireValue(new Set(blueprint.source_dispositions.map(item=>item.section_id)).size===sections.size,'AUTHORING_FORMAT','Blueprint source dispositions must be unique');
+  requireValue(Array.isArray(blueprint.semantic_rules ?? []) && Array.isArray(blueprint.requirement_assignments ?? []),'AUTHORING_FORMAT','Blueprint semantic rule and requirement assignment lists must be arrays');
   return blueprint;
 }
 
 function inflateBlueprint(raw){
-  requireValue(object(raw)&&raw.contract===PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT,'AUTHORING_SEMANTIC','Authoring requires a normalized semantic blueprint');
+  requireValue(object(raw)&&raw.contract===PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT,'AUTHORING_FORMAT','Authoring requires a normalized semantic blueprint');
   const activities=new Map((raw.activities ?? []).map(item=>[item.key,{...structuredClone(item),continues:item.continues || undefined,consumes:item.consumes.map(consume=>({name:consume.name,from:consume.source_kind==='input'?{input:consume.input}:{activity:consume.activity,output:consume.output}}))}]));
   const approvals=new Map((raw.approvals ?? []).map(item=>[item.key,structuredClone(item)]));
   const sequences=new Map((raw.sequences ?? []).map(item=>[item.key,structuredClone(item)]));
   const parallels=new Map((raw.parallels ?? []).map(item=>[item.key,structuredClone(item)]));
   const choices=new Map((raw.choices ?? []).map(item=>[item.key,structuredClone(item)]));
   const all=[...activities.keys(),...approvals.keys(),...sequences.keys(),...parallels.keys(),...choices.keys()];
-  requireValue(new Set(all).size===all.length,'AUTHORING_SEMANTIC','Semantic keys must be unique across activities and control groups');
+  requireValue(new Set(all).size===all.length,'AUTHORING_FORMAT','Semantic keys must be unique across activities and control groups');
   const visiting=new Set(),reachable=new Set();
   const resolve=key=>{
     requireValue(!visiting.has(key),'AUTHORING_SEMANTIC',`Semantic control groups contain a cycle at ${key}`);
@@ -115,13 +115,16 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
   const providerFor=taskType=>routing?.routes?.[taskType]?.provider_id;
   const semanticKeyOf=block=>block.kind==='activity'?block.activity.key:block.key;
   const normalizeActivity=(activity,{decision=false}={})=>{
-    requireValue(object(activity)&&localKey(activity.key)&&typeof activity.instructions==='string'&&activity.instructions.trim()&&['main','isolated_worker'].includes(activity.ownership)&&['read','write'].includes(activity.operation)&&Array.isArray(activity.source_sections)&&activity.source_sections.length>0,'AUTHORING_SEMANTIC','Activity needs key, instructions, ownership, operation and source sections');
-    requireValue(!stageIds.has(activity.key),'AUTHORING_SEMANTIC',`Duplicate stage key ${activity.key}`);
+    requireValue(object(activity)&&localKey(activity.key)&&typeof activity.instructions==='string'&&activity.instructions.trim()&&['main','isolated_worker'].includes(activity.ownership)&&['read','write'].includes(activity.operation)&&Array.isArray(activity.source_sections)&&activity.source_sections.length>0,'AUTHORING_FORMAT','Activity needs key, instructions, ownership, operation and source sections');
+    requireValue(!stageIds.has(activity.key),'AUTHORING_FORMAT',`Duplicate stage key ${activity.key}`);
     activity.source_sections.forEach(id=>requireValue(inventory.has(id),'AUTHORING_SEMANTIC',`Unknown source section ${id}`));
-    requireValue(!['start','final','end'].includes(activity.key),'AUTHORING_SEMANTIC',`Activity key ${activity.key} is reserved by the Host`);
-    const id=activity.key;stageIds.set(activity.key,id);activityIds.set(activity.key,id);
+    // Semantic keys are source-level references, never runtime identifiers.
+    // The Host allocates every concrete node ID, so perfectly valid semantic
+    // names such as `start`, `final` and `end` cannot collide with control
+    // nodes or trigger a model retry.
+    const id=nodeId('activity');stageIds.set(activity.key,id);activityIds.set(activity.key,id);
     const produces=activity.produces ?? [];
-    requireValue(Array.isArray(produces)&&new Set(produces.map(item=>item.name)).size===produces.length&&produces.every(item=>object(item)&&localKey(item.name)),'AUTHORING_SEMANTIC','Activity outputs need unique local names');
+    requireValue(Array.isArray(produces)&&new Set(produces.map(item=>item.name)).size===produces.length&&produces.every(item=>object(item)&&localKey(item.name)),'AUTHORING_FORMAT','Activity outputs need unique local names');
     const resource_refs=resourceRefsForSections(activity.source_sections),interfaceResources=resource_refs.filter(path=>executableResource.test(path));
     if(interfaceResources.length)for(const output of produces){const shape=output.shape;requireValue(!['object','list'].includes(shape?.kind)||Boolean(shape.type_ref),'AUTHORING_SEMANTIC',`Activity ${activity.key} cites executable resources and must describe structured output ${output.name} with a named data type`);}
     const properties=Object.fromEntries(produces.map(item=>[item.name,shapeSchema(item.shape,resolveType)]));
@@ -130,7 +133,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     const review=activity.kind==='review';
     const task_type=review?'review':activity.complexity==='complex'?'complex_implementation':activity.operation==='write'?'implementation':'planning';
     const tool=activity.capability?.kind==='registered_tool';
-    requireValue(!tool || localKey(activity.capability.semantic_name),'AUTHORING_SEMANTIC','Registered-tool activities need one exact semantic tool name');
+    requireValue(!tool || localKey(activity.capability.semantic_name),'AUTHORING_FORMAT','Registered-tool activities need one exact semantic tool name');
     const node=tool
       ? {id,type:'tool',name:activity.purpose ?? activity.key,tool:activity.capability.semantic_name,resource_refs,confidence:1,source_span:spanFor(activity.source_sections)}
       : {id,type:'agent',name:activity.purpose ?? activity.key,operation_mode:activity.operation,task_type,routing_reason:`Host classified ${activity.key} from semantic kind, operation and complexity.`,prompt_template:activity.instructions,...(outputs_schema?{outputs_schema}:{}),resource_refs,confidence:1,source_span:spanFor(activity.source_sections)};
@@ -142,25 +145,25 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     return {entries:[id],exits:[id],sections:activity.source_sections,decision};
   };
   const compileBlock=block=>{
-    requireValue(object(block)&&['sequence','parallel','choice','approval','activity'].includes(block.kind),'AUTHORING_SEMANTIC','Program block kind is invalid');
+    requireValue(object(block)&&['sequence','parallel','choice','approval','activity'].includes(block.kind),'AUTHORING_FORMAT','Program block kind is invalid');
     const semanticKey=semanticKeyOf(block);
-    requireValue(localKey(semanticKey),'AUTHORING_SEMANTIC','Program blocks need stable semantic keys');
+    requireValue(localKey(semanticKey),'AUTHORING_FORMAT','Program blocks need stable semantic keys');
     if(compiledBlocks.has(semanticKey))return compiledBlocks.get(semanticKey);
     requireValue(!compilingBlocks.has(semanticKey),'AUTHORING_SEMANTIC',`Semantic control groups contain a cycle at ${semanticKey}`);
     compilingBlocks.add(semanticKey);
     let result;
     if(block.kind==='activity')result=normalizeActivity(block.activity);
     else if(block.kind==='approval'){
-      requireValue(localKey(block.key)&&!stageIds.has(block.key)&&typeof block.question==='string'&&block.question.trim()&&Array.isArray(block.source_sections)&&block.source_sections.length>0,'AUTHORING_SEMANTIC','Approval needs a unique key, question and source sections');
+      requireValue(localKey(block.key)&&!stageIds.has(block.key)&&typeof block.question==='string'&&block.question.trim()&&Array.isArray(block.source_sections)&&block.source_sections.length>0,'AUTHORING_FORMAT','Approval needs a unique key, question and source sections');
       const id=nodeId('approval');stageIds.set(block.key,id);nodes.push({id,type:'human_gate',name:'Human approval',prompt_template:block.question,confidence:1,source_span:spanFor(block.source_sections)});result={entries:[id],exits:[id],sections:block.source_sections};
     }
     else if(block.kind==='sequence'){
-      requireValue(Array.isArray(block.steps)&&block.steps.length>0,'AUTHORING_SEMANTIC','Sequence needs at least one step');
+      requireValue(Array.isArray(block.steps)&&block.steps.length>0,'AUTHORING_FORMAT','Sequence needs at least one step');
       const parts=block.steps.map(compileBlock);for(let index=1;index<parts.length;index++)for(const source of parts[index-1].exits)for(const target of parts[index].entries)addEdge(source,target,{section_ids:parts[index].sections});
       result={entries:parts[0].entries,exits:parts.at(-1).exits,sections:[...new Set(parts.flatMap(item=>item.sections))]};
     }
     else if(block.kind==='parallel'){
-      requireValue(Array.isArray(block.branches)&&block.branches.length>=2,'AUTHORING_SEMANTIC','Parallel needs at least two branches');
+      requireValue(Array.isArray(block.branches)&&block.branches.length>=2,'AUTHORING_FORMAT','Parallel needs at least two branches');
       const pair=String(++parallelOrdinal).padStart(3,'0'),fork=nodeId('parallel'),join=nodeId('join');
       const parts=block.branches.map(compileBlock),sections=[...new Set(parts.flatMap(item=>item.sections))];
       nodes.push({id:fork,type:'parallel',join_id:join,failure_policy:block.failure_meaning==='partial_evidence_allowed'?'collect':'fail_fast',confidence:1,source_span:spanFor(sections)});
@@ -169,7 +172,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
       result={entries:[fork],exits:[join],sections};
     }
     else {
-      requireValue(object(block.decision)&&Array.isArray(block.branches)&&block.branches.length>0&&object(block.default),'AUTHORING_SEMANTIC','Choice needs a decision, branches and default block');
+      requireValue(object(block.decision)&&Array.isArray(block.branches)&&block.branches.length>0&&object(block.default),'AUTHORING_FORMAT','Choice needs a decision, branches and default block');
       const decisionPrecompiled=compiledBlocks.has(block.decision.key),decision=compileBlock({kind:'activity',key:block.decision.key,activity:block.decision});
       const outputName=block.output;requireValue(localKey(outputName)&&activityOutputs.get(block.decision.key)?.has(outputName),'AUTHORING_SEMANTIC','Choice output must name one declared decision output');
       const fallbackKey=semanticKeyOf(block.default),fallback=compileBlock(block.default),groups=new Map();
@@ -195,7 +198,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
   for(const [key,id] of activityIds){
     const activity=findActivity(blueprint.program,key);const bindings={task:'/inputs/task'};
     for(const consume of activity?.consumes ?? []){
-      requireValue(object(consume)&&localKey(consume.name)&&object(consume.from),'AUTHORING_SEMANTIC','Activity consumption needs a named source');
+      requireValue(object(consume)&&localKey(consume.name)&&object(consume.from),'AUTHORING_FORMAT','Activity consumption needs a named source');
       if(consume.from.input)bindings[consume.name]=`/inputs/${consume.from.input}`;
       else {const producer=activityIds.get(consume.from.activity);requireValue(producer&&activityOutputs.get(consume.from.activity)?.has(consume.from.output),'AUTHORING_SEMANTIC','Consumed activity output is unknown');bindings[consume.name]=`/nodes/${producer}/output/${consume.from.output}`;}
     }
@@ -208,14 +211,14 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
   }
   addEdge('start',program.entries[0],{section_ids:program.sections});for(const source of program.exits)addEdge(source,'final',{section_ids:program.sections});
   const rules=(blueprint.semantic_rules ?? []).map((item,index)=>{
-    requireValue(inventory.has(item.section_id)&&typeof item.statement==='string'&&item.statement.trim()&&Array.isArray(item.activity_keys)&&item.activity_keys.length>0,'AUTHORING_SEMANTIC','Semantic rules need source evidence, statement and responsible activities');
+    requireValue(inventory.has(item.section_id)&&typeof item.statement==='string'&&item.statement.trim()&&Array.isArray(item.activity_keys)&&item.activity_keys.length>0,'AUTHORING_FORMAT','Semantic rules need source evidence, statement and responsible activities');
     return {requirement_id:`semantic_rule_${String(index+1).padStart(3,'0')}`,requirement_kind:'agent_judgment',source_spans:[inventory.get(item.section_id).source_span],trigger:item.applies_when || 'source_semantic_rule',required_result:item.statement,resource_refs:resourceRefsForSections([item.section_id]),details:{},activity_keys:item.activity_keys};
   });
   const mappings=rules.map(item=>({requirement_id:item.requirement_id,node_ids:item.activity_keys.map(key=>{const id=stageIds.get(key);requireValue(id,'AUTHORING_SEMANTIC',`Unknown stage ${key}`);return id;}),binding_names:[],runtime_guards:[],resource_refs:[...item.resource_refs],status:'agent_assisted',rationale:'Mapped from the semantic blueprint.'})),assignmentIds=new Set(),successEdges=edges.filter(edge=>(edge.on ?? 'success')==='success');
   const reaches=(source,target)=>{const seen=new Set(),queue=[source];while(queue.length){const current=queue.shift();if(current===target)return true;if(seen.has(current))continue;seen.add(current);queue.push(...successEdges.filter(edge=>edge.source===current).map(edge=>edge.target));}return false;};
   rules.forEach(item=>delete item.activity_keys);
   for(const item of blueprint.requirement_assignments ?? []){
-    requireValue(!assignmentIds.has(item.requirement_id)&&Array.isArray(item.activity_keys)&&item.activity_keys.length>0,'AUTHORING_SEMANTIC','Requirement assignments must be unique and name responsible semantic activities');assignmentIds.add(item.requirement_id);
+    requireValue(!assignmentIds.has(item.requirement_id)&&Array.isArray(item.activity_keys)&&item.activity_keys.length>0,'AUTHORING_FORMAT','Requirement assignments must be unique and name responsible semantic activities');assignmentIds.add(item.requirement_id);
     if(/^semantic_rule_\d+$/.test(item.requirement_id))continue;
     const requirement=observed.get(item.requirement_id);requireValue(requirement,'AUTHORING_SEMANTIC','Observed requirement assignments must name a known requirement');
     let keys=[...new Set(item.activity_keys)];

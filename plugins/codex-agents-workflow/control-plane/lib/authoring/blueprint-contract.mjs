@@ -50,7 +50,9 @@ const internalAssignment={type:'object',required:['requirement_id','activity_key
 const internalDataType={type:'object',required:['key','kind','fields','item_type_ref','values','openness'],additionalProperties:false,properties:{key:id,kind:{type:'string',enum:['text','boolean','number','integer','object','list','enum']},fields:{type:'array',maxItems:256,items:{type:'object',required:['name','type_ref','required'],additionalProperties:false,properties:{name:id,type_ref:id,required:{type:'boolean'}}}},item_type_ref:optionalId,values:{type:'array',maxItems:128,items:{type:'string',maxLength:1000}},openness:{type:'string',enum:['closed','open']}}};
 export const INTERNAL_SEMANTIC_BLUEPRINT_SCHEMA=Object.freeze({type:'object',required:['contract','purpose','source_dispositions','semantic_rules','requirement_assignments','data_types','activities','approvals','sequences','parallels','choices','root'],additionalProperties:false,properties:{contract:{type:'string',const:PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT},purpose:text,source_dispositions:{type:'array',maxItems:500,items:internalDisposition},semantic_rules:{type:'array',maxItems:500,items:internalRule},requirement_assignments:{type:'array',maxItems:500,items:internalAssignment},data_types:{type:'array',maxItems:500,items:internalDataType},activities:{type:'array',minItems:1,maxItems:500,items:internalActivity},approvals:{type:'array',maxItems:128,items:approval},sequences:{type:'array',maxItems:256,items:group},parallels:{type:'array',maxItems:256,items:group},choices:{type:'array',maxItems:256,items:choice},root:id}});
 
-const fail=message=>{throw Object.assign(new Error(message),{code:'AUTHORING_SEMANTIC'});};
+const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
+const formatFail=message=>fail('AUTHORING_FORMAT',message);
+const semanticFail=message=>fail('AUTHORING_SEMANTIC',message);
 const keyOf=(collection,item)=>collection==='source_dispositions'?item.section_id:collection==='requirement_assignments'?item.requirement_id:item.key;
 const upsert=(items,changes,collection)=>{
   const next=new Map(items.map(item=>[keyOf(collection,item),structuredClone(item)]));
@@ -59,8 +61,8 @@ const upsert=(items,changes,collection)=>{
 };
 
 export function applySemanticRepair(previous,patch){
-  if(previous?.contract!==SEMANTIC_BLUEPRINT_CONTRACT)fail('Semantic repair requires the current compact blueprint');
-  if(patch?.contract!==SEMANTIC_REPAIR_CONTRACT)fail('Semantic repair uses workflow-semantic-repair/v1');
+  if(previous?.contract!==SEMANTIC_BLUEPRINT_CONTRACT)formatFail('Semantic repair requires the current compact blueprint');
+  if(patch?.contract!==SEMANTIC_REPAIR_CONTRACT)formatFail('Semantic repair uses workflow-semantic-repair/v1');
   const next=structuredClone(previous);
   if(patch.purpose)next.purpose=patch.purpose;
   for(const collection of repairCollections){
@@ -76,17 +78,17 @@ function derivedRoot(blueprint){
   const roots=components.filter(key=>!referenced.has(key));
   if(roots.length===1)return {root:roots[0],sequences:blueprint.sequences};
   if(roots.length>1){let key='host_root_sequence';while(components.includes(key))key='host_'+key;return {root:key,sequences:[...blueprint.sequences,{key,members:roots,failure_meaning:'all_required'}]};}
-  fail('Semantic components do not have an acyclic root');
+  semanticFail('Semantic components do not have an acyclic root');
 }
 
 function compactToInternal(value){
   const profiles={main_read:{ownership:'main',operation:'read',complexity:'routine',kind:'work'},main_write:{ownership:'main',operation:'write',complexity:'routine',kind:'work'},worker_read:{ownership:'isolated_worker',operation:'read',complexity:'routine',kind:'work'},worker_write:{ownership:'isolated_worker',operation:'write',complexity:'routine',kind:'work'},worker_complex_read:{ownership:'isolated_worker',operation:'read',complexity:'complex',kind:'work'},worker_complex_write:{ownership:'isolated_worker',operation:'write',complexity:'complex',kind:'work'},review:{ownership:'isolated_worker',operation:'read',complexity:'routine',kind:'review'},decision:{ownership:'main',operation:'read',complexity:'routine',kind:'decision'}};
   const parseInput=item=>{
     if(item.from.startsWith('input:'))return {name:item.name,source_kind:'input',input:item.from.slice(6),activity:'',output:''};
-    const separator=item.from.indexOf('.');if(separator<1 || separator===item.from.length-1)fail(`Activity input ${item.name} must use input:name or activity.output`);
+    const separator=item.from.indexOf('.');if(separator<1 || separator===item.from.length-1)formatFail(`Activity input ${item.name} must use input:name or activity.output`);
     return {name:item.name,source_kind:'activity',input:'',activity:item.from.slice(0,separator),output:item.from.slice(separator+1)};
   };
-  const activities=value.activities.map(item=>{const selected=profiles[item.profile];if(!selected)fail(`Unknown activity profile ${item.profile}`);return {key:item.key,purpose:item.instructions.split(/\r?\n/,1)[0].slice(0,240)||item.key,kind:selected.kind,instructions:item.instructions,ownership:selected.ownership,operation:selected.operation,complexity:selected.complexity,source_sections:item.source_sections,continues:'',consumes:item.inputs.map(parseInput),produces:item.outputs.map(output=>({name:output.name,shape:{kind:output.kind,values:output.values,type_ref:output.type_ref}})),capability:{kind:item.tool?'registered_tool':'none',semantic_name:item.tool}};});
+  const activities=value.activities.map(item=>{const selected=profiles[item.profile];if(!selected)formatFail(`Unknown activity profile ${item.profile}`);return {key:item.key,purpose:item.instructions.split(/\r?\n/,1)[0].slice(0,240)||item.key,kind:selected.kind,instructions:item.instructions,ownership:selected.ownership,operation:selected.operation,complexity:selected.complexity,source_sections:item.source_sections,continues:'',consumes:item.inputs.map(parseInput),produces:item.outputs.map(output=>({name:output.name,shape:{kind:output.kind,values:output.values,type_ref:output.type_ref}})),capability:{kind:item.tool?'registered_tool':'none',semantic_name:item.tool}};});
   const root=derivedRoot(value);
   return {contract:PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT,purpose:value.purpose,source_dispositions:value.source_dispositions.map(item=>({section_id:item.section_id,disposition:item.disposition,activity_keys:item.activity_keys,trigger:item.disposition==='conditional'?item.note:'',reason:item.note})),semantic_rules:[],requirement_assignments:value.requirement_assignments.map(item=>({...item,binding_names:[],runtime_guards:[]})),data_types:[
     ...value.records.map(item=>({key:item.key,kind:'object',fields:item.fields.map(field=>({name:field.name,type_ref:field.type,required:field.required})),item_type_ref:'',values:[],openness:item.open?'open':'closed'})),

@@ -21,7 +21,10 @@ import { SEMANTIC_BLUEPRINT_CONTRACT, SEMANTIC_REPAIR_CONTRACT } from '../lib/au
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 
 function checklist(proposal, failure='') {
-  return {checks:REVIEW_IDS.map(id=>({id,status:failure && id==='hard_rules'?'fail':'pass',evidence:failure && id==='hard_rules'?failure:'Verified source and proposed graph for '+id,node_ids:proposal.nodes.map(n=>n.id),edge_ids:proposal.edges.map((_e,index)=>`edge_${String(index+1).padStart(3,'0')}`),source_spans:[proposal.nodes[0].source_span]}))};
+  // Planner semantic keys are not Workflow node IDs. WorkflowForge assigns
+  // deterministic IDs in traversal order before the reviewer sees the plan.
+  const node_ids=proposal.nodes.map((_node,index)=>`activity_${String(index+1).padStart(3,'0')}`);
+  return {checks:REVIEW_IDS.map(id=>({id,status:failure && id==='hard_rules'?'fail':'pass',evidence:failure && id==='hard_rules'?failure:'Verified source and proposed graph for '+id,node_ids,edge_ids:proposal.edges.map((_e,index)=>`edge_${String(index+1).padStart(3,'0')}`),source_spans:[proposal.nodes[0].source_span]}))};
 }
 const generatedProposal = proposal => {
   const node=proposal.nodes[0],key=node.id;
@@ -117,7 +120,7 @@ test('one-click generation prepares workspace and advances only to explicit huma
   assert.equal(f.sessions[1].settings.model,'gpt-5.6-sol');
   assert.equal(f.sessions[1].settings.effort,'high');
   assert.equal(preview.workflow.finalization.required,true);
-  assert.equal(preview.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.equal(preview.workflow.nodes.find(n=>n.id==='activity_001').executor.provider_id,'native-reviewer');
   assert.equal((await store.snapshot(pack.workflow.id)).revision_hash,pack.revision_hash);
   await assert.rejects(f.service.call('accept_generation',{...control,accepted:false},{human:true}),{code:'GENERATION_ACCEPTANCE'});
   const saved=await f.service.call('accept_generation',{...control,accepted:true},{human:true});
@@ -143,7 +146,7 @@ test('current generation succeeds in one planner round when the planner omits ho
   assert.deepEqual(projectedProposal.nodes[0].input_bindings,{task:'/inputs/task'});
   assert.deepEqual(projectedProposal.nodes[0].resource_refs,['source/SKILL.md']);
   assert.deepEqual(projectedProposal.nodes[0].requirement_ids,[]);
-  const saved=await f.service.call('accept_generation',{...control,accepted:true},{human:true});const node=saved.workflow.nodes.find(item=>item.id==='check');
+  const saved=await f.service.call('accept_generation',{...control,accepted:true},{human:true});const node=saved.workflow.nodes.find(item=>item.id==='activity_001');
   assert.deepEqual(node.input_bindings,{task:'/inputs/task'});assert.deepEqual(node.resources,['source/SKILL.md']);assert.equal(f.sessions.length,2);
 });
 
@@ -297,12 +300,17 @@ test('generation repairs review findings with pinned providers and preserves rej
   const state=await f.service.call('get',control);assert.equal(state.nodes.expand.attempts.length,2);assert.equal(state.nodes.final.attempts.length,2);assert.equal(state.status,'running');
   await f.service.call('cancel',control);assert.equal((await step()).phase,'attention');assert.equal(f.sessions.length,4);
 });
-test('generation stops when deterministic preflight repeats the same failure instead of burning every round', async t => {
-  let proposal,plannerCalls=0;const f=await fixture(t,{turn:async()=>({output:JSON.stringify(plannerCalls++?generatedRepair(proposal):generatedProposal(proposal)),thread_id:'bad-graph',turn_id:'round',audit:{}})});
+test('generation stops when deterministic preflight repeats the same semantic failure instead of burning every round', async t => {
+  let proposal,plannerCalls=0;const f=await fixture(t,{turn:async()=>{
+    const output=plannerCalls++?generatedRepair(proposal):generatedProposal(proposal);
+    const activity=output.proposal.contract===SEMANTIC_REPAIR_CONTRACT?output.proposal.upsert.activities[0]:output.proposal.activities[0];
+    activity.source_sections=['section_missing_from_source'];
+    return {output:JSON.stringify(output),thread_id:'bad-graph',turn_id:'round',audit:{}};
+  }});
   const source=join(f.root,'invalid-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: invalid\ndescription: Review\n---\nReview result.');
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'invalid-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
-  proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'start',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[]};
+  proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[]};
   const routing=await f.service.call('routing_defaults');routing.generation={review_provider_id:'native-generation-reviewer',max_rounds:2};
   const run=await f.service.call('start_generation',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'invalid-generation',routing_rules:routing},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   async function step(){const result=await f.service.call('advance_generation',control,{human:true});await Promise.all([...f.manager.entries.values()].map(e=>e.job));return result;}
@@ -613,7 +621,7 @@ test('selected-Provider expansion uses durable read-only execution and applies o
   }
   assert.equal(f.sessions.length, 2); assert.equal((await store.snapshot(pack.workflow.id)).revision_hash, pack.revision_hash);
   const expanded = await f.service.call('apply_expansion_result', apply);
-  assert.equal(expanded.workflow.status, 'draft'); assert.equal(expanded.workflow.nodes.find(node => node.id === 'analyze').executor.provider_id, originalRules.routes.implementation.provider_id);
+  assert.equal(expanded.workflow.status, 'draft'); assert.equal(expanded.workflow.nodes.find(node => node.id === 'activity_001').executor.provider_id, originalRules.routes.implementation.provider_id);
   assert(expanded.workflow.import_status.unresolved.some(item => item.code === 'AI_INFERENCES_REQUIRE_REVIEW'));
   await assert.rejects(f.service.call('apply_expansion_result', apply), { code: 'REVISION_CONFLICT' }); assert.equal(f.sessions.length, 2);
 });
