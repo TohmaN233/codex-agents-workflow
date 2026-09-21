@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Agents Workflow"
   short_description: "Run or manage directly applicable Workflows"
-  default_prompt: "Use $workflow-control-plane to run a registered Workflow only if it directly matches my concrete task, or manage one without starting a Run."
+  default_prompt: "Use $workflow-control-plane only for matched execution; never planning, comparison, audit, or experiments."

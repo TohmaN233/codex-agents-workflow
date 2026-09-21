@@ -23,8 +23,18 @@ test('workflow-control-plane reserves Runs for concrete execution intent', async
 
 test('plugin defaults do not turn planning or audit prompts into Runs', async () => {
   const manifest = JSON.parse(await readFile(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
+  const pluginPrompt = manifest.interface.defaultPrompt[0];
   const prompt = manifest.interface.defaultPrompt.join(' ');
+  const skillUi = await readFile(join(pluginRoot, 'skills', 'control-plane', 'agents', 'openai.yaml'), 'utf8');
+  const skillPrompt = skillUi.match(/^\s*default_prompt:\s*"([^"]+)"\s*$/m)?.[1];
 
   assert.match(prompt, /only for matched execution/i);
   assert.match(prompt, /never planning, comparison, audit, or experiments/i);
+  assert.ok(manifest.interface.defaultPrompt.every((value) => value.length <= 128));
+  assert.equal(
+    skillPrompt,
+    pluginPrompt.replace('$codex-agents-workflow:workflow-control-plane', '$workflow-control-plane'),
+    'the skill UI prompt must remain the namespaced plugin prompt with only its skill identifier shortened',
+  );
+  assert.ok(skillPrompt.length <= 128);
 });
