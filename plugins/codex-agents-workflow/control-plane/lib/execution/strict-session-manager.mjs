@@ -72,7 +72,7 @@ export class StrictSessionManager {
     const { pins } = await runtime.runs.read(runId);
     const settings = await this.capability(pins.root, pins.providers, pins.skills);
     const main = envelope.executor.kind === 'main';
-    const generationReviewer = pins.generation?.reviewer ?? null;
+    const generationReviewer = pins.authoring_reviewer ?? pins.generation?.reviewer ?? null;
     if(generationReviewer) {const current=(await this.getConfig()).providers.find(p=>p.id===generationReviewer.id);requireValue(current?.enabled && current.kind==='native_agent' && current.capabilities.read && canonicalJSON(current.config)===canonicalJSON(generationReviewer.config),'GENERATION_REVIEW_PROVIDER','Review binding must match the registered Provider');}
     return { execution: 'strict_codex', model: main ? generationReviewer?.config.model ?? settings.main_model : envelope.provider.config.model,
       effort: main ? generationReviewer?.config.reasoning_effort ?? settings.main_reasoning_effort : envelope.provider.config.reasoning_effort,
@@ -96,7 +96,7 @@ export class StrictSessionManager {
       requireValue(!entry.stopping, 'STRICT_SESSION_STOPPED', 'Local executor permission was revoked');
       await runtime.execution(runId, args, { allowPaused: entry.status === 'running' });
       const config = await this.getConfig();
-      const reviewer=(await runtime.runs.read(runId)).pins.generation?.reviewer;
+      const reviewerRecord=await runtime.runs.read(runId),reviewer=reviewerRecord.pins.authoring_reviewer ?? reviewerRecord.pins.generation?.reviewer;
       if(reviewer && envelope.executor.kind==='main') {const registered=config.providers.find(p=>p.id===reviewer.id);requireValue(registered?.enabled && registered.capabilities.read && (!registered.requires_user_approval || reviewer.requires_user_approval),'GENERATION_REVIEW_PROVIDER','Pinned reviewer permission was revoked');}
       requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution was disabled');
       requireValue(digest(canonicalJSON(validateStrictConfig(config.strict_executor))) === adapter.settings_sha256, 'STRICT_CONFIG_CHANGED', 'Strict executor settings changed during the attempt');

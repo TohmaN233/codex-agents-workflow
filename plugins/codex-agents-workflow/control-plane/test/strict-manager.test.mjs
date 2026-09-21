@@ -93,6 +93,23 @@ test('generation accepts a non-reviewer registered native model with read-only r
   await f.service.call('cancel',control);
 });
 
+test('manually driven authoring pins the configured reviewer without enabling automatic repair',async t=>{
+  let proposal;
+  const f=await fixture(t,{turn:async settings=>({output:JSON.stringify(settings.model==='gpt-5.6-luna'?checklist(proposal):generatedProposal(proposal)),thread_id:'manual-authoring-reviewer',turn_id:'turn',audit:{}})});
+  const source=join(f.root,'manual-authoring-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: manual-authoring\ndescription: test\n---\nReview result.');
+  const {store,runtime}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'manual-authoring-source'});
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
+  proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
+  const rules=await f.service.call('routing_defaults');rules.generation={review_provider_id:'native-luna',planner_provider_id:'native-terra',max_rounds:2};
+  const run=await f.service.call('create_authoring_run',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'manual-authoring-reviewer',workspace:f.workspace,provider_id:'native-terra',routing_rules:rules,automatic_generation:false,main_actor:'human-console'});
+  const control={run_id:run.run_id,control_token:run.control_token},record=await runtime.runs.read(run.run_id);
+  assert.equal(record.pins.generation,undefined);assert.equal(record.pins.authoring_reviewer.id,'native-luna');
+  for(const phase of ['generating','reviewing']){const value=await f.service.call('advance_authoring',control,{human:true});assert.equal(value.phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
+  assert.equal(f.sessions.at(-2).settings.model,'gpt-5.6-terra');assert.equal(f.sessions.at(-1).settings.model,'gpt-5.6-luna');
+  assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,'review_required');
+  await f.service.call('cancel',control);
+});
+
 test('one-click generation prepares workspace and advances only to explicit human acceptance', async t => {
   let proposal;
   const f = await fixture(t,{turn:async(settings)=>({output:JSON.stringify(settings.model==='gpt-5.6-sol'?checklist(proposal):generatedProposal(proposal)),thread_id:'generation-test',turn_id:'turn',audit:{}})});

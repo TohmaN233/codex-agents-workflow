@@ -50,8 +50,8 @@ function completionPayload(payload) {
 }
 
 export class WorkflowRuntime {
-  constructor({ workflowStore, runRoot, generationPolicy = null, context = {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, environmentResolver = discoverRuntimeEnvironment, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
-    this.generationPolicy = generationPolicy; this.environmentResolver = environmentResolver;
+  constructor({ workflowStore, runRoot, generationPolicy = null, authoringReviewer = null, context = {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, environmentResolver = discoverRuntimeEnvironment, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
+    this.generationPolicy = generationPolicy; this.authoringReviewer = authoringReviewer; this.environmentResolver = environmentResolver;
     this.workflows = workflowStore; this.runs = new WorkflowRunStore(runRoot); this.context = context;
     this.strictCapability = strictCapability; this.parallelWriteCapability = parallelWriteCapability;
     this.parallelManager = parallelManager;
@@ -101,7 +101,7 @@ export class WorkflowRuntime {
     const providers = (this.context.providers ?? []).filter(provider => providerIds.has(provider.id));
     for (const pack of closure.packs) if (pack.workflow.skill_policy.mode === 'strict') requireValue(await this.strictCapability(pack, { skills: closure.skills, providers }), 'STRICT_UNAVAILABLE', 'No qualified Strict executor is available; imported Workflows cannot silently downgrade');
     const blobs = closure.blobs;
-    const pins = { schema_version: 1, thread_protocol_version: 2, ...(this.generationPolicy ? {generation:structuredClone(this.generationPolicy)} : {}), root, providers: structuredClone(providers), children: closure.children, skills: closure.skills, resources: closure.resources };
+    const pins = { schema_version: 1, thread_protocol_version: 2, ...(this.generationPolicy ? {generation:structuredClone(this.generationPolicy)} : {}), ...(this.authoringReviewer ? {authoring_reviewer:structuredClone(this.authoringReviewer)} : {}), root, providers: structuredClone(providers), children: closure.children, skills: closure.skills, resources: closure.resources };
     const controlToken = randomBytes(32).toString('hex');
     const state = initialRunState({ runId: run_id, pinsHash: digest(canonicalJSON(pins)), pins, inputs: structuredClone(inputs), permissions, constraints: structuredClone(constraints), controlHash: digest(controlToken), mainActor: main_actor, requireApproval: require_approval });
     const scopes = validateChildClosure(pins, state);

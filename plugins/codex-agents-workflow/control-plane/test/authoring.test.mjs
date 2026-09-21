@@ -17,6 +17,7 @@ import { AUTHORING_RUNTIME_ENVELOPE_SCHEMA, authoringRunPack } from '../lib/skil
 import { managedNativeResultSchema } from '../lib/execution/host-main-automation.mjs';
 import { validateData } from '../lib/workflow-data-schema.mjs';
 import { deterministicProposalFindings } from '../lib/skill-import/proposal-validation.mjs';
+import { evaluateExpression } from '../lib/workflow-bindings.mjs';
 
 const rules={version:1,instructions:'Host routing.',selection_mode:'automatic',routes:{implementation:{provider_id:'native-luna',role:'implementer'},complex_implementation:{provider_id:'native-terra',role:'implementer'},review:{provider_id:'native-reviewer',role:'reviewer'},planning:{provider_id:'native-terra',role:'implementer'}},generation:{planner_provider_id:'native-terra',review_provider_id:'native-reviewer',max_rounds:2}};
 const providers=[
@@ -55,6 +56,18 @@ test('compact authoring contract derives the root and semantic repair changes on
   const duplicatePatch={contract:SEMANTIC_REPAIR_CONTRACT,purpose:'',upsert:{...structuredClone(empty),activities:[compact.activities[0],compact.activities[0]]},remove:empty};
   assert.throws(()=>applySemanticRepair(compact,duplicatePatch),{code:'AUTHORING_FORMAT'});
   assert(JSON.stringify(SEMANTIC_BLUEPRINT_SCHEMA).length<JSON.stringify(INTERNAL_SEMANTIC_BLUEPRINT_SCHEMA).length*0.82);
+});
+
+test('compact requirement assignments let the Host project future user input bindings without model fields',()=>{
+  const compiled=compileWorkflowBrief({workflow_id:'input-fixture',name:'Input fixture',brief:'# Workflow\n\n## Process\n\nAsk the user for input before drafting the result.',provider_id:'native-terra'}),prepared=prepareResources(compiled.resources),snapshot={workflow:compiled.workflow,resources:prepared.manifest,provenance:compiled.provenance,import_report:compiled.import_report},pack={...snapshot,revision_hash:revisionHash(snapshot)},resources=compiled.resources;
+  const sections=sourceSectionInventory(resources),ids=sections.map(item=>item.section_id),inputRequirement=observedSourceRequirements(resources).find(item=>item.requirement_kind==='user_input');
+  assert(inputRequirement);
+  const compact={contract:CURRENT_SEMANTIC_BLUEPRINT_CONTRACT,purpose:'Draft from the supplied task input.',source_dispositions:sections.map(item=>({section_id:item.section_id,disposition:'workflow',activity_keys:['draft'],note:'Required by the brief.'})),requirement_assignments:[{requirement_id:inputRequirement.requirement_id,activity_keys:['draft']}],records:[],lists:[],enums:[],activities:[
+    {key:'draft',instructions:'Use the user-supplied task input to draft the result.',profile:'main_write',source_sections:ids,inputs:[],outputs:[{name:'result',kind:'text',values:[],type_ref:''}],tool:''},
+  ],approvals:[],sequences:[],parallels:[],choices:[]};
+  validateData(compact,SEMANTIC_BLUEPRINT_SCHEMA);
+  const forged=new WorkflowForge().compile({pack,resources,blueprint:compact,context:{routing_rules:rules,routing_catalog:providers,providers}}),mapping=forged.proposal.requirement_mappings.find(item=>item.requirement_id===inputRequirement.requirement_id),node=forged.proposal.nodes.find(item=>item.id===mapping.node_ids[0]);
+  assert.equal(forged.compiled.validation.valid,true);assert.deepEqual(mapping.binding_names,['task']);assert.equal(node.input_bindings.task,'/inputs/task');
 });
 
 test('WorkflowForge rejects duplicate semantic keys before keyed collections become Maps',()=>{
@@ -102,6 +115,31 @@ test('WorkflowForge derives parallel/join and conditional fan-in without model-a
   assert.deepEqual(forged.compiled.workflow.nodes.find(node=>node.id==='final').input_bindings.upstream_result.coalesce.sort(),[`/nodes/${branchA.id}/output`,`/nodes/${branchB.id}/output`].sort());
 });
 
+test('WorkflowForge preserves typed choice literals and rejects mismatched branch values before graph compilation',()=>{
+  const cases=[
+    {shape:{kind:'boolean',values:[]},value:true,other:false},
+    {shape:{kind:'number',values:[]},value:1,other:2},
+    {shape:{kind:'text',values:[]},value:'true',other:'false'},
+  ];
+  for(const [index,item] of cases.entries()){
+    const {pack,resources}=sourceFixture(),sections=sourceSectionInventory(resources),ids=sections.map(section=>section.section_id),key=`route_${index}`;
+    const semantic=blueprint({purpose:'Preserve the decision output JSON type.',source_dispositions:dispositions(sections,['decide','matched','fallback']),activities:[
+      activity('decide','Choose the typed route.',ids,{kind:'decision',produces:[{name:key,shape:item.shape}]}),
+      activity('matched','Handle the matching value.',ids,{produces:[{name:'result',shape:'text'}]}),
+      activity('fallback','Handle every other value.',ids,{produces:[{name:'result',shape:'text'}]}),
+    ],choices:[{key:'typed_choice',decision_activity:'decide',output:key,branches:[{value:item.value,body:'matched'}],default_body:'fallback'}],root:'typed_choice'});
+    const forged=new WorkflowForge().compile({pack,resources,blueprint:semantic,context:{routing_rules:rules,routing_catalog:providers,providers}}),condition=forged.proposal.nodes.find(node=>node.type==='condition'),decision=activityNode(forged.proposal,'decide');
+    assert.equal(condition.cases[0].when.args[1].value,item.value);assert.equal(typeof condition.cases[0].when.args[1].value,typeof item.value);
+    assert.equal(evaluateExpression(condition.cases[0].when,{nodes:{[decision.id]:{output:{[key]:item.value}}}}),true);
+    assert.equal(evaluateExpression(condition.cases[0].when,{nodes:{[decision.id]:{output:{[key]:item.other}}}}),false);
+  }
+  const {pack,resources}=sourceFixture(),sections=sourceSectionInventory(resources),ids=sections.map(section=>section.section_id);
+  const invalid=blueprint({purpose:'Reject stringified booleans.',source_dispositions:dispositions(sections,['decide','matched','fallback']),activities:[
+    activity('decide','Choose the boolean route.',ids,{kind:'decision',produces:[{name:'selected',shape:{kind:'boolean',values:[]}}]}),activity('matched','Match.',ids),activity('fallback','Fallback.',ids),
+  ],choices:[{key:'invalid_choice',decision_activity:'decide',output:'selected',branches:[{value:'true',body:'matched'}],default_body:'fallback'}],root:'invalid_choice'});
+  assert.throws(()=>new WorkflowForge().compile({pack,resources,blueprint:invalid,context:{routing_rules:rules,routing_catalog:providers,providers}}),{code:'AUTHORING_SEMANTIC'});
+});
+
 test('WorkflowForge derives a structured parallel region and aggregate bindings',()=>{
   const {pack,resources}=sourceFixture(),sections=sourceSectionInventory(resources),ids=sections.map(item=>item.section_id);
   const semantic=blueprint({purpose:'Run independent checks.',source_dispositions:dispositions(sections,['check_a','check_b','summarize']),activities:[
@@ -139,10 +177,10 @@ test('WorkflowForge lowers converging choice branches to one shared semantic bod
 test('WorkflowForge reuses an explicitly sequenced decision and downstream body without duplicate nodes or self edges',()=>{
   const {pack,resources}=sourceFixture(),sections=sourceSectionInventory(resources),ids=sections.map(item=>item.section_id);
   const semantic=blueprint({purpose:'Reuse semantic components across nested control groups.',source_dispositions:dispositions(sections,['decide','plan','deliver']),activities:[
-    activity('decide','Determine whether optional planning applies.',ids,{kind:'decision',produces:[{name:'needed',shape:{kind:'enum',values:['true','false']}}]}),
+    activity('decide','Determine whether optional planning applies.',ids,{kind:'decision',produces:[{name:'needed',shape:{kind:'boolean',values:[]}}]}),
     activity('plan','Create the implementation plan.',ids,{produces:[{name:'plan',shape:'text'}]}),
     activity('deliver','Deliver the result.',ids,{operation:'write',consumes:[{name:'plan',from:{activity:'plan',output:'plan'}}],produces:[{name:'result',shape:'text'}]}),
-  ],choices:[{key:'planning_choice',decision_activity:'decide',output:'needed',branches:[{value:'true',body:'plan'},{value:'false',body:'plan'}],default_body:'plan'}],sequences:[
+  ],choices:[{key:'planning_choice',decision_activity:'decide',output:'needed',branches:[{value:true,body:'plan'},{value:false,body:'plan'}],default_body:'plan'}],sequences:[
     {key:'preparation',members:['decide','planning_choice'],failure_meaning:'all_required'},
     {key:'delivery',members:['plan','deliver'],failure_meaning:'all_required'},
     {key:'root_sequence',members:['preparation','delivery'],failure_meaning:'all_required'},
@@ -289,6 +327,7 @@ test('Skill conversion and from-scratch authoring are two configurations of the 
   assert.deepEqual(AUTHORING_WORKFLOWS[1].host_lifecycle.map(({id})=>id),['source_snapshot','compile_candidate','semantic_repair','publish']);
   assert.equal(job.workflow.nodes.find(item=>item.id==='expand').outputs_schema,AUTHORING_RUNTIME_ENVELOPE_SCHEMA);
   assert.doesNotThrow(()=>managedNativeResultSchema(job.workflow.nodes.find(item=>item.id==='expand')));
+  assert.throws(()=>authoringRunPack(pack,resources,providers[1],'disabled-reviewer',rules,false,{...providers[2],enabled:false},providers),{code:'GENERATION_REVIEW_PROVIDER'});
 });
 
 test('portable Workflow package validates content identity and installs atomically',async t=>{

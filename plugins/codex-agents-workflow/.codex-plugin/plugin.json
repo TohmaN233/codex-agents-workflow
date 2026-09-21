@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Codex Agents Workflow",
     "shortDescription": "Build and run versioned Workflows with pinned Providers and main-agent acceptance.",
-    "longDescription": "Codex Agents Workflow keeps the main agent responsible for requirements, verification and acceptance. Its built-in skill2workflow and build_workflow authoring Workflows ask models only for a compact semantic plan; the Host deterministically compiles graph IDs, bindings, schemas, execution fields and package metadata. One optional semantic delta repair is allowed, while mechanical failures stop without model retry. You own a versioned Workflow graph with pinned Providers, Skill policies, resources, permissions and final acceptance. Content-addressed Workflow packages can be exported and installed from local JSON or HTTPS with compatibility, resource and dependency validation. New Workflows use Cooperative execution by default. A durable Run journal fences stale leases and supports exact recovery without automatic resubmission.",
+    "longDescription": "Codex Agents Workflow keeps the main agent responsible for requirements, verification and acceptance. Its built-in skill2workflow and build_workflow authoring Workflows ask models only for a compact semantic plan; the Host deterministically compiles graph IDs, bindings, schemas, execution fields and package metadata. One optional semantic delta repair is allowed, while mechanical failures stop without model retry. You own a versioned Workflow graph with pinned Providers, Skill policies, resources, permissions and final acceptance. Content-addressed Workflow packages can be exported and installed from local JSON or HTTPS with compatibility, resource and dependency validation. New Workflows use Cooperative execution by default. A durable Run journal persists exact task identities, fences stale leases and supports exact recovery without automatic resubmission.",
     "developerName": "TohmaN233",
     "category": "Productivity",
     "capabilities": [
@@ -32,7 +32,7 @@
     ],
     "websiteURL": "https://github.com/TohmaN233/codex-agents-workflow",
     "defaultPrompt": [
-      "Use $codex-agents-workflow:workflow-control-plane to run a pinned Workflow only when it directly matches a concrete execution task; planning, comparison, audit, and experiment design do not start Runs.",
+      "Use $codex-agents-workflow:workflow-control-plane only for matched execution; never planning, comparison, audit, or experiments.",
       "Keep external Providers off unless explicitly enabled and bound to the selected Workflow."
     ]
   }

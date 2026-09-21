@@ -6,9 +6,10 @@ const semantic = new Set(['agent', 'skill_ref']);
 const terminal = new Set(['succeeded', 'failed', 'cancelled']);
 
 /**
- * Advance only deterministic/control/host work.  This deliberately never
- * dispatches a semantic model node: callers receive the exact stop reason and
- * must perform the separately journaled main/Provider handoff themselves.
+ * Advance Host/control/tool work plus explicitly configured managed-native
+ * semantic nodes.  Other semantic executors stop for a separately journaled
+ * handoff.  Every managed dispatch still uses the normal claim, intent,
+ * receipt, usage and completion path; this helper grants no extra authority.
  */
 export class WorkflowDrive {
   constructor({ runtime, executor, store }) { this.runtime = runtime; this.executor = executor; this.store = store; }

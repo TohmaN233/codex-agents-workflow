@@ -296,11 +296,15 @@ export class WorkflowService {
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
         const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
-        const job = authoringRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer')),config.providers);
+        const reviewer=config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer'));
+        const job = authoringRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, reviewer,config.providers);
         await this.strictManager.capability({ ...job, resources: prepareResources(job.resources).manifest }, config.providers);
         const jobs = await new WorkflowStore(join(dirname(this.configPath), 'workflow-expansion-jobs'), { validationContext: context }).initialize();
         const saved = await jobs.create(job.workflow, job);
-        const planning = await new WorkflowRuntime({ generationPolicy:args.automatic_generation === true ? {settings:job.provenance.generation,reviewer:config.providers.find(p=>p.id===job.provenance.generation.review_provider_id)} : null, workflowStore: jobs, runRoot: runtime.runs.root, context, strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
+        // The reviewer binding is part of every authoring Run.  The automatic
+        // flag controls bounded Host advancement/repair only; it must not make
+        // a manually driven Run silently fall back to the generic main model.
+        const planning = await new WorkflowRuntime({ generationPolicy:args.automatic_generation === true ? {settings:job.provenance.generation,reviewer} : null, authoringReviewer:reviewer, workflowStore: jobs, runRoot: runtime.runs.root, context, strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
         return planning.start({ workflow_id: saved.workflow.id, revision_hash: saved.revision_hash, run_id: args.run_id,
           workspace: args.workspace, main_actor: args.main_actor, access: 'read_only', inputs: { task: 'Analyze this pinned Skill into an editable Draft' } });
       }

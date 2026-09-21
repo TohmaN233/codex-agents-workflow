@@ -21,7 +21,11 @@ const listType={type:'object',required:['key','item_type'],additionalProperties:
 const enumType={type:'object',required:['key','values'],additionalProperties:false,properties:{key:id,values:{type:'array',minItems:1,maxItems:128,items:{type:'string',maxLength:1000}}}};
 const approval={type:'object',required:['key','question','source_sections'],additionalProperties:false,properties:{key:id,question:text,source_sections:{type:'array',minItems:1,maxItems:128,items:id}}};
 const group={type:'object',required:['key','members','failure_meaning'],additionalProperties:false,properties:{key:id,members:{type:'array',minItems:1,maxItems:128,items:id},failure_meaning:{type:'string',enum:['all_required','partial_evidence_allowed']}}};
-const choiceBranch={type:'object',required:['value','body'],additionalProperties:false,properties:{value:{type:'string',minLength:1,maxLength:1000},body:id}};
+// The finite schema vocabulary intentionally has no union types.  Keep this
+// field schema-neutral here and let the Host compiler require a bounded scalar
+// whose JSON type exactly matches the selected decision output.  This avoids
+// lossy model-authored string encodings such as "true" for boolean true.
+const choiceBranch={type:'object',required:['value','body'],additionalProperties:false,properties:{value:{description:'A string, boolean or finite number matching the decision output type.'},body:id}};
 const choice={type:'object',required:['key','decision_activity','output','branches','default_body'],additionalProperties:false,properties:{key:id,decision_activity:id,output:id,branches:{type:'array',minItems:1,maxItems:128,items:choiceBranch},default_body:id}};
 
 // The model describes meaning only. The Host derives root, graph, IDs, schemas,
@@ -111,7 +115,7 @@ export const SEMANTIC_BLUEPRINT_GUIDE=Object.freeze({
   contract:SEMANTIC_BLUEPRINT_CONTRACT,
   purpose:'Describe only preserved task meaning. The Host compiles every Workflow mechanic.',
   activities:'Each activity has instructions, one semantic execution profile, cited source sections, compact inputs (input:name or activity.output), outputs and an optional exact registered tool name.',
-  controls:'Use named sequence, parallel, choice and approval groups. Do not choose a root; the Host derives it and conservatively sequences otherwise independent roots.',
+  controls:'Use named sequence, parallel, choice and approval groups. Choice values are typed JSON scalars matching the decision output; never stringify booleans or numbers. Do not choose a root; the Host derives it and conservatively sequences otherwise independent roots.',
   source_dispositions:'Classify every supplied section once. note is the exact trigger for conditional sections and a concise reason otherwise.',
   data:'Declare records, lists and enums only when structured outputs need them. The Host emits JSON Schema.',
   repair:'A later semantic repair emits only stable-key upserts/removals, never the whole blueprint.',

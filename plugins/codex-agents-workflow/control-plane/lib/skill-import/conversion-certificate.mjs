@@ -13,6 +13,16 @@ function semanticWorkflow(workflow) {
     tags: _tags,
     ...semantic
   } = structuredClone(workflow);
+  // Only the generated reminder for per-item inference confirmation is review
+  // metadata.  Conversion level, dependency observations and every other
+  // import blocker stay certificate-bound and cannot be cleared by editing a
+  // Draft.
+  if (semantic.import_status?.unresolved) semantic.import_status.unresolved=semantic.import_status.unresolved.filter(issue=>issue.code!=='AI_INFERENCES_REQUIRE_REVIEW');
+  for (const kind of ['nodes', 'edges']) for (const item of semantic[kind] ?? []) {
+    if (!item.origin) continue;
+    delete item.origin.reviewed;
+    delete item.origin.review;
+  }
   return semantic;
 }
 

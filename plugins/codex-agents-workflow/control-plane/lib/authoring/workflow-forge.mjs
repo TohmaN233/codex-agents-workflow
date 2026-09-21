@@ -3,6 +3,7 @@ import { compileExpansion } from '../skill-import/semantic-expander.mjs';
 import { sourceSectionInventory } from '../skill-import/source-dispositions.mjs';
 import { observedSourceRequirements } from '../skill-import/source-requirements.mjs';
 import { authoringSourcePath } from '../skill-import/authoring-source.mjs';
+import { bindingPointers } from '../workflow-bindings.mjs';
 import { normalizeSemanticBlueprint, PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT } from './blueprint-contract.mjs';
 export { SEMANTIC_BLUEPRINT_CONTRACT } from './blueprint-contract.mjs';
 
@@ -47,6 +48,14 @@ const shapeSchema=(shape,resolveType)=>{
   requireValue(Array.isArray(shape.values) && shape.values.length>0 && shape.values.every(value=>['string','number','boolean'].includes(typeof value)),'AUTHORING_FORMAT','Enum shapes need bounded scalar values');
   return {type:typeof shape.values[0],enum:[...shape.values]};
 };
+const choiceValueKey=value=>`${typeof value}:${JSON.stringify(value)}`;
+function requireChoiceValue(value,schema,choiceKey,outputName){
+  const scalar=['string','boolean','number'].includes(typeof value)&&value!==null&&(typeof value!=='number'||Number.isFinite(value))&&(typeof value!=='string'||([...value].length>0&&[...value].length<=1000));
+  requireValue(scalar,'AUTHORING_FORMAT',`Choice ${choiceKey} values must be bounded JSON scalars`);
+  const matches=schema.type==='integer'?Number.isInteger(value):schema.type===typeof value;
+  requireValue(matches,'AUTHORING_SEMANTIC',`Choice ${choiceKey} value ${JSON.stringify(value)} does not match decision output ${outputName} type ${schema.type}`);
+  requireValue(!schema.enum||schema.enum.some(item=>choiceValueKey(item)===choiceValueKey(value)),'AUTHORING_SEMANTIC',`Choice ${choiceKey} value ${JSON.stringify(value)} is outside decision output ${outputName}`);
+}
 
 function validateBlueprint(blueprint,resources){
   requireValue(object(blueprint) && blueprint.contract===PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT && typeof blueprint.purpose==='string' && blueprint.purpose.trim() && object(blueprint.program),'AUTHORING_FORMAT','Authoring requires a normalized semantic blueprint');
@@ -137,7 +146,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     if(interfaceResources.length)for(const output of produces){const shape=output.shape;requireValue(!['object','list'].includes(shape?.kind)||Boolean(shape.type_ref),'AUTHORING_SEMANTIC',`Activity ${activity.key} cites executable resources and must describe structured output ${output.name} with a named data type`);}
     const properties=Object.fromEntries(produces.map(item=>[item.name,shapeSchema(item.shape,resolveType)]));
     const outputs_schema=produces.length?{type:'object',properties,required:Object.keys(properties),additionalProperties:false}:undefined;
-    activityOutputs.set(activity.key,new Set(Object.keys(properties)));
+    activityOutputs.set(activity.key,properties);
     const review=activity.kind==='review';
     const task_type=review?'review':activity.complexity==='complex'?'complex_implementation':activity.operation==='write'?'implementation':'planning';
     const tool=activity.capability?.kind==='registered_tool';
@@ -182,7 +191,10 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     else {
       requireValue(object(block.decision)&&Array.isArray(block.branches)&&block.branches.length>0&&object(block.default),'AUTHORING_FORMAT','Choice needs a decision, branches and default block');
       const decisionPrecompiled=compiledBlocks.has(block.decision.key),decision=compileBlock({kind:'activity',key:block.decision.key,activity:block.decision});
-      const outputName=block.output;requireValue(localKey(outputName)&&activityOutputs.get(block.decision.key)?.has(outputName),'AUTHORING_SEMANTIC','Choice output must name one declared decision output');
+      const outputName=block.output,outputSchemas=activityOutputs.get(block.decision.key);requireValue(localKey(outputName)&&Object.hasOwn(outputSchemas??{},outputName),'AUTHORING_SEMANTIC','Choice output must name one declared decision output');
+      const outputSchema=outputSchemas[outputName];requireValue(['string','boolean','number','integer'].includes(outputSchema.type),'AUTHORING_SEMANTIC',`Choice ${block.key} decision output ${outputName} must be scalar`);
+      const branchValues=new Set();
+      for(const branch of block.branches){requireChoiceValue(branch.value,outputSchema,block.key,outputName);const key=choiceValueKey(branch.value);requireValue(!branchValues.has(key),'AUTHORING_SEMANTIC',`Choice ${block.key} contains duplicate branch value ${JSON.stringify(branch.value)}`);branchValues.add(key);}
       const fallbackKey=semanticKeyOf(block.default),fallback=compileBlock(block.default),groups=new Map();
       for(const item of block.branches){
         const key=semanticKeyOf(item.body);
@@ -208,7 +220,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     for(const consume of activity?.consumes ?? []){
       requireValue(object(consume)&&localKey(consume.name)&&object(consume.from),'AUTHORING_FORMAT','Activity consumption needs a named source');
       if(consume.from.input)bindings[consume.name]=`/inputs/${consume.from.input}`;
-      else {const producer=activityIds.get(consume.from.activity);requireValue(producer&&activityOutputs.get(consume.from.activity)?.has(consume.from.output),'AUTHORING_SEMANTIC','Consumed activity output is unknown');bindings[consume.name]=`/nodes/${producer}/output/${consume.from.output}`;}
+      else {const producer=activityIds.get(consume.from.activity),outputs=activityOutputs.get(consume.from.activity);requireValue(producer&&Object.hasOwn(outputs??{},consume.from.output),'AUTHORING_SEMANTIC','Consumed activity output is unknown');bindings[consume.name]=`/nodes/${producer}/output/${consume.from.output}`;}
     }
     nodes.find(item=>item.id===id).input_bindings=bindings;
   }
@@ -235,7 +247,11 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
       const candidates=(blueprint.approvals ?? []).filter(approval=>approval.source_sections.some(id=>sectionIds.includes(id))).map(approval=>approval.key);
       if(candidates.length===1){const gate=candidates[0],gateId=stageIds.get(gate);keys=keys.filter(key=>{const id=stageIds.get(key);return id&&reaches(gateId,id);});keys.push(gate);}
     }
-    mappings.push({requirement_id:item.requirement_id,node_ids:keys.map(key=>{const id=stageIds.get(key);requireValue(id,'AUTHORING_SEMANTIC',`Unknown stage ${key}`);return id;}),binding_names:item.binding_names ?? [],runtime_guards:item.runtime_guards ?? [],resource_refs:[...(requirement.resource_refs ?? [])],status:'agent_assisted',rationale:'Mapped from the semantic blueprint.'});
+    const node_ids=keys.map(key=>{const id=stageIds.get(key);requireValue(id,'AUTHORING_SEMANTIC',`Unknown stage ${key}`);return id;});
+    const assignedNodes=node_ids.map(id=>nodes.find(node=>node.id===id)).filter(Boolean);
+    const derivedBindings=[...new Set(assignedNodes.flatMap(node=>Object.entries(node.input_bindings ?? {}).filter(([,binding])=>requirement.requirement_kind!=='user_input' || bindingPointers(binding).some(pointer=>pointer.startsWith('/inputs/'))).map(([name])=>name)))];
+    const binding_names=(item.binding_names ?? []).length ? [...new Set(item.binding_names)] : ['user_input','data_dependency'].includes(requirement.requirement_kind) ? derivedBindings : [];
+    mappings.push({requirement_id:item.requirement_id,node_ids,binding_names,runtime_guards:item.runtime_guards ?? [],resource_refs:[...(requirement.resource_refs ?? [])],status:'agent_assisted',rationale:'Mapped from the semantic blueprint; Host projected concrete binding names from the assigned activities.'});
   }
   const source_dispositions=blueprint.source_dispositions.map(item=>({section_id:item.section_id,disposition:item.disposition,node_ids:(item.activity_keys ?? []).map(key=>{const id=stageIds.get(key);requireValue(id,'AUTHORING_SEMANTIC',`Unknown stage ${key}`);return id;}),requirement_ids:[],...(item.trigger?{trigger:item.trigger}:{}),rationale:item.reason || `Classified ${item.section_id} as ${item.disposition}.`}));
   const proposal={source_revision:pack.revision_hash,source_requirements:rules,requirement_mappings:mappings,source_dispositions,required_executables:[],planning_analysis:{parallelism:'Host-derived from nested semantic blocks.',main_responsibilities:'Host-derived from activity ownership.',human_intervention:'Host-derived from approval blocks.'},nodes,edges};

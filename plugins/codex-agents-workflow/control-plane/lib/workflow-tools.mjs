@@ -71,7 +71,7 @@ const specs = [
   ['reattach_subworkflow', 'Reattach the existing pinned child Run and rotate the parent lease without recreating either Run.', recovery, []],
   ['child_control', 'Return the exact existing child main-controller capability to its authorized parent controller. Never put it in worker prompts.', recovery, []],
   ['next', 'Read ready node IDs and pending approvals. This does not claim or dispatch work.', ['run_id'], []],
-  ['drive', 'Advance consecutive deterministic/control/host-tool nodes without a model turn. Stops before semantic agent work, approval/input, ambiguity, failure or terminal state; it never dispatches paid model work.', [...main], ['owner', 'request_prefix']],
+  ['drive', 'Advance Host/control/tool work and configured managed-native agent nodes. Managed semantic nodes may incur model usage; other semantic nodes, approvals, missing input, ambiguity and failures return an exact stop reason.', [...main], ['owner', 'request_prefix']],
   ['claim_node', 'Atomically claim one ready node and return its narrow execution lease. Main nodes require the exact main actor.', [...main, 'node_id', 'owner', 'request_id'], ['expected_sequence']],
   ['complete_node', 'Commit successful node output plus artifacts, evidence, changed_paths and outside_paths. Final acceptance requires main authority.', [...lease, 'completion'], []],
   ['fail_node', 'Commit an explicit node failure diagnostic under its active lease.', [...lease, 'error'], []],

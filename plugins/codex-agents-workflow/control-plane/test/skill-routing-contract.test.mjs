@@ -25,6 +25,6 @@ test('plugin defaults do not turn planning or audit prompts into Runs', async ()
   const manifest = JSON.parse(await readFile(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
   const prompt = manifest.interface.defaultPrompt.join(' ');
 
-  assert.match(prompt, /only when it directly matches a concrete execution task/i);
-  assert.match(prompt, /planning, comparison, audit, and experiment design do not start Runs/i);
+  assert.match(prompt, /only for matched execution/i);
+  assert.match(prompt, /never planning, comparison, audit, or experiments/i);
 });

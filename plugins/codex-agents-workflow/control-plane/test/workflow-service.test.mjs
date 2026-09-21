@@ -11,6 +11,8 @@ import { SkillInventory } from '../lib/skill-import/inventory.mjs';
 import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';
 import { createDraft } from '../lib/workflow-schema.mjs';
 import { hostCompletionArgs } from '../lib/execution/host-main-automation.mjs';
+import { createConversionCertificate } from '../lib/skill-import/conversion-certificate.mjs';
+import { CONVERSION_CONTRACT } from '../lib/skill-import/conversion-contract.mjs';
 
 test('explicit host discovery never falls back to folder scanning for inventory or import', async t => {
   const f = await fixture(t); await f.migrate();
@@ -112,6 +114,28 @@ test('service exposes both authoring Workflows and installs an exported package 
   await assert.rejects(target.service.call('install_workflow_package',{source_url:'https://example.invalid/service-built.workflow.json'}),{code:'HUMAN_WORKFLOW_INSTALL'});
   const installed=await target.service.call('install_workflow_package',{source_url:'https://example.invalid/service-built.workflow.json'},{human:true});
   assert.equal(installed.workflow.id,'service-built');assert.equal(installed.provenance.installation.source,'https://example.invalid/service-built.workflow.json');
+});
+
+test('service review metadata preserves a conversion certificate while semantic edits invalidate it',async t=>{
+  const f=await fixture(t);await f.migrate();
+  const origin={kind:'inferred',confidence:1,source_span:{resource:'source/SKILL.md',start_line:1,end_line:1},reviewed:false};
+  const output={type:'object',properties:{result:{type:'string'}},required:['result'],additionalProperties:false};
+  const workflow={...createDraft('certificate-review-flow','Certificate review flow'),skill_policy:{mode:'cooperative',implicit:'allow',ambient_allow:[],shadowed_skill_paths:[]},
+    import_status:{mode:'ai_expanded',unresolved:[{code:'AI_INFERENCES_REQUIRE_REVIEW',origin:'inferred'}],conversion_level:'fully_compiled',conversion_contract_version:3,requirement_coverage:[]},
+    finalization:{required:true,node_id:'final'},nodes:[
+      {id:'start',type:'start'},
+      {id:'work',type:'agent',executor:{kind:'main'},role:'implementer',access:'read_only',approval:{required:false},retry:{max_attempts:1},input_bindings:{task:'/inputs/task'},prompt_template:'Perform the certified work.',outputs_schema:output,origin:structuredClone(origin)},
+      {id:'final',type:'agent',executor:{kind:'main'},role:'finalizer',access:'read_only',approval:{required:false},retry:{max_attempts:1},input_bindings:{result:'/nodes/work/output/result'},prompt_template:'Accept the certified result.',outputs_schema:output,origin:structuredClone(origin)},
+      {id:'end',type:'end'},
+    ],edges:[['start-work','start','work'],['work-final','work','final'],['final-end','final','end']].map(([id,source,target])=>({id,source,target,origin:structuredClone(origin)}))};
+  const resources={'source/SKILL.md':'Certified source.'},identity={source_revision:'source-revision',proposal_hash:'proposal-hash',review_contract_version:CONVERSION_CONTRACT.version};
+  const certificate=createConversionCertificate(workflow,resources,identity),import_report={expansion:{source_revision:identity.source_revision,proposal_hash:identity.proposal_hash,certificate}};
+  const created=await f.service.call('create',{workflow,resources,import_report});const review=await f.service.call('import_review',{workflow_id:workflow.id,revision_hash:created.revision_hash});
+  const reviewed=await f.service.call('review_import',{workflow_id:workflow.id,expected_revision:created.revision_hash,inferences:review.inferences.map(item=>({kind:item.kind,id:item.id,note:'Confirmed the exact certified inference without changing its semantics.'}))},{human:true});
+  const published=await f.service.call('publish',{workflow_id:workflow.id,expected_revision:reviewed.revision_hash,reviewed:true},{human:true});assert.equal(published.workflow.status,'ready');
+  const changed=structuredClone(published.workflow);changed.status='draft';changed.nodes.find(node=>node.id==='work').prompt_template='Semantically changed after certification.';
+  const saved=await f.service.call('save',{workflow_id:workflow.id,workflow:changed,expected_revision:published.revision_hash});
+  await assert.rejects(f.service.call('publish',{workflow_id:workflow.id,expected_revision:saved.revision_hash,reviewed:true},{human:true}),{code:'CONVERSION_CERTIFICATE_STALE'});
 });
 
 test('compact blocked decisions and final rejection fail durably instead of advancing downstream', async t => {

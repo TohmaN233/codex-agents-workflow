@@ -373,6 +373,12 @@ test('automatic planning pins model suitability and compiles main, independent p
   assert(saved.workflow.nodes.find(n=>n.id==='a').origin.review.note);
   assert.equal(saved.workflow.status,'draft');
   assert.doesNotThrow(()=>requireCurrentConversionCertificate(saved.workflow,saved.resources,saved.import_report));
+  const reviewOnly=structuredClone(saved.workflow);const reviewedNode=reviewOnly.nodes.find(node=>node.origin?.kind==='inferred');
+  reviewedNode.origin.reviewed=!reviewedNode.origin.reviewed;reviewedNode.origin.review={actor:'user',revision:'later-review-revision',note:'Confirmed the exact certified inference.'};
+  reviewOnly.import_status.unresolved=[...reviewOnly.import_status.unresolved,{code:'AI_INFERENCES_REQUIRE_REVIEW',origin:'inferred'}];
+  assert.doesNotThrow(()=>requireCurrentConversionCertificate(reviewOnly,saved.resources,saved.import_report));
+  const forgedStatus=structuredClone(saved.workflow);forgedStatus.import_status.conversion_level=forgedStatus.import_status.conversion_level==='unsupported'?'fully_compiled':'unsupported';
+  assert.throws(()=>requireCurrentConversionCertificate(forgedStatus,saved.resources,saved.import_report),{code:'CONVERSION_CERTIFICATE_STALE'});
   assert.throws(()=>createConversionCertificate(saved.workflow,saved.resources,{source_revision:pack.revision_hash,proposal_hash:saved.import_report.expansion.proposal_hash}),{code:'CONVERSION_REVIEW_CONTRACT_STALE'});
   const mutated=structuredClone(saved.workflow);mutated.nodes.find(node=>node.id==='synthesize').prompt_template+=' changed';
   assert.throws(()=>requireCurrentConversionCertificate(mutated,saved.resources,saved.import_report),{code:'CONVERSION_CERTIFICATE_STALE'});
