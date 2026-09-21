@@ -1,0 +1,19 @@
+{
+  "schema": "plan1-tool-manifest-v1",
+  "qualified": false,
+  "platform": { "kind": null, "toolchain_id": null },
+  "host_contract": {
+    "required_fields": ["identity", "argv", "input_schema", "env_allow", "permissions", "output_cap_bytes", "deadline_ms", "idempotency"],
+    "public_validation_only": true,
+    "hidden_judging_excluded": true
+  },
+  "native_preparation": {
+    "compiler": "plan1-fixture-compiler.mjs",
+    "qualification_runner": "native-qualification-runner.mjs",
+    "platforms": ["wsl", "windows"],
+    "sandbox": "native",
+    "docker": "FORBIDDEN",
+    "status": "NOT_RUN"
+  },
+  "common_wrapper_rule": "Every thin wrapper is equally available to N-main, S-main, W-control, and W-main; no wrapper includes an algorithm, answer, oracle, or hidden verifier."
+}

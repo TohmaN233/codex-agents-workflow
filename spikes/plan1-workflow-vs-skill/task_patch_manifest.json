@@ -1,0 +1,10 @@
+{
+  "schema": "plan1-task-patch-manifest-v2",
+  "status": "NOT_RUN",
+  "patches": [
+    { "task_id": "crystallographic-wyckoff-position-analysis", "status": "NOT_REQUIRED_FOR_FEASIBILITY", "required_revision": null, "patch_sha256": null },
+    { "task_id": "earthquake-plate-calculation", "status": "NOT_REQUIRED_FOR_FEASIBILITY", "required_revision": null, "patch_sha256": null },
+    { "task_id": "lake-warming-attribution", "status": "NOT_REQUIRED_FOR_FEASIBILITY", "required_revision": null, "patch_sha256": null },
+    { "task_id": "video-silence-remover", "status": "NOT_REQUIRED_FOR_FEASIBILITY", "required_revision": null, "patch_sha256": null }
+  ]
+}

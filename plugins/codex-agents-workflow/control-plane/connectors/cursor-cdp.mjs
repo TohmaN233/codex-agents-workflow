@@ -406,6 +406,7 @@ export class CursorCdpConnector {
         }
         active.agentId = composer.id;
         const bound = JSON.parse(await active.client.evaluate(cursorSnapshotExpression(active.agentId)) || '{}');
+        lastSubmitSnapshot = bound;
         if (bound.identity_match !== true || Number(bound.visible_composer_count || 0) !== 1) {
           throw connectorError('REMOTE_IDENTITY_AMBIGUOUS',
             'Cursor exposed a composer id, but it was not the unique visible task identity.', {
@@ -429,7 +430,8 @@ export class CursorCdpConnector {
         },
       });
       this.#signal(task.task_id);
-      active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), provider.config.task_timeout_ms);
+      active.lastActivityKey = this.#activityKey(lastSubmitSnapshot);
+      this.#armInactivityTimeout(active);
       active.monitorReady = true;
       if (scopeMonitor.violations.length) await this.#runtimeScopeViolation(active, scopeMonitor.violations[0]);
       void this.#background(active, () => this.#monitor(active, baselineMessageCount));
@@ -461,7 +463,7 @@ export class CursorCdpConnector {
             error: publicConnectorError(uncertain),
           });
           this.#signal(task.task_id);
-          active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), provider.config.task_timeout_ms);
+          this.#armInactivityTimeout(active);
           void this.#background(active, () => this.#monitor(active, baselineMessageCount));
           return this.publicTask(await this.store.get(task.task_id));
         } catch {
@@ -754,6 +756,7 @@ export class CursorCdpConnector {
   async #monitor(active, baselineMessageCount) {
     let sawStop = false;
     let lastKey = '';
+    let lastActivityKey = active.lastActivityKey ?? '';
     let stable = 0;
     try {
       while (this.active.has(active.taskId)) {
@@ -771,6 +774,11 @@ export class CursorCdpConnector {
           });
           this.#signal(active.taskId);
           return;
+        }
+        const activityKey = this.#activityKey(snapshot);
+        if (activityKey !== lastActivityKey) {
+          lastActivityKey = activityKey;
+          this.#armInactivityTimeout(active);
         }
         if (Number(snapshot.stop || 0) > 0) {
           sawStop = true;
@@ -800,6 +808,10 @@ export class CursorCdpConnector {
     } catch (error) {
       await this.#transportLost(active, error);
     }
+  }
+
+  #activityKey(snapshot) {
+    return `${snapshot?.stop ?? ''}:${snapshot?.message_count ?? ''}:${snapshot?.reply_length ?? ''}:${snapshot?.reply_hash ?? ''}`;
   }
 
   async #complete(active) {
@@ -931,11 +943,21 @@ export class CursorCdpConnector {
     await this.store.update(active.taskId, {
       state: 'needs_attention',
       error: publicConnectorError(connectorError('TIMEOUT_UNCONFIRMED',
-        'The Cursor task exceeded its deadline without a confirmed terminal state.', {
+        'The Cursor task had no observable Agent activity before its inactivity deadline.', {
           actionRequired: 'Inspect, reconcile, or cancel the exact Agent; do not resubmit automatically.',
         })),
     }, { guard: current => !active.terminalObservedAt && !TERMINAL.has(current.state) });
     this.#signal(active.taskId);
+  }
+
+  #armInactivityTimeout(active) {
+    clearTimeout(active.timeout);
+    const timeoutMs = active.provider.config.task_timeout_ms ?? 600_000;
+    const deadlineAt = new Date(Date.now() + timeoutMs).toISOString();
+    active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), timeoutMs);
+    void this.store.update(active.taskId, { deadline_at: deadlineAt }, {
+      guard: current => this.active.get(active.taskId) === active && !active.terminalObservedAt && !TERMINAL.has(current.state),
+    }).catch(error => { this.store.persistenceError ||= error; });
   }
 
   async #transportLost(active, error) {

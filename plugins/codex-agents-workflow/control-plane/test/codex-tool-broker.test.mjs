@@ -67,6 +67,32 @@ test('workspace broker blocks traversal, runtime and Skill paths, links and writ
   await assert.rejects(readonly.call('write_workspace', { path: 'src/main.txt', text: 'no', expected_sha256: digest('before') }, 'denied'), { code: 'CODEX_TOOL_DENIED' });
 });
 
+test('managed broker returns audited recoverable tool errors so the model can correct its request', async t => {
+  const f = await fixture(t); const operations = [];
+  const broker = await createCodexToolBroker({ ...f.options, recoverToolErrors: true, onOperation: async event => operations.push(event) });
+  const rejected = await broker.call('read_workspace', { path: 'missing.txt' }, 'missing');
+  assert.equal(rejected.success, false);
+  assert.deepEqual(JSON.parse(rejected.contentItems[0].text), { error: { code: 'CODEX_TOOL_FILE', message: 'Only bounded regular files without hard links are supported' } });
+  assert.deepEqual(operations, [{ call_id: 'missing', tool: 'read_workspace', path: 'missing.txt', phase: 'rejected', code: 'CODEX_TOOL_FILE', diagnostic: 'Only bounded regular files without hard links are supported' }]);
+  const missingDirectory = await broker.call('list_workspace', { path: 'environment' }, 'missing-directory');
+  assert.deepEqual(JSON.parse(missingDirectory.contentItems[0].text), { error: { code: 'CODEX_TOOL_DIRECTORY', message: 'Expected an existing workspace directory' } });
+  assert.equal(operations.at(-1).phase, 'rejected');
+  assert.equal(operations.at(-1).code, 'CODEX_TOOL_DIRECTORY');
+  assert.equal(output(await broker.call('read_workspace', { path: 'src/main.txt' }, 'corrected')).text, 'before');
+});
+
+test('managed broker exposes declared task inputs as read-only logical mounts', async t => {
+  const f = await fixture(t); const input = join(f.root, 'task-input');
+  await mkdir(join(input, 'environment'), { recursive: true }); await writeFile(join(input, 'environment', 'data.json'), '{"value":7}');
+  const operations = [];
+  const broker = await createCodexToolBroker({ ...f.options, inputRoots: [{ name: 'task_root', path: input }], onOperation: async event => operations.push(event) });
+  assert.deepEqual(output(await broker.call('list_input', { root: 'task_root', path: 'environment' }, 'list')).entries, [{ name: 'data.json', type: 'file' }]);
+  assert.equal(output(await broker.call('read_input', { root: 'task_root', path: 'environment/data.json' }, 'read')).text, '{"value":7}');
+  await assert.rejects(broker.call('read_input', { root: 'task_root', path: '../src/main.txt' }, 'escape'), { code: 'INVALID_RESOURCE_PATH' });
+  assert.equal(operations[0].root, 'task_root');
+  assert.equal(broker.tools().some(tool => tool.name === 'write_input'), false);
+});
+
 test('pinned resources ignore mutable source files and do not permit arbitrary reads', async t => {
   const f = await fixture(t); const broker = await createCodexToolBroker({ ...f.options, resources: [{ path: 'references/guide.txt', bytes: 'Pinned text', sha256: digest('Pinned text') }] });
   assert.equal(output(await broker.call('read_workflow_resource', { path: 'references/guide.txt' }, 'resource')).text, 'Pinned text');

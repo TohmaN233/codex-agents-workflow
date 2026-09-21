@@ -1,0 +1,14 @@
+Python==3.12.13
+ffmpeg==8.0.1
+factor-analyzer==0.5.1
+geopandas==1.0.1
+numpy==1.26.4
+pandas==2.2.3
+pymannkendall==1.4.3
+pymatgen==2025.10.7
+pyproj==3.7.0
+pytest==8.4.1
+scikit-learn==1.5.2
+scipy==1.14.1
+shapely==2.0.6
+sympy==1.14.0

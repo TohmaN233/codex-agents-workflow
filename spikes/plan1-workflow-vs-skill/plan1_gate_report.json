@@ -1,0 +1,15 @@
+{
+  "schema": "plan1-gate-report-v1",
+  "formal_comparison_status": "NOT_RUN",
+  "plan2_status": "LOCKED",
+  "gates": [
+    { "id": "G0", "status": "NOT_RUN", "evidence": ["task_qualification.json", "native_feasibility_report.json"] },
+    { "id": "G1", "status": "NOT_RUN", "evidence": [] },
+    { "id": "G2", "status": "NOT_RUN", "evidence": [] },
+    { "id": "G3", "status": "NOT_RUN", "evidence": [] },
+    { "id": "G4", "status": "NOT_RUN", "evidence": [] },
+    { "id": "G5", "status": "NOT_RUN", "evidence": [] }
+  ],
+  "release_receipt": null,
+  "statement": "These templates are not experimental evidence and do not claim any gate passed."
+}

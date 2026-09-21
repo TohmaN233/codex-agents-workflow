@@ -1,0 +1,11 @@
+{
+  "schema": "plan1-task-qualification-v3",
+  "status": "NOT_RUN",
+  "native_runner": { "module": "native-qualification-runner.mjs", "platform": "wsl", "launcher": "C:/Windows/System32/wsl.exe -d Ubuntu", "sandbox": "bubblewrap", "docker": "FORBIDDEN", "execution_receipts": "NOT_RUN" },
+  "tasks": [
+    { "task_id": "crystallographic-wyckoff-position-analysis", "status": "NOT_RUN", "feasibility_status": "READY", "feasibility_evidence": "feasibility-receipts/crystallographic-wyckoff-position-analysis.json", "oracle_receipt": null, "mutation_receipt": null, "helper_receipt": null, "reason_code": null },
+    { "task_id": "earthquake-plate-calculation", "status": "NOT_RUN", "feasibility_status": "READY", "feasibility_evidence": "feasibility-receipts/earthquake-plate-calculation.json", "oracle_receipt": null, "mutation_receipt": null, "helper_receipt": null, "reason_code": null },
+    { "task_id": "lake-warming-attribution", "status": "NOT_RUN", "feasibility_status": "READY", "feasibility_evidence": "feasibility-receipts/lake-warming-attribution.json", "oracle_receipt": null, "mutation_receipt": null, "helper_receipt": null, "reason_code": null },
+    { "task_id": "video-silence-remover", "status": "NOT_RUN", "feasibility_status": "READY", "feasibility_evidence": "feasibility-receipts/video-silence-remover.json", "oracle_receipt": null, "mutation_receipt": null, "helper_receipt": null, "reason_code": null }
+  ]
+}

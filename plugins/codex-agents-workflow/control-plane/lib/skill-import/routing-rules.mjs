@@ -52,8 +52,8 @@ export function routeAgent(node, rules, providers, catalog = routingCatalog(prov
 
 export function validateGenerationSettings(value = {}) {
   requireValue(value && Object.keys(value).every(k=>['review_provider_id','planner_provider_id','max_rounds'].includes(k)), 'GENERATION_SETTINGS', 'Unknown generation setting');
-  const result={review_provider_id:'native-generation-reviewer',max_rounds:3,...value};
-  requireValue(typeof result.review_provider_id==='string' && /^[A-Za-z0-9._-]{1,128}$/.test(result.review_provider_id) && Number.isInteger(result.max_rounds) && result.max_rounds>=1 && result.max_rounds<=10,'GENERATION_SETTINGS','Choose a registered reviewer Provider and 1–10 rounds');
+  const result={review_provider_id:'native-generation-reviewer',max_rounds:2,...value};
+  requireValue(typeof result.review_provider_id==='string' && /^[A-Za-z0-9._-]{1,128}$/.test(result.review_provider_id) && Number.isInteger(result.max_rounds) && result.max_rounds>=1 && result.max_rounds<=2,'GENERATION_SETTINGS','Choose a registered reviewer Provider and one or two planner attempts');
   requireValue(result.planner_provider_id === undefined || typeof result.planner_provider_id==='string' && /^[A-Za-z0-9._-]{1,128}$/.test(result.planner_provider_id),'GENERATION_SETTINGS','Choose a registered planning Provider');
   return result;
 }

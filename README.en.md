@@ -25,10 +25,16 @@ Assigning each step to the right model controls the cost of the overall task and
 
 Models are not hard-coded by these descriptions. You choose the concrete configuration in the workbench, and each new run keeps those bindings fixed; it does not silently switch to another model when one fails.
 
+### Four-task comparison
+
+Across 40 isolated, hidden-judge runs, node-scoped Workflow execution (`W-main`) used **42.9% fewer total tokens** on average than loading the frozen Skill directly (`S-main`), with mean hidden-test scores of **0.9618 vs 0.9722**. The four task-level reductions were **52.1% / 38.7% / 38.1% / 43.1%**. Node-scoped projection also used **28.1% fewer tokens** than preloading the complete Workflow (`W-control`). This is evidence from four implementation-qualified tasks, not a universal claim about every Skill. [See the results and limitations](docs/EXPERIMENT_RESULTS.md).
+
 ## What it can do
 
 - **Visual orchestration**: Edit steps, connections, conditions, parallel branches, and manual approval points.
-- **Skill → Workflow**: Import a Skill and its referenced resources to generate a workflow draft that you can inspect and edit.
+- **Two built-in authoring Workflows**: `skill2workflow` converts a Skill snapshot and `build_workflow` starts from a brief; both use the same compact semantic contract, Host compiler, and one-semantic-delta repair boundary.
+- **Host-owned mechanics**: The model describes activities, data dependencies, control groups, and source dispositions. The Host deterministically creates node/edge IDs, the root, bindings, JSON Schema, executors, permissions, certificates, and package fields.
+- **Installable Workflow packages**: Export a pinned revision with content hashes, resource inventory, and dependency manifest, then install it from local JSON or HTTPS. Installation neither installs dependencies nor starts a Run.
 - **Configure each node separately**: Set the model and reasoning effort for native sub-agents; connect configured execution backends such as Cursor and Grok.
 - **Thread control**: The main session can create an independent Codex task, wait for it to finish, then pass new material to the original task to continue the work.
 - **Run history and acceptance**: View node status, approvals, outputs, and errors; each run is pinned to a specific version, and editing a workflow does not rewrite existing runs.
@@ -90,7 +96,7 @@ The Windows launcher opens the installed plugin; the `.sh` script launches the w
 2. After importing a Skill, open **Import review → Advanced options: execution settings, routing rules, and import diagnostics**.
 3. Select **Default generation executor (registered model configuration)** and **Review executor (registered model configuration)**. This uses the registered native model configurations; Cursor / Grok do not serve as the generator for this automatic conversion button.
 4. Check the `skill2workflow` routing rules: assign suitable Providers to responsibilities such as planning, routine execution, and complex execution. The generation model only performs the conversion; it does not automatically become the model for every execution node.
-5. Return to the top and click **Generate Workflow automatically**. The page shows generation, review, and any required correction progress. It reuses the current Codex login by default; if a login, model, or capability is missing, it shows what needs attention.
+5. Return to the top and click **Generate Workflow automatically**. The page shows semantic planning, Host compilation, review, and—only when needed—one semantic delta repair. Mechanical fields such as IDs and bindings do not trigger full model rewrites. It reuses the current Codex login by default; if a login, model, or capability is missing, it shows what needs attention.
 
 Enabling a Provider or saving the configuration does not itself start a model call. The corresponding task begins only after you click Generate, start a run, or explicitly ask Codex to execute it.
 
@@ -111,7 +117,7 @@ You can view progress during generation and review; once complete, return to the
 
 ![Confirmation, production, and validation flow after converting video-use](docs/assets/tutorial/workbench-video.png)
 
-The conversion turns the execution order in a Skill into explicit dependencies, turns “ask the user before producing” into a node that pauses, and separates independent work that can run in parallel. **After generation, you still need to check that the original Skill's rules were preserved and that the required tools and resources are available.**
+The conversion turns the execution order in a Skill into explicit dependencies, turns “ask the user before producing” into a node that pauses, and separates independent work that can run in parallel. The model returns a compact semantic plan and the Host deterministically creates the graph and runtime fields; a human still confirms semantic fidelity and the availability of required tools and resources before publishing.
 
 If you prefer not to operate the UI, you can tell Codex directly:
 

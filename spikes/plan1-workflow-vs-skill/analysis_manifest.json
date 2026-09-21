@@ -1,0 +1,20 @@
+{
+  "schema": "plan1-analysis-manifest-v3",
+  "status": "DRAFT_PENDING_USER_CONFIRMATION",
+  "formal_comparison_status": "NOT_RUN",
+  "family_assignment": { "F_primary": ["crystallographic-wyckoff-position-analysis", "earthquake-plate-calculation", "lake-warming-attribution", "video-silence-remover"], "F_control": [], "F_semantic": [], "test_mix": [] },
+  "quality_groups": {
+    "crystallographic-wyckoff-position-analysis": ["callable solution module", "multiplicity results", "representative rational coordinates", "all 11 CIF fixtures"],
+    "earthquake-plate-calculation": ["artifact and schema", "earthquake identity and metadata", "coordinates and magnitude", "projected boundary distance"],
+    "lake-warming-attribution": ["trend slope and p-value", "dominant factor and contribution"],
+    "video-silence-remover": ["artifacts and playability", "segment recall", "segment precision", "duration bounds", "report and segment consistency", "audio-content integrity"]
+  },
+  "quality_weighting": "equal within task; tasks equal in aggregate",
+  "unit_of_analysis": "repeat mean within each fixed task; task-equal case-series aggregate; paired task-cluster bootstrap is supporting evidence only",
+  "bootstrap_replicates": 10000,
+  "metrics": ["Success", "Q", "T_online", "C_online", "L_evidence", "L_final", "C_offline"],
+  "unknown_usage_rule": "unknown is recorded as unknown and is never coerced to zero",
+  "zero_denominator_rule": "N/A",
+  "primary_case_rule": { "success_difference_min": 0, "quality_difference_min": -0.02, "online_token_ratio_max": 0.85, "all_tasks_required": true },
+  "claim_scope": "Evidence on the four implementation-qualified task cases only; the original confidence-bound G1/G2 publication gates remain separate."
+}

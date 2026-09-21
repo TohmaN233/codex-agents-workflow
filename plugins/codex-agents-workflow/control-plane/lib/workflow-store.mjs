@@ -192,7 +192,9 @@ export class WorkflowStore {
   }
 
   async create(workflow, { resources = {}, provenance = {}, import_report = {} } = {}) {
-    const next = JSON.parse(canonicalJSON({ ...workflow, revision: 1 }));
+    // New packs opt into declared-only context.  Absent is deliberately
+    // retained as the versioned marker for immutable pre-Plan-1 revisions.
+    const next = JSON.parse(canonicalJSON({ ...workflow, context_projection_version: workflow.context_projection_version ?? 2, revision: 1 }));
     this.validate(next);
     const { manifest, blobs } = prepareResources(resources);
     const snapshot = JSON.parse(canonicalJSON({ workflow: next, resources: manifest, provenance, import_report }));

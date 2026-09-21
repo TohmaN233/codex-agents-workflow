@@ -203,7 +203,7 @@ On Linux, also run the full compatibility wrapper suite:
 sh plugins/codex-agents-workflow/scripts/verify.sh
 ~~~
 
-The verifier covers the v0.8.0 manifest, exact three-role TOMLs, selective-routing
+The verifier covers the v1.0.0 manifest, exact three-role TOMLs, selective-routing
 contracts, concise README journey, absence of retired workflow references, installer
 safety fixtures, Luna runtime evidence, JSON/TOML validity, Node syntax, and Linux
 wrapper compatibility.

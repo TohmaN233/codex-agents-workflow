@@ -9,6 +9,8 @@ import { ConnectorTaskStore } from '../connectors/task-store.mjs';
 import { DEFAULT_CONFIG_PATH, handleRpc, startConsole, stopConsole } from '../server.mjs';
 import { SkillInventory } from '../lib/skill-import/inventory.mjs';
 import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';
+import { createDraft } from '../lib/workflow-schema.mjs';
+import { hostCompletionArgs } from '../lib/execution/host-main-automation.mjs';
 
 test('explicit host discovery never falls back to folder scanning for inventory or import', async t => {
   const f = await fixture(t); await f.migrate();
@@ -32,6 +34,8 @@ test('folder import and prepare/apply preserve routing for Main and Provider coa
   assert(workflowToolDefinitions().find(t=>t.name==='workflow_prepare_expansion').inputSchema.properties.routing_rules);
   for (const provider_id of [undefined,'native-luna']) {
     const pack = await f.service.call('import_skill',{discovery:'folders',folder:source,skill_id:inventory.entries[0].id,workflow_id:provider_id?'provider-import':'main-import',provider_id});
+    assert.deepEqual(pack.workflow.host_automation, { version: 1, lifecycle: 'host_managed', agent_submission: 'semantic_values_only', finite_choices: 'host_form' });
+    assert.equal(pack.provenance.compiler_version, 4);
     const packet = await f.service.call('prepare_expansion',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,provider_id:'native-terra'});
     assert.equal(packet.routing_rules.routes.review.provider_id,'native-reviewer');
     const origin = {confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
@@ -39,6 +43,7 @@ test('folder import and prepare/apply preserve routing for Main and Provider coa
     const args = {workflow_id:pack.workflow.id,expected_revision:pack.revision_hash,proposal};
     await assert.rejects(f.service.call('apply_expansion',args),{code:'ROUTING_RULES_REQUIRED'});
     const applied = await f.service.call('apply_expansion',{...args,routing_rules:packet.routing_rules});
+    assert.deepEqual(applied.workflow.host_automation, pack.workflow.host_automation);
     assert.equal(applied.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
     assert.equal(applied.import_report.expansion.routing[0].reason,'Independent review');
   }
@@ -56,6 +61,82 @@ async function fixture(t, options = {}) {
   };
 }
 const control = run => ({ run_id: run.run_id, control_token: run.control_token });
+
+test('compact main-session service starts, projects one node and completes to the next main node without granular round trips', async t => {
+  const f = await fixture(t); await f.migrate();
+  assert.equal(workflowToolDefinitions().find(tool => tool.name === 'workflow_begin_main'), undefined);
+  assert.equal(workflowToolDefinitions().find(tool => tool.name === 'workflow_complete_main'), undefined);
+  const output = { type: 'object', properties: { value: { type: 'string' }, accepted: { type: 'boolean' } }, required: ['value', 'accepted'], additionalProperties: false };
+  const decisionOutput = { type: 'object', properties: { value: { type: 'string' }, decision_id: { type: 'string' }, decision: { type: 'string' }, references: { type: 'array', items: { type: 'string' } } }, required: ['value', 'decision_id', 'decision', 'references'], additionalProperties: false };
+  const workflow = { ...createDraft('compact-main-fixture', 'Compact main fixture'), status: 'ready', context_projection_version: 2,
+    inputs_schema: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'], additionalProperties: false },
+    skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] }, finalization: { required: true, node_id: 'final' },
+    nodes: [
+      { id: 'start', type: 'start' },
+      { id: 'work', type: 'agent', executor: { kind: 'main' }, role: 'implementer', access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { task: '/inputs/task' }, prompt_template: 'Do {{task}}', resources: ['workflow/current.md'], outputs_schema: decisionOutput, decision: { id: 'work-disposition', options: ['continue', 'blocked'], required_references: ['workflow/current.md'] } },
+      { id: 'final', type: 'agent', executor: { kind: 'main' }, role: 'finalizer', access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { prior: '/nodes/work/output' }, prompt_template: 'Accept the bound prior result.', outputs_schema: output },
+      { id: 'end', type: 'end' },
+    ], edges: [{ id: 'start-work', source: 'start', target: 'work' }, { id: 'work-final', source: 'work', target: 'final' }, { id: 'final-end', source: 'final', target: 'end' }] };
+  const created = await f.service.call('create', { workflow, resources: { 'workflow/current.md': 'node-scoped' } });
+  const first = await f.service.call('begin_main', { workflow_id: workflow.id, revision_hash: created.revision_hash, workspace: f.workspace, access: 'read_only', main_actor: 'root', inputs: { task: 'one thing' }, constraints: { network: false } });
+  assert.equal(first.stop_reason, 'main_node'); assert.equal(first.host_binding.node_id, 'work'); assert.deepEqual(first.agent_packet.resources, [{ path: 'workflow/current.md', text: 'node-scoped' }]);
+  assert.equal(first.agent_packet.response_form.schema.properties.decision_id, undefined);
+  assert.deepEqual(first.agent_packet.response_form.decision.options, ['continue', 'blocked']);
+  assert.equal(Object.hasOwn(first.agent_packet, 'run_id'), false);
+  assert.match(first.agent_packet.prompt, /immutable UTF-8 snapshots in agent_packet\.resources alongside this node prompt/);
+  assert.doesNotMatch(first.agent_packet.prompt, /Read them only through read_workflow_resource/);
+  const second = await f.service.call('complete_main', hostCompletionArgs(first.host_binding, { value: 'done', decision: 'continue' }));
+  assert.equal(second.stop_reason, 'main_node'); assert.equal(second.host_binding.node_id, 'final'); assert.deepEqual(second.agent_packet.resources, []);
+  assert.doesNotMatch(second.agent_packet.prompt, /"decision_id"/);
+  assert.doesNotMatch(second.agent_packet.prompt, /"references"/);
+  assert.deepEqual(second.agent_packet.response_form.acceptance.options, [true, false]);
+  assert.equal(second.agent_packet.response_form.schema.properties.accepted, undefined);
+  assert.deepEqual(second.agent_packet.response_form.schema.required, ['value']);
+  const terminal = await f.service.call('complete_main', hostCompletionArgs(second.host_binding, { value: 'accepted' }, { accepted: true }));
+  assert.equal(terminal.stop_reason, 'terminal'); assert.equal(terminal.status, 'succeeded');
+});
+
+test('service exposes both authoring Workflows and installs an exported package from HTTPS', async t => {
+  const source=await fixture(t);await source.migrate();
+  const definitions=await source.service.call('authoring_workflows');
+  assert.deepEqual(definitions.map(item=>item.id),['system.skill2workflow','system.build-workflow']);
+  assert(definitions.every(item=>item.mechanical_repairs===0 && item.semantic_repairs===1));
+  assert(definitions.every(item=>item.contract==='codex-authoring-workflow/v1'));
+  assert(definitions.every(item=>item.stages.map(stage=>stage.owner).join(',')==='host,planner,host,reviewer,planner,human'));
+  assert(definitions.every(item=>item.edges.some(edge=>edge.source==='semantic_repair'&&edge.target==='compile_candidate')));
+  assert(definitions.every(item=>item.configurable_slots.includes('planner_provider_id')&&item.configurable_slots.includes('review_provider_id')));
+  const built=await source.service.call('build_workflow',{workflow_id:'service-built',name:'Service built',brief:'# Workflow\n\n## Check\n\nInspect the change and report evidence.'});
+  assert.equal(built.provenance.source_kind,'brief');assert.equal(built.workflow.import_status.mode,'authored');
+  const bundle=await source.service.call('export_workflow_package',{workflow_id:built.workflow.id,revision_hash:built.revision_hash,package_version:'2.1.0'});
+  const bytes=Buffer.from(JSON.stringify(bundle));
+  const target=await fixture(t,{fetchImpl:async(url,options)=>{assert.equal(String(url),'https://example.invalid/service-built.workflow.json');assert.equal(options.redirect,'error');return new Response(bytes,{status:200,headers:{'content-type':'application/json'}});}});await target.migrate();
+  await assert.rejects(target.service.call('install_workflow_package',{source_url:'https://example.invalid/service-built.workflow.json'}),{code:'HUMAN_WORKFLOW_INSTALL'});
+  const installed=await target.service.call('install_workflow_package',{source_url:'https://example.invalid/service-built.workflow.json'},{human:true});
+  assert.equal(installed.workflow.id,'service-built');assert.equal(installed.provenance.installation.source,'https://example.invalid/service-built.workflow.json');
+});
+
+test('compact blocked decisions and final rejection fail durably instead of advancing downstream', async t => {
+  const f = await fixture(t); await f.migrate();
+  const base = { ...createDraft('compact-durable', 'Compact durable result'), status: 'ready', context_projection_version: 2,
+    inputs_schema: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'], additionalProperties: false }, skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] } };
+  const decisionOutput = { type: 'object', properties: { value: { type: 'string' }, decision_id: { type: 'string' }, decision: { type: 'string' }, references: { type: 'array', items: { type: 'string' } } }, required: ['value', 'decision_id', 'decision', 'references'], additionalProperties: false };
+  const blocked = { ...base, id: 'compact-blocked', finalization: { required: true, node_id: 'final' }, nodes: [
+    { id: 'start', type: 'start' },
+    { id: 'work', type: 'agent', executor: { kind: 'main' }, role: 'implementer', access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { task: '/inputs/task' }, prompt_template: 'Work', outputs_schema: decisionOutput, decision: { id: 'disposition', options: ['continue', 'blocked'], required_references: [] } },
+    { id: 'final', type: 'agent', executor: { kind: 'main' }, role: 'finalizer', access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { prior: '/nodes/work/output' }, prompt_template: 'Final', outputs_schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false } }, { id: 'end', type: 'end' }],
+    edges: [{ id: 'start-work', source: 'start', target: 'work' }, { id: 'work-final', source: 'work', target: 'final' }, { id: 'final-end', source: 'final', target: 'end' }] };
+  const blockedCreated = await f.service.call('create', { workflow: blocked });
+  const blockedStart = await f.service.call('begin_main', { workflow_id: blocked.id, revision_hash: blockedCreated.revision_hash, workspace: f.workspace, access: 'read_only', main_actor: 'root', inputs: { task: 'one' } });
+  const blockedTerminal = await f.service.call('complete_main', hostCompletionArgs(blockedStart.host_binding, { value: 'cannot continue', decision: 'blocked' }));
+  assert.equal(blockedTerminal.status, 'failed'); assert.equal(blockedTerminal.stop_reason, 'terminal');
+  assert.equal((await f.service.call('get', control(blockedStart.host_binding))).nodes.work.error.code, 'WORKFLOW_NODE_BLOCKED');
+
+  const rejected = { ...base, id: 'compact-rejected', finalization: { required: true, node_id: 'final' }, nodes: [{ id: 'start', type: 'start' }, { id: 'final', type: 'agent', executor: { kind: 'main' }, role: 'finalizer', access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { task: '/inputs/task' }, prompt_template: 'Final', outputs_schema: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'], additionalProperties: false } }, { id: 'end', type: 'end' }], edges: [{ id: 'start-final', source: 'start', target: 'final' }, { id: 'final-end', source: 'final', target: 'end' }] };
+  const rejectedCreated = await f.service.call('create', { workflow: rejected });
+  const rejectedStart = await f.service.call('begin_main', { workflow_id: rejected.id, revision_hash: rejectedCreated.revision_hash, workspace: f.workspace, access: 'read_only', main_actor: 'root', inputs: { task: 'one' } });
+  const rejectedTerminal = await f.service.call('complete_main', hostCompletionArgs(rejectedStart.host_binding, { value: 'rejected' }, { accepted: false }));
+  assert.equal(rejectedTerminal.status, 'failed'); assert.equal((await f.service.call('get', control(rejectedStart.host_binding))).nodes.final.error.code, 'FINAL_ACCEPTANCE_REJECTED');
+});
 
 test('task launch grants project writes without manual allowlists and exposes the task directory', async t => {
   const f=await fixture(t);await f.migrate();
@@ -87,6 +168,25 @@ test('human launch prepares an isolated workspace without expanding access', asy
 const claim = (f, run, node = 'implementation') => f.service.call('claim_node', { ...control(run), node_id: node, owner: node === 'final-acceptance' ? 'root' : 'worker', request_id: 'claim-' + node });
 const leaseArgs = (run, lease) => ({ ...control(run), node_id: lease.node_id, attempt_id: lease.attempt_id, lease_token: lease.lease_token });
 const completion = output => ({ status: 'succeeded', summary: 'Synthetic verification', structured_output: output, artifacts: [], evidence: [{ check: 'fixture', passed: true }], changed_paths: [], outside_paths: [] });
+
+test('Run cancellation aborts an active host broker, journals its termination receipt, and fences old completion', async t => {
+  const identity = { name: 'cancel-fixture-tool', version: '1', sha256: 'a'.repeat(64) };
+  const contract = { id: 'cancel-fixture-tool', identity, argv: ['cancel-fixture-tool'], input_schema: { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'], additionalProperties: false }, output_schema: { type: 'object', properties: { value: { type: 'integer' } }, required: ['value'], additionalProperties: false }, env_allow: [], permissions: { network: false, read_paths: [], write_paths: [] }, output_cap_bytes: 1024, deadline_ms: 10000, idempotency: { mode: 'safe' } };
+  let started; const entered = new Promise(resolve => { started = resolve; }); let aborted = false; let cancels = 0;
+  const f = await fixture(t, { capabilities: { hostToolRegistry: { [contract.id]: {
+    identity, attestation: { qualified: true, cancellable: true, effect_observation: true, tool_identity: identity, broker_id: 'cancel-fixture-broker', evidence_sha256: 'b'.repeat(64) },
+    execute: async ({ signal }) => { started(); return new Promise(resolve => signal.addEventListener('abort', () => { aborted = true; resolve({ exit_code: 143, diagnostic: 'cancelled', effects: { observed: true, changed_paths: [], outside_paths: [], artifacts: [] }, output: null }); }, { once: true })); },
+    cancel: async () => { cancels++; return { termination_confirmed: true, evidence: [{ kind: 'fixture-process-exit', sha256: 'c'.repeat(64) }], effects: { observed: true, changed_paths: [], outside_paths: [], artifacts: [] } }; },
+  } } } });
+  await f.migrate(); const workflow = { ...createDraft('host-cancel', 'Host cancellation'), status: 'ready', skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] }, host_tools: [contract], inputs_schema: { type: 'object', properties: { task: { type: 'string' }, value: { type: 'integer' } }, required: ['task', 'value'], additionalProperties: false }, finalization: { required: true, node_id: 'final' }, nodes: [
+    { id: 'start', type: 'start' }, { id: 'tool', type: 'tool', executor: { kind: 'tool', tool: contract.id }, access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { value: '/inputs/value' }, outputs_schema: contract.output_schema },
+    { id: 'final', type: 'agent', executor: { kind: 'main' }, role: 'finalizer', access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { task: '/inputs/task', result: '/nodes/tool/output' }, prompt_template: '{{task}}', outputs_schema: { type: 'object' } }, { id: 'end', type: 'end' },
+  ], edges: [{ id: 'start-tool', source: 'start', target: 'tool' }, { id: 'tool-final', source: 'tool', target: 'final' }, { id: 'final-end', source: 'final', target: 'end' }] };
+  const created = await f.service.call('create', { workflow }); const run = await f.service.call('start', { workflow_id: created.workflow.id, revision_hash: created.revision_hash, workspace: f.workspace, access: 'read_only', main_actor: 'root', inputs: { task: 'fixture', value: 1 } }); const lease = await f.service.call('claim_node', { ...control(run), node_id: 'tool', owner: 'worker', request_id: 'claim-tool' }); const args = { ...control(run), node_id: 'tool', attempt_id: lease.attempt_id, lease_token: lease.lease_token };
+  const dispatch = f.service.call('dispatch', args); await entered; const cancelled = await f.service.call('cancel', control(run)); const settled = await dispatch;
+  assert.equal(cancelled.status, 'cancelled'); assert.equal(settled.status, 'cancelled'); assert.equal(aborted, true); assert.equal(cancels, 1); const state = await f.service.call('get', control(run)); assert.equal(state.nodes.tool.attempts[0].host_tool.receipt.status, 'cancelled');
+  await assert.rejects(f.service.call('complete_node', { ...args, completion: completion({ value: 1 }) }), { code: 'STALE_LEASE' });
+});
 
 test('human adoption rotates lost authority and resumes an unsubmitted max-one claim without charging a retry', async t => {
   const f = await fixture(t); await f.migrate(); const run = await f.start(); const old = await claim(f, run); const state = await f.service.call('get', control(run));
@@ -124,6 +224,8 @@ test('Run cancel fences first, forwards only exact connector identity and record
   await f.migrate(); const run = await f.start(); authority = control(run); const lease = await claim(f, run); await service.call('dispatch', leaseArgs(run, lease));
   const cancelled = await service.call('cancel', authority); assert.equal(controls, 1); assert.equal(cancelled.nodes.implementation.attempts[0].dispatch.cancellation_pending, false);
   assert.equal(cancelled.nodes.implementation.attempts[0].connector_control.state, 'cancelled');
+  assert.deepEqual(cancelled.cost_ledger.calls[0].usage, { unknown: true });
+  assert.equal(cancelled.cost_ledger.unknown_usage_count, 1);
 });
 
 test('unconfirmed cancellation remains fenced until the original remote identity is observed terminal', async t => {
@@ -186,7 +288,7 @@ test('migrated bounded and judgment-heavy presets preserve native lanes through 
       assert.equal(definition.executor.provider_id, stage.provider_id); assert.equal(definition.prompt_template, stage.template);
       const lease = await claim(f, run, stage.id); const args = leaseArgs(run, lease); const handoff = await f.service.call('dispatch', args);
       assert.equal(handoff.handoff_required, true); assert.equal(handoff.envelope.provider.id, stage.provider_id); assert.equal(handoff.envelope.access, stage.access);
-      if (stage.role === 'reviewer') { assert.equal(handoff.envelope.access, 'read_only'); assert(Object.keys(handoff.envelope.upstream_results).includes('implementation')); }
+      if (stage.role === 'reviewer') { assert.equal(handoff.envelope.access, 'read_only'); assert.equal(handoff.envelope.inputs.previous_result.synthetic_stage, 'implementation'); assert.equal(handoff.envelope.context_projection.legacy_ancestor_results, undefined); }
       await f.service.call('dispatch_receipt', { ...args, request_id: handoff.request_id, receipt: { agent_id: 'synthetic-' + id + '-' + stage.id } });
       await f.service.call('complete_node', { ...args, completion: completion({ synthetic_stage: stage.id, actual_model_called: false }) });
     }
@@ -199,7 +301,7 @@ test('migrated bounded and judgment-heavy presets preserve native lanes through 
     assert.deepEqual(await fresh.call('get', control(run)), acceptedState);
   }
 });
-test('service migration is human-owned; MCP executes a native handoff and main finalization with upstream results', async t => {
+test('service migration is human-owned; MCP executes a native handoff and main finalization with declared bindings', async t => {
   const f = await fixture(t);
   await assert.rejects(f.service.call('list'), { code: 'WORKFLOW_MIGRATION_REQUIRED' });
   await assert.rejects(f.service.call('migrate_v6'), { code: 'HUMAN_CONFIGURATION_REQUIRED' });
@@ -218,7 +320,7 @@ test('service migration is human-owned; MCP executes a native handoff and main f
   await f.service.call('dispatch_receipt', { ...args, request_id: dispatched.request_id, receipt: { agent_id: 'fake-native-1' } });
   await f.service.call('complete_node', { ...args, completion: completion({ design: 'A' }) });
   assert.equal((await f.service.call('dispatch', args)).idempotent, true);
-  const final = await claim(f, run, 'final-acceptance'); assert.equal(final.upstream_results.implementation.output.design, 'A');
+  const final = await claim(f, run, 'final-acceptance'); assert.equal(final.inputs.result.design, 'A'); assert.equal(final.context_projection.legacy_ancestor_results, undefined);
   const result = await f.service.call('complete_node', { ...leaseArgs(run, final), completion: { ...completion({ accepted_design: 'A' }), acceptance: { accepted: true } } });
   assert.equal(result.status, 'succeeded');
 });
@@ -239,10 +341,18 @@ test('API dispatch is advisory, records identity/output, and duplicate calls can
   const f = await fixture(t, { configure(config) {
     config.global.allow_direct_api = true; const provider = config.providers.find(p => p.id === 'custom-openai-compatible'); provider.enabled = true; provider.config.auth_type = 'none';
     config.task_types.find(w => w.id === 'brainstorm').stages[0].provider_id = provider.id;
-  }, fetchImpl: async (_url, request) => { calls++; body = JSON.parse(request.body); return new Response(JSON.stringify({ id: 'synthetic-response', choices: [{ message: { content: 'Advice' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } });
+  }, fetchImpl: async (_url, request) => { calls++; body = JSON.parse(request.body); return new Response(JSON.stringify({ id: 'synthetic-response', choices: [{ message: { content: 'Advice' } }], usage: { prompt_tokens: 3, completion_tokens: 2, cost_micros: 17 } }), { status: 200, headers: { 'content-type': 'application/json' } }); } });
   await f.migrate(); const run = await f.start(); const work = await claim(f, run); const args = leaseArgs(run, work);
   const result = await f.service.call('dispatch', args); assert.equal(calls, 1); assert.equal(body.tools, undefined); assert.equal(result.state.nodes.implementation.output.text, 'Advice');
-  assert.equal(result.receipt.provider_response_id, 'synthetic-response'); await f.service.call('dispatch', args); assert.equal(calls, 1);
+  assert.equal(result.receipt.provider_response_id, 'synthetic-response'); assert.equal(result.state.cost_ledger.spent_micros, 17); assert.deepEqual(result.state.cost_ledger.calls[0].usage, { unknown: false, input_tokens: 3, output_tokens: 2, cost_micros: 17 }); await f.service.call('dispatch', args); assert.equal(calls, 1);
+});
+
+test('failed direct API dispatch journals explicit unknown usage before terminal failure', async t => {
+  const f = await fixture(t, { configure(config) {
+    config.global.allow_direct_api = true; const provider = config.providers.find(p => p.id === 'custom-openai-compatible'); provider.enabled = true; provider.config.auth_type = 'none'; config.task_types.find(w => w.id === 'brainstorm').stages[0].provider_id = provider.id;
+  }, fetchImpl: async () => { throw new Error('synthetic transport failure'); } });
+  await f.migrate(); const run = await f.start(); const args = leaseArgs(run, await claim(f, run)); await assert.rejects(f.service.call('dispatch', args), { code: 'DISPATCH_UNCERTAIN' });
+  const state = await f.service.call('get', control(run)); assert.equal(state.nodes.implementation.status, 'failed'); assert.deepEqual(state.cost_ledger.calls[0].usage, { unknown: true }); assert.equal(state.cost_ledger.unknown_usage_count, 1);
 });
 
 test('connector task identity is allocated before start and recovered exactly after receipt loss', async t => {
@@ -307,5 +417,13 @@ test('connector collection requires exact node identity and independently observ
   await f.service.call('dispatch', args);
   await assert.rejects(f.service.call('collect_connector', args), { code: 'CONNECTOR_EVIDENCE' });
   observedScope = { compliant: true, changed_paths: [], outside_paths: [], observed_digest: 'synthetic-observation' };
-  const result = await f.service.call('collect_connector', args); assert.equal(result.nodes.implementation.status, 'succeeded'); assert.equal(result.nodes['final-acceptance'].status, 'ready');
+  const result = await f.service.call('collect_connector', args); assert.equal(result.nodes.implementation.status, 'succeeded'); assert.equal(result.nodes['final-acceptance'].status, 'ready'); assert.deepEqual(result.cost_ledger.calls[0].usage, { unknown: true }); assert.equal(result.cost_ledger.unknown_usage_count, 1);
+});
+
+test('terminal connector failure records explicit unknown usage before failNode', async t => {
+  let saved; const task = () => ({ task_id: saved.taskId, task_type_id: saved.taskTypeId, stage_id: saved.stageId, provider_id: saved.provider.id, connector: 'grok_acp', remote_identity: { session_id: 'session-failed', run_id: 'remote-failed' }, state: 'failed', error: { code: 'SYNTHETIC_FAILURE', message: 'Synthetic terminal failure' } });
+  const registry = { async start(params) { saved = params; return task(); }, async status() { return task(); } };
+  const f = await fixture(t, { registry, configure(config) { const p = config.providers.find(p => p.id === 'grok-local'); p.enabled = true; config.task_types.find(w => w.id === 'brainstorm').stages[0].provider_id = p.id; } });
+  await f.migrate(); const run = await f.start(); const args = leaseArgs(run, await claim(f, run)); await f.service.call('dispatch', args); const state = await f.service.call('collect_connector', args);
+  assert.equal(state.nodes.implementation.status, 'failed'); assert.deepEqual(state.cost_ledger.calls[0].usage, { unknown: true }); assert.equal(state.cost_ledger.unknown_usage_count, 1);
 });

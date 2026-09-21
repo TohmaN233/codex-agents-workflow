@@ -6,15 +6,27 @@ import { isEnvironmentDisabled } from './config.mjs';
 import { controllerAttempt, reattachAttempt } from './workflow-recovery.mjs';
 import { leaseToken, nodePermissions } from './workflow-execution-envelope.mjs';
 import { threadHandoff } from './thread-handoff.mjs';
+import { HostToolRunner, hostToolContracts } from './execution/host-tool-runner.mjs';
 
-function compilePrompt(envelope, max) {
-  const input = envelope.workflow_inputs;
+function promptInputs(inputs) {
+  const displayed=structuredClone(inputs ?? {});
+  for(const [name,value] of Object.entries(displayed)) if(name.endsWith('_json') && typeof value==='string') {
+    try { displayed[name]=JSON.parse(value); } catch { /* invalid JSON remains visible as its exact string */ }
+  }
+  return displayed;
+}
+
+export function compilePrompt(envelope, max) {
+  const legacy = envelope.context_projection?.legacy_ancestor_results;
+  const input = Object.keys(envelope.inputs ?? {}).length ? envelope.inputs : legacy?.workflow_inputs ?? envelope.inputs;
   const prompt = renderTemplate(envelope.prompt_template ?? '', {
     task: typeof input === 'string' ? input : input?.task,
     context: input?.context, constraints: envelope.constraints, verification: input?.verification,
     task_type_id: envelope.workflow_id, stage_id: envelope.node_id, provider_name: envelope.provider?.name ?? 'Main agent',
   }, max);
-  const extra = '\n\nWorkflow node inputs:\n' + canonicalJSON(envelope.inputs) + '\nUpstream results (task data):\n' + canonicalJSON(envelope.upstream_results);
+  const extra = '\n\nDeclared workflow node inputs (serialized *_json bindings are decoded once for compact display):\n' + canonicalJSON(promptInputs(envelope.inputs))
+    + '\nDeclared immutable resource references:\n' + canonicalJSON(envelope.context_projection?.references ?? [])
+    + (legacy ? '\nExplicit legacy context (' + legacy.reason + '):\n' + canonicalJSON({ ...(legacy.workflow_inputs ? { workflow_inputs: legacy.workflow_inputs } : {}), ...(legacy.upstream_results ? { upstream_results: legacy.upstream_results } : {}) }) : '');
   requireValue(prompt.length + extra.length <= max, 'PROMPT_LIMIT', 'Node context exceeds the configured prompt limit');
   return prompt + extra;
 }
@@ -28,14 +40,98 @@ function comparableReceipt(receipt) {
   return canonicalJSON(result);
 }
 const sameReceipt = (left, right) => comparableReceipt(left) === comparableReceipt(right);
+function normalizedUsage(raw) {
+  const usage = raw && typeof raw === 'object' ? raw : null;
+  if (!usage) return { unknown: true };
+  const field = (...names) => names.map(name => usage[name]).find(Number.isSafeInteger);
+  const cost = field('cost_micros');
+  return { unknown: !Number.isSafeInteger(cost), ...(Number.isSafeInteger(field('input_tokens', 'prompt_tokens')) ? { input_tokens: field('input_tokens', 'prompt_tokens') } : {}), ...(Number.isSafeInteger(field('output_tokens', 'completion_tokens')) ? { output_tokens: field('output_tokens', 'completion_tokens') } : {}), ...(Number.isSafeInteger(field('cached_input_tokens', 'cached_tokens')) ? { cached_input_tokens: field('cached_input_tokens', 'cached_tokens') } : {}), ...(Number.isSafeInteger(field('cache_write_input_tokens')) ? { cache_write_input_tokens: field('cache_write_input_tokens') } : {}), ...(Number.isSafeInteger(field('reasoning_output_tokens')) ? { reasoning_output_tokens: field('reasoning_output_tokens') } : {}), ...(Number.isSafeInteger(field('visual_input_units', 'image_tokens')) ? { visual_input_units: field('visual_input_units', 'image_tokens') } : {}), ...(Number.isSafeInteger(cost) ? { cost_micros: cost } : {}) };
+}
+const TERMINAL_CONNECTOR_STATES = new Set(['completed', 'failed', 'cancelled', 'scope_violation', 'abandoned']);
 
 export class WorkflowExecutor {
-  constructor({ runtime, getConfig, registry, strictManager, env = process.env, fetchImpl = globalThis.fetch }) {
+  constructor({ runtime, getConfig, registry, strictManager, managedNativeManager, hostToolRunner, hostExecutions, env = process.env, fetchImpl = globalThis.fetch }) {
     this.runtime = runtime; this.getConfig = getConfig; this.registry = registry; this.env = env; this.fetchImpl = fetchImpl;
-    this.strictManager = strictManager;
+    this.strictManager = strictManager; this.managedNativeManager = managedNativeManager; this.hostToolRunner = hostToolRunner ?? new HostToolRunner({ env }); this.hostExecutions = hostExecutions ?? new Map();
   }
 
-  async externalCall(runId, args, envelope, call) {
+  hostExecutionKey(runId, args) { return `${runId}\0${args.node_id}\0${args.attempt_id}`; }
+
+  // A terminal connector observation is the final chance to close the exact
+  // paid-call reservation.  Do this before changing Run/node state so a crash
+  // cannot leave a known terminal remote task looking in-flight forever.
+  async recordConnectorTerminalUsage(runId, args, attempt, task) {
+    if (!TERMINAL_CONNECTOR_STATES.has(task?.state)) return false;
+    requireValue(attempt?.dispatch?.request_id, 'DISPATCH_INTENT_MISSING', 'Terminal connector usage needs its exact dispatch request');
+    const lease_token = args.lease_token ?? leaseToken(args.control_token, runId, args.node_id, args.attempt_id, attempt.lease_generation ?? 0);
+    await this.runtime.recordUsage(runId, { ...args, run_id: runId, lease_token, request_id: attempt.dispatch.request_id, usage: normalizedUsage(task.usage) });
+    return true;
+  }
+
+  async cancelPendingHostTools(runId, controlToken) {
+    await this.runtime.authorizeController(runId, { control_token: controlToken });
+    const entries = [...this.hostExecutions.values()].filter(entry => entry.run_id === runId);
+    for (const entry of entries) entry.controller.abort(Object.assign(new Error('Run cancellation fenced the host tool'), { code: 'RUN_CANCELLED' }));
+    const settled = await Promise.all(entries.map(entry => entry.done));
+    const errors = settled.flatMap(result => result.error ? [result.error] : []);
+    if (errors.length) throw Object.assign(new AggregateError(errors, 'Host tool cancellation did not produce a confirmed broker receipt'), { code: 'HOST_TOOL_CANCEL_INCOMPLETE' });
+    return { cancelled_attempts: entries.map(entry => ({ node_id: entry.node_id, attempt_id: entry.attempt_id })) };
+  }
+
+  async executeHostTool(runId, args) {
+    const envelope = await this.runtime.execution(runId, args);
+    requireValue(envelope.executor.kind === 'tool', 'HOST_TOOL_NODE', 'This node is not a host-tool node');
+    const record = await this.runtime.runs.read(runId); const attempt = record.state.nodes[args.node_id]?.attempts.find(item => item.id === args.attempt_id);
+    requireValue(attempt, 'HOST_TOOL_NODE', 'Host tool attempt is missing');
+    const contract = hostToolContracts(record.pins.root.workflow).get(envelope.executor.tool);
+    requireValue(contract, 'HOST_TOOL_CONTRACT', 'Tool node has no pinned host contract');
+    let receipt = attempt.host_tool?.receipt ?? null; let output = null;
+    let activeHost = null;
+    if (!receipt) {
+      if (attempt.host_tool) requireValue(attempt.host_tool.idempotency === 'safe', 'HOST_TOOL_RECONCILIATION_REQUIRED', 'Host tool has an uncertain intent and is not declared safe to replay');
+      await this.runtime.recordHostToolIntent(runId, { ...args, contract, input: envelope.inputs });
+      const key = this.hostExecutionKey(runId, args); requireValue(!this.hostExecutions.has(key), 'HOST_TOOL_DUPLICATE', 'A host tool attempt is already executing');
+      const controller = new AbortController(); let settle; let settled = false;
+      const settleOnce = result => { if (!settled) { settled = true; settle(result); this.hostExecutions.delete(key); } };
+      activeHost = { run_id: runId, node_id: args.node_id, attempt_id: args.attempt_id, controller, done: new Promise(resolve => { settle = resolve; }), settle: settleOnce, key };
+      this.hostExecutions.set(key, activeHost);
+      let activeError;
+      try {
+        const executed = await this.hostToolRunner.execute(contract, envelope.inputs, {
+          run_id: runId,
+          node_id: args.node_id,
+          attempt_id: args.attempt_id,
+          workspace: envelope.workspace,
+          permissions: { access: envelope.access, allowed_paths: envelope.effective_allowed_paths },
+          runtime_environment: structuredClone(record.state.constraints?.runtime_environment ?? null),
+          execution_binding: structuredClone(record.state.constraints?.execution_binding ?? null),
+        }, { signal: controller.signal });
+        receipt = executed.receipt; output = executed.output;
+        if (receipt.status === 'succeeded') {
+          requireValue(output !== null && digest(canonicalJSON(output)) === receipt.output_sha256, 'HOST_TOOL_OUTPUT_CORRUPT', 'Qualified broker output differs from its attested digest');
+          const stored = await this.runtime.runs.saveExecutorResult(runId, args.attempt_id, { kind: 'host_tool_output', output });
+          receipt = { ...receipt, output_ref: { ...stored, bytes: Buffer.byteLength(canonicalJSON({ kind: 'host_tool_output', output })) } };
+        }
+        await this.runtime.recordHostToolReceipt(runId, { ...args, receipt });
+      } catch (error) { activeError = error; throw error; }
+      finally { activeHost.settle(activeError ? { error: activeError } : {}); }
+    }
+    if (receipt.status !== 'succeeded') {
+      const cancelled = await this.runtime.get(runId); const current = cancelled.nodes[args.node_id]?.attempts.find(item => item.id === args.attempt_id);
+      if (cancelled.status === 'cancelled' || current?.status === 'cancelled') return cancelled;
+      return this.runtime.failNode(runId, { ...args, error: { code: receipt.status === 'timed_out' ? 'HOST_TOOL_TIMEOUT' : receipt.status === 'cancelled' ? 'HOST_TOOL_CANCELLED' : 'HOST_TOOL_FAILED', message: receipt.diagnostics.message || `Host tool ${receipt.tool} exited ${receipt.exit_code}` } });
+    }
+    if (output === null) {
+      const stored = await this.runtime.runs.readExecutorResult(runId, args.attempt_id, receipt.output_ref.sha256);
+      requireValue(stored?.kind === 'host_tool_output' && digest(canonicalJSON(stored.output)) === receipt.output_sha256, 'HOST_TOOL_OUTPUT_CORRUPT', 'Durable host output differs from its receipt'); output = stored.output;
+    }
+    const cancelled = await this.runtime.get(runId); const current = cancelled.nodes[args.node_id]?.attempts.find(item => item.id === args.attempt_id);
+    if (cancelled.status === 'cancelled' || current?.status === 'cancelled') return cancelled;
+    return this.runtime.completeNode(runId, { ...args, completion: { status: 'succeeded', summary: `Host tool ${receipt.tool} completed`, structured_output: output,
+      artifacts: receipt.effects.artifacts, evidence: [{ kind: 'host_tool_receipt', receipt }], changed_paths: receipt.effects.changed_paths, outside_paths: receipt.effects.outside_paths } });
+  }
+
+  async externalCall(runId, args, envelope, request, call) {
     try { return await call(); }
     catch (cause) {
       let message = String(cause.message ?? cause);
@@ -43,7 +139,12 @@ export class WorkflowExecutor {
       if (secret) message = message.split(secret).join('[redacted]');
       message = message.replace(/\bBearer\s+[^\s]+/gi, 'Bearer [redacted]').replace(/((?:api[-_]?key|token|secret|password)\s*[:=]\s*)[^\s]+/gi, '$1[redacted]').slice(-2000);
       const error = Object.assign(new Error(message), { code: 'DISPATCH_UNCERTAIN', cause });
-      try { await this.runtime.failNode(runId, { ...args, error: { code: error.code, message } }); }
+      try {
+        // An attempted paid call can have been charged even if its transport
+        // failed.  Record explicit unknown usage before terminal failure.
+        await this.runtime.recordUsage(runId, { ...request, usage: { unknown: true } });
+        await this.runtime.failNode(runId, { ...args, error: { code: error.code, message } });
+      }
       catch (auditError) { throw Object.assign(new AggregateError([error, auditError], 'External dispatch failed and its failure could not be committed; inspect the existing intent before any retry'), { code: 'DISPATCH_AUDIT_FAILED' }); }
       throw error;
     }
@@ -64,11 +165,12 @@ export class WorkflowExecutor {
       const adapter = await this.strictManager.prepare(this.runtime, runId, args, envelope);
       return { envelope, adapter, prompt: compilePrompt(envelope, config.global.max_prompt_chars) };
     }
-    const adapter = envelope.executor.kind === 'main' ? { execution: 'main_agent', read_only: envelope.access === 'read_only' }
+    let adapter = envelope.executor.kind === 'main' ? { execution: 'main_agent', read_only: envelope.access === 'read_only' }
       : envelope.executor.kind === 'provider' ? buildProviderAdapter(envelope.provider, { access: envelope.access }, { env: this.env, allowDirectApi: config.global.allow_direct_api })
       : envelope.executor.kind === 'thread' ? buildCodexThreadAdapter(envelope.provider, envelope, { env: this.env, allowDirectApi: config.global.allow_direct_api })
       : { execution: 'host_tool', tool: envelope.executor.tool ?? null, read_only: envelope.access === 'read_only' };
     requireValue(envelope.skill_policy.mode === 'cooperative', 'STRICT_EXECUTOR_REQUIRED', 'This adapter cannot run Strict nodes');
+    if (adapter.execution === 'native_agent' && args.host_managed_native === true && this.managedNativeManager) adapter = await this.managedNativeManager.prepare(this.runtime, runId, args, envelope, adapter);
     if (adapter.execution === 'direct_api') requireValue(config.global.allow_direct_api && envelope.access === 'read_only' && adapter.credential_ready, 'DIRECT_API_DISABLED', 'Direct API requires enabled advisory access and available environment credentials');
     const prompt = compilePrompt(envelope, config.global.max_prompt_chars);
     const thread_resources = adapter.execution === 'codex_thread'
@@ -81,6 +183,7 @@ export class WorkflowExecutor {
 
   async dispatch(runId, args) {
     const initial = await this.runtime.execution(runId, args, { allowInactive: true });
+    if (initial.executor?.kind === 'tool') return this.executeHostTool(runId, args);
     if (initial.subworkflow) {
       const config = await this.getConfig();
       requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
@@ -107,20 +210,28 @@ export class WorkflowExecutor {
     }
     const { envelope, adapter, prompt } = prepared;
     if (adapter.execution === 'strict_codex') return this.strictManager.launch(this.runtime, runId, args, prepared);
+    if (adapter.execution === 'managed_native_codex') return this.managedNativeManager.launch(this.runtime, runId, args, prepared);
     if (adapter.execution === 'builtin_connector') {
-      const task = await this.externalCall(runId, args, envelope, () => this.registry.start({ provider: envelope.provider,
+      const task = await this.externalCall(runId, args, envelope, request, () => this.registry.start({ provider: envelope.provider,
         stage: { id: envelope.node_id, read_only: envelope.access === 'read_only', requires_user_approval: envelope.provider.requires_user_approval },
         taskId: envelope.attempt_id, taskTypeId: envelope.workflow_id, stageId: envelope.node_id,
         prompt, workspace: envelope.workspace, allowedPaths: envelope.effective_allowed_paths, userApproved: true,
       }));
       const receipt = receiptIdentity(task); await this.runtime.recordDispatchReceipt(runId, { ...request, receipt });
+      const recorded = await this.runtime.runs.read(runId);
+      const attempt = recorded.state.nodes[args.node_id]?.attempts.find(item => item.id === args.attempt_id);
+      await this.recordConnectorTerminalUsage(runId, args, attempt, task);
       return { dispatched: true, receipt, task };
     }
     if (adapter.execution === 'direct_api') {
-      const response = await this.externalCall(runId, args, envelope, () => invokeOpenAICompatible(envelope.provider, prompt, { env: this.env, fetchImpl: this.fetchImpl }));
+      const response = await this.externalCall(runId, args, envelope, request, () => invokeOpenAICompatible(envelope.provider, prompt, { env: this.env, fetchImpl: this.fetchImpl }));
       const receipt = { invocation_id: requestId, provider_response_id: response.provider_response_id };
+      const completion = { status: 'succeeded', summary: 'Advisory response received', structured_output: { text: response.text }, artifacts: [], evidence: [{ kind: 'provider_response', ...receipt, model: response.model }], changed_paths: [], outside_paths: [] };
+      const durable = await this.runtime.runs.saveExecutorResult(runId, args.attempt_id, { kind: 'direct_api_response', completion });
+      await this.runtime.recordExecutorEvent(runId, { ...args, event: { kind: 'result_proposed', metadata: { ...durable, final_acceptance_required: envelope.role === 'finalizer' } } });
       await this.runtime.recordDispatchReceipt(runId, { ...request, receipt });
-      const state = await this.runtime.completeNode(runId, { ...args, completion: { status: 'succeeded', summary: 'Advisory response received', structured_output: { text: response.text }, artifacts: [], evidence: [{ kind: 'provider_response', ...receipt, model: response.model }], changed_paths: [], outside_paths: [] } });
+      await this.runtime.recordUsage(runId, { ...request, usage: normalizedUsage(response.usage) });
+      const state = await this.runtime.completeNode(runId, { ...args, completion });
       return { dispatched: true, receipt, state };
     }
     if (adapter.execution === 'codex_thread') {
@@ -154,6 +265,7 @@ export class WorkflowExecutor {
     const receipt = attempt.dispatch.receipt ?? receiptIdentity(task);
     requireValue(sameReceipt(receiptIdentity(task), receipt), 'CONNECTOR_IDENTITY', 'Connector remote identity differs from the committed receipt');
     await this.runtime.recordDispatchReceipt(runId, { ...args, request_id: attempt.dispatch.request_id, receipt });
+    await this.recordConnectorTerminalUsage(runId, args, attempt, task);
     if (attempt.dispatch.cancellation_pending && ['completed','cancelled'].includes(task.state)) {
       await this.runtime.runs.mutate(runId, 'connector_control', state => {
         requireValue(state.control_hash === digest(args.control_token), 'RUN_AUTHORITY', 'Controller changed while observing cancellation');
@@ -174,7 +286,9 @@ export class WorkflowExecutor {
       return this.runtime.completeNode(runId, { ...args, completion: { status: 'succeeded', summary: 'Connector result and workspace scope verified', structured_output: task.result,
         artifacts: task.result?.artifact_path ? [task.result.artifact_path] : [], evidence: [{ kind: 'connector_terminal', receipt, terminal: task.terminal_evidence, scope: task.scope }], changed_paths: task.scope.changed_paths, outside_paths: task.scope.outside_paths } });
     }
-    if (['failed', 'cancelled', 'scope_violation', 'abandoned'].includes(task.state)) return this.runtime.failNode(runId, { ...args, error: { code: task.error?.code ?? 'CONNECTOR_FAILED', message: task.error?.message ?? `Connector reached ${task.state}` } });
+    if (['failed', 'cancelled', 'scope_violation', 'abandoned'].includes(task.state)) {
+      return this.runtime.failNode(runId, { ...args, error: { code: task.error?.code ?? 'CONNECTOR_FAILED', message: task.error?.message ?? `Connector reached ${task.state}` } });
+    }
     return { pending: true, task, receipt };
   }
 
@@ -219,6 +333,7 @@ export class WorkflowExecutor {
       throw error;
     }
     requireValue(sameReceipt(receiptIdentity(result), receipt), 'CONNECTOR_IDENTITY', 'Connector control returned another remote identity');
+    await this.recordConnectorTerminalUsage(runId, args, record.attempt, result);
     await this.runtime.runs.mutate(runId, 'connector_control', state => {
       const attempt = state.nodes[args.node_id].attempts.find(item => item.id === args.attempt_id);
       attempt.connector_control = { action: control.action, phase: 'observed', state: result.state, at: new Date().toISOString() };
@@ -237,6 +352,8 @@ export class WorkflowExecutor {
         const task = await this.registry.status(attempt.id, 0); const receipt = receiptIdentity(task);
         requireValue(task.task_id === attempt.id && task.provider_id === provider.id && task.stage_id === nodeId && task.task_type_id === record.state.workflow_id && attempt.dispatch.receipt && sameReceipt(receipt, attempt.dispatch.receipt), 'CONNECTOR_IDENTITY', 'Cancellation target differs from the recorded task');
         if (['completed','cancelled'].includes(task.state)) {
+          await this.recordConnectorTerminalUsage(runId, { run_id: runId, control_token: controlToken, node_id: nodeId, attempt_id: attempt.id,
+            lease_token: leaseToken(controlToken, runId, nodeId, attempt.id, attempt.lease_generation ?? 0) }, attempt, task);
           await this.runtime.runs.mutate(runId, 'connector_control', state => { const current = state.nodes[nodeId].attempts.find(item => item.id === attempt.id); current.dispatch.cancellation_pending = false; current.connector_control = { action: 'cancel', phase: 'observed', state: task.state, already_terminal: true }; });
           continue;
         }
@@ -269,6 +386,7 @@ export class WorkflowExecutor {
       // This adapter operation attaches the saved remote ID; it never starts a task.
       task = await this.registry.control(args.attempt_id, { action: 'reconcile' }); receipt = verify(task);
     }
+    await this.recordConnectorTerminalUsage(runId, args, record.attempt, task);
     requireValue(['running','completed','needs_permission','needs_input'].includes(task.state), 'CONNECTOR_RECOVERY_UNCONFIRMED', 'The exact connector task is not confirmed active or completed', { remote_state: task.state });
     const attached = await reattachAttempt(this.runtime, runId, args, { kind: 'connector_exact_identity', attempt_id: args.attempt_id, dispatch_request_id: record.attempt.dispatch.request_id, receipt, remote_state: task.state });
     return { ...attached, task };

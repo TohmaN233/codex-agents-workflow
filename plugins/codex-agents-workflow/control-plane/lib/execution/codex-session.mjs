@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createCodexClient } from './codex-app-server-client.mjs';
+import { agentTurnActivity } from './agent-activity.mjs';
 import { authenticatedModel } from './codex-model-catalog.mjs';
 import { buildCodexProfile, cleanupCodexProfile, recordProfileChild, isolatedEnvironment, pinObservedModel, profileOverrides, STRICT_INSTRUCTIONS } from './codex-profile-builder.mjs';
 import { createSkillPolicy } from './codex-skill-policy.mjs';
@@ -121,7 +122,9 @@ export async function createStrictSession(options) {
         const profileHash = digest(await readFile(join(profile.home, 'config.toml')));
         const after = client.events.length;
         const begun = await client.call('turn/start', { threadId: activeThread, effort, input }); activeTurn = begun.turn.id;
-        const completed = await client.waitFor(event => event.method === 'turn/completed' && event.params.threadId === activeThread && event.params.turn.id === activeTurn, { after, timeout: timeout_ms });
+        const completed = await client.waitFor(event => event.method === 'turn/completed' && event.params.threadId === activeThread && event.params.turn.id === activeTurn, {
+          after, timeout: timeout_ms, activity: event => agentTurnActivity(event, activeThread, activeTurn),
+        });
         requireValue(completed.params.turn.status === 'completed', 'CODEX_TURN_FAILED', `Strict turn ended with status ${completed.params.turn.status}`);
         await policy.verify(client);
         requireValue(digest(await readFile(join(profile.home, 'config.toml'))) === profileHash && digest(await readFile(join(profile.home, 'models.json'))) === profile.model_catalog_sha256, 'CODEX_PROFILE_CHANGED', 'Strict profile policy/model metadata changed during execution');

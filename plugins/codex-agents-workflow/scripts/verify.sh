@@ -179,14 +179,14 @@ test ! -e "$retired_contract" || fail "retired separate workflow contract remain
 pass "required files present and retired contract absent"
 
 jq empty "$manifest"
-[ "$(jq -r '.version | split("+")[0]' "$manifest")" = 0.8.0 ] || fail "manifest base version is not 0.8.0"
+[ "$(jq -r '.version | split("+")[0]' "$manifest")" = 1.0.0 ] || fail "manifest base version is not 1.0.0"
 # Public metadata describes the Workflow product; native route declarations are
 # checked against the orchestration skill below, where that contract applies.
 jq -e '.interface.defaultPrompt | any(contains("workflow-control-plane"))' "$manifest" >/dev/null || fail "manifest omits Workflow entrypoint"
 grep -Fq 'main agent responsible for requirements, verification and acceptance' "$manifest" || fail "manifest omits main-agent ownership"
 grep -Fq 'exact task identities' "$manifest" || fail "manifest omits exact task identity contract"
 grep -Fq 'without automatic resubmission' "$manifest" || fail "manifest omits recovery boundary"
-pass "manifest JSON, v0.8.0 release, and Workflow execution contract"
+pass "manifest JSON, v1.0.0 release, and Workflow execution contract"
 
 python3 - "$templates" <<'PY'
 from pathlib import Path
@@ -518,4 +518,4 @@ node --check "$node_runtime_inspector"
 node --test "$native_tools_test"
 pass "shell wrappers and cross-platform native role tools"
 
-printf '%s\n' "VERIFY PASSED: Codex Agents Workflow v0.8.0 selective routing checks completed in $tmp_dir"
+printf '%s\n' "VERIFY PASSED: Codex Agents Workflow v1.0.0 selective routing checks completed in $tmp_dir"

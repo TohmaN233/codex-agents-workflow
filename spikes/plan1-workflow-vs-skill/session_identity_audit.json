@@ -1,0 +1,7 @@
+{
+  "schema": "plan1-session-identity-audit-v1",
+  "verified": false,
+  "status": "NOT_RUN",
+  "required_receipt_fields": ["session_id", "call_chain_id", "main_actor"],
+  "rule": "All main semantic nodes must retain one exact host-attested session/call-chain identity; a missing or replacement identity blocks the run."
+}

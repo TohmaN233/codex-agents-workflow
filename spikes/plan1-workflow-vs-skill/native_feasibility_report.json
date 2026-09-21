@@ -1,0 +1,22 @@
+{
+  "schema": "plan1-native-feasibility-report-v1",
+  "status": "READY",
+  "formal_comparison_status": "NOT_RUN",
+  "source_commit": "b63b7b2850226b6aa4fb5929a8c1ac7bc4d9a6af",
+  "platform": {
+    "kind": "wsl",
+    "distribution": "Ubuntu",
+    "python": "3.12.13",
+    "sandbox": "bubblewrap 0.11.1",
+    "network_during_task": false,
+    "docker": "FORBIDDEN"
+  },
+  "checks": ["oracle exits zero", "source verifier accepts oracle output", "removing a required artifact makes the verifier fail"],
+  "tasks": [
+    { "task_id": "crystallographic-wyckoff-position-analysis", "receipt": "feasibility-receipts/crystallographic-wyckoff-position-analysis.json", "receipt_sha256": "e178c93cda5e2582a79ab761e966f5750c9120ca56d42b3471fb0cdf7a82ba35", "status": "READY" },
+    { "task_id": "earthquake-plate-calculation", "receipt": "feasibility-receipts/earthquake-plate-calculation.json", "receipt_sha256": "815ea6d602dae1cd9dfb85d0275429aa42982ffa64bc844de97c14b282a1cc78", "status": "READY" },
+    { "task_id": "lake-warming-attribution", "receipt": "feasibility-receipts/lake-warming-attribution.json", "receipt_sha256": "ad4cb534f23a9b70e744fdc7264143eecb1d177c1eac4bae3b726bd5c0d3e618", "status": "READY" },
+    { "task_id": "video-silence-remover", "receipt": "feasibility-receipts/video-silence-remover.json", "receipt_sha256": "8249e3fc4087253e600620b828f093f25389fc767807bca1137a9a13f1e60823", "status": "READY" }
+  ],
+  "limitations": ["This proves native task implementability and verifier sensitivity; it does not contain any model-arm result.", "Formal launch still requires frozen Workflow/tool/session receipts and user-reviewed model and budget settings."]
+}

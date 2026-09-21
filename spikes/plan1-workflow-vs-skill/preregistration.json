@@ -1,0 +1,17 @@
+{
+  "schema": "plan1-preregistration-v3",
+  "status": "DRAFT_PENDING_USER_CONFIRMATION",
+  "formal_comparison_status": "NOT_RUN",
+  "tasks": ["crystallographic-wyckoff-position-analysis", "earthquake-plate-calculation", "lake-warming-attribution", "video-silence-remover"],
+  "task_basis": "All four tasks passed native WSL oracle, verifier, and missing-artifact counterexample checks before inclusion.",
+  "feasibility_manifest": "native_feasibility_report.json",
+  "arms": ["N-main", "S-main", "W-control", "W-main"],
+  "primary_comparison": "W-main vs S-main",
+  "pilot_design": { "repetitions_per_task_arm": { "N-main": 3, "S-main": 3, "W-main": 3, "W-control": 1 }, "planned_runs": 40, "interpretation": "four implementation-qualified task case studies; W-control is a one-run-per-task overhead diagnostic, not a variance estimate or universal Skill claim" },
+  "case_pass_rule": { "all_selected_tasks_must_pass": true, "success_difference_min": 0, "quality_difference_min": -0.02, "online_token_ratio_max": 0.85 },
+  "trigger_suite": "trigger_suite.json",
+  "same_main_session": true,
+  "budget": { "status": "NOT_APPROVED", "approval_id": null, "currency": null, "limit_micros": null },
+  "platform": { "status": "SELECTED_PENDING_QUALIFICATION", "kind": "wsl", "toolchain_id": "wsl-ubuntu-native-plan1-v1", "launcher": "C:/Windows/System32/wsl.exe -d Ubuntu", "docker": "FORBIDDEN" },
+  "gates": { "G0": "NOT_RUN", "G1": "NOT_RUN", "G2": "NOT_RUN", "G3": "NOT_RUN", "G4": "NOT_RUN", "G5": "NOT_RUN" }
+}

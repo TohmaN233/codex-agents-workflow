@@ -1,22 +1,55 @@
 ---
 name: workflow-control-plane
-description: "Use when a task needs multi-agent collaboration, when an existing Workflow can carry out the task (including a Skill converted to a Workflow), or when the user names, runs, edits, or creates a Workflow. Discover suitable registered Workflows and execute their steps through the control tools."
+description: "Run a registered Workflow when the user explicitly requests it or a concrete execution task directly matches a Ready Workflow; manage Workflows when the user asks to create, import, inspect, or edit one. Do not start Runs for planning, discussion, comparison, audit, experiment design, or merely because collaboration could help."
 ---
 
 # Codex Agents Workflow
 
+## Route intent before using the control plane
+
+Classify the request before discovering or starting anything:
+
+- **Execute:** the user explicitly asks to run a Workflow, or the requested end
+  result directly matches the stated purpose of a registered Ready Workflow. Only
+  this mode may start a Run.
+- **Manage:** the user asks to create, import, inspect, debug, or edit a Workflow.
+  Use only the relevant management operation. Do not start a Run unless the user
+  separately asks to execute the resulting Workflow.
+- **Meta:** the user is discussing, planning, comparing, evaluating, auditing, or
+  designing experiments about Workflows or Skills. Handle the work directly and do
+  not discover or start registered Workflows unless their metadata is itself needed
+  to answer the request.
+
+An app/plugin mention exposes these capabilities; it is not authorization to start a
+Run. A task merely benefiting from subagents is not a Workflow match. Use native
+orchestration when delegation is actually requested or warranted and no concrete
+registered Workflow matches.
+
+For a Skill converted to a Workflow, select the Workflow only when the user's
+concrete end task would have used that source Skill and the Workflow's declared
+purpose matches the requested output. Discussion of conversion, trigger design, or
+Skill-versus-Workflow experiments is Meta work and must not execute the converted
+Workflow. Shadow the source Skill only after a specific Workflow Run is selected.
+
 ## Select a workflow
 
-Discover `workflow_list`, `workflow_capabilities` and `codex_agents_workflow_status`
-through the host tool catalog and call them. With `functions.exec`, search
-`ALL_TOOLS` and use the discovered tools and schemas. A visible skill or console
-page does not establish a tool connection.
+When an exact Ready Workflow ID and revision have already been supplied for a
+compact main run, do not call `workflow_list`, `workflow_capabilities`,
+`codex_agents_workflow_status`, or `workflow_read`, and do not dump a broad tool
+catalog. The application host, not the model, owns launch and completion. Wait for
+the projected `agent_packet`; never transcribe the supplied pin or any Run, claim,
+lease, owner, status, reference, or completion-envelope field. A visible skill or
+console page does not establish host execution.
 
-Select an enabled, valid Workflow matching the user's task; read it with
-`workflow_read` and state its name and purpose. A converted Skill is executed as
-its registered Workflow. If no Workflow fits, use ordinary task execution or
-native orchestration; create or convert a Workflow when the user requests it.
-Do not force simple tasks into multiple agents.
+Otherwise, discover `workflow_list`, `workflow_capabilities` and
+`codex_agents_workflow_status` through the host tool catalog and call them. With
+`functions.exec`, search `ALL_TOOLS` and use the discovered tools and schemas.
+
+In Execute mode, select an enabled, valid, Ready Workflow whose purpose and expected
+output match the user's concrete task; read it with `workflow_read` and state its
+name and purpose. Do not select by keyword overlap alone. If no Workflow fits, use
+ordinary task execution or native orchestration. Do not force simple tasks into a
+Workflow merely because one is available.
 
 If tools cannot be discovered or called, run
 `node <plugin-root>/scripts/check-mcp-startup.mjs` (plugin root is two parents of
@@ -25,6 +58,41 @@ does not establish the host connection. See [connection diagnosis](references/co
 when the probe succeeds but host tools remain missing.
 
 ## Prepare and run
+
+### Compact main-session fast path
+
+When the selected Workflow uses Main semantic nodes, or native Provider nodes that
+the host can execute through its managed-native adapter, use the host-managed compact
+path. The application host prepares the environment, starts the exact Ready revision,
+drives deterministic/tool nodes, creates each isolated native child itself, and claims
+the next main node while retaining every Run/node/attempt/lease/receipt binding. Native
+children receive only their semantic prompt and return only their declared semantic
+schema; they never receive `spawn_config`, task IDs, agent IDs or completion envelopes.
+The main model receives only the
+node-scoped `agent_packet`: prompt, declared resource texts, permissions and a
+small semantic response form. Execute that packet and return semantic values only.
+The host validates those values, constructs the strict completion envelope, fills
+all controller fields, finite-decision identity/references and acceptance records,
+then advances to the next packet or terminal state.
+
+`workflow_begin_main` and `workflow_complete_main` are host-only APIs and must not
+appear in the model tool catalog. Do not replace them with granular model calls to
+`workflow_start`, `workflow_next`, `workflow_claim_node`, `workflow_dispatch`,
+`workflow_read_resource`, or `workflow_drive`. If the host does not supply an
+`agent_packet`, report the missing host integration instead of hand-building the
+lifecycle. The host validates Workflow inputs; runtime policy such as network or
+Docker belongs in host constraints, never in semantic values.
+
+Fill only `agent_packet.response_form.schema`. For a decision, choose one displayed
+option. For final acceptance, choose the host-rendered boolean control; do not emit
+an `accepted` field. Never supply IDs, tokens, owner, status, references, evidence
+envelopes, `structured_output`, or acceptance objects. The host owns all formatting
+and protocol fields.
+
+Use the granular operations below only for external/non-managed executors, approvals,
+recovery or manual management. A compact managed-native child is not a signal to call
+granular dispatch or `collaboration.spawn_agent`; its complete lifecycle and continuation
+belong to the application host.
 
 1. Call `workflow_prepare_environment`. Discover and invoke tools across the host,
    including installed tools outside the working directory. Check their required

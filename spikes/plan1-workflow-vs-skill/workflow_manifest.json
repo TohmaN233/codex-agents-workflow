@@ -1,0 +1,24 @@
+{
+  "schema": "plan1-workflow-manifest-v3",
+  "qualified": false,
+  "status": "ISOLATED_REVISIONS_PENDING_HUMAN_PUBLICATION",
+  "requirements": ["source-requirement coverage", "exact pre-authorized host-tool binding", "declared-only context projection", "minimal per-node resources", "deterministic host drive", "finite semantic decisions", "same-main-session receipts", "cost admission and usage ledger"],
+  "forbidden": ["unmapped required source behavior", "agent-assisted operation in the treatment arm", "implicit ancestor copying", "paid dispatch by drive", "strict downgrade", "hidden judge as host node", "implicit retry"],
+  "conversion_quality": {
+    "status": "NOT_RUN",
+    "tasks": [
+      {"task_id":"crystallographic-wyckoff-position-analysis","status":"NOT_RUN","conversion_level":null,"host_preflight":false,"same_algorithm_and_resources":false},
+      {"task_id":"earthquake-plate-calculation","status":"NOT_RUN","conversion_level":null,"host_preflight":false,"same_algorithm_and_resources":false},
+      {"task_id":"lake-warming-attribution","status":"NOT_RUN","conversion_level":null,"host_preflight":false,"same_algorithm_and_resources":false},
+      {"task_id":"video-silence-remover","status":"NOT_RUN","conversion_level":null,"host_preflight":false,"same_algorithm_and_resources":false}
+    ]
+  },
+  "fixture_compiler": { "module": "plan1-fixture-compiler.mjs", "pack_builder": "build-plan1-workflow-packs.mjs", "selected_tasks": ["crystallographic-wyckoff-position-analysis", "earthquake-plate-calculation", "lake-warming-attribution", "video-silence-remover"], "common_wrapper_equal_for_all_arms": true, "all_agent_nodes": "main", "status": "COMPILED_DRAFTS" },
+  "registered_workflows": [
+    {"task_id":"crystallographic-wyckoff-position-analysis","workflow_id":"plan1-crystallographic-wyckoff-position-analysis","revision_hash":"3ffeefea934cec476be69cecde5defbd6186eadf1bf59aeec6708d2138147a1a","status":"draft","resource_isolation":"workflow-native-only","agent_nodes":["author-analyzer","final"],"agent_executor":"main"},
+    {"task_id":"earthquake-plate-calculation","workflow_id":"plan1-earthquake-plate-calculation","revision_hash":"d429b349d1e4925c6ce9b2f535221c442d182ce10587adbd2386aca323cf46d8","status":"draft","resource_isolation":"workflow-native-only","agent_nodes":["analyze-earthquakes","final"],"agent_executor":"main"},
+    {"task_id":"lake-warming-attribution","workflow_id":"plan1-lake-warming-attribution","revision_hash":"0a27371551dbda313e6adcef8d3e475219d83d6b91ecc245ca374bfcaf6e6259","status":"draft","resource_isolation":"workflow-native-only","agent_nodes":["trend-analysis","driver-attribution","final"],"agent_executor":"main"},
+    {"task_id":"video-silence-remover","workflow_id":"plan1-video-silence-remover","revision_hash":"2244716b8b99307c67cd63d488358d63d6f04570c2c551d962126bfbbca92b43","status":"draft","resource_isolation":"workflow-native-only","agent_nodes":["select-removal-policy","final"],"agent_executor":"main"}
+  ],
+  "workflow_revision_sha256": "622a8777752e5bda83c0e8bbb8d4126a16535c56e460372d647c0aa7632b447c"
+}

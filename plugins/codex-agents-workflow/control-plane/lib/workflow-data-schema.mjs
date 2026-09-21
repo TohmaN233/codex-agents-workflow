@@ -2,9 +2,18 @@ import { canonicalJSON } from './workflow-revisions.mjs';
 import { requireValue } from './workflow-paths.mjs';
 
 // Finite JSON Schema vocabulary: unsupported keywords fail definition validation.
-const WORDS = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const', 'minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems', 'title', 'description', 'default', 'examples']);
+const WORDS = new Set(['type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const', 'minimum', 'exclusiveMinimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems', 'uniqueItems', 'pattern', 'title', 'description', 'default', 'examples']);
 const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null']);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+function safePattern(pattern) {
+  if (/[|\\{}]/.test(pattern)) return false;
+  let depth=0;
+  for(let index=0;index<pattern.length;index++){
+    if(pattern[index]==='('){depth++;if(depth>1)return false;}
+    if(pattern[index]===')'){if(depth!==1 || ['*','+'].includes(pattern[index+1]))return false;depth--;}
+  }
+  return depth===0;
+}
 export function validateDataSchema(schema, depth = 0) {
   requireValue(depth < 32 && object(schema), 'DATA_SCHEMA', 'Data schema must be a bounded object');
   for (const key of Object.keys(schema)) requireValue(WORDS.has(key), 'DATA_SCHEMA_KEYWORD', `Unsupported data schema keyword: ${key}`);
@@ -17,8 +26,13 @@ export function validateDataSchema(schema, depth = 0) {
   if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== 'boolean') validateDataSchema(schema.additionalProperties, depth + 1);
   if (schema.items !== undefined) validateDataSchema(schema.items, depth + 1);
   if (schema.enum !== undefined) requireValue(Array.isArray(schema.enum) && schema.enum.length > 0, 'DATA_SCHEMA', 'enum must be nonempty');
-  for (const key of ['minimum', 'maximum']) if (schema[key] !== undefined) requireValue(Number.isFinite(schema[key]), 'DATA_SCHEMA', `${key} must be finite`);
+  for (const key of ['minimum', 'exclusiveMinimum', 'maximum']) if (schema[key] !== undefined) requireValue(Number.isFinite(schema[key]), 'DATA_SCHEMA', `${key} must be finite`);
   for (const key of ['minLength', 'maxLength', 'minItems', 'maxItems']) if (schema[key] !== undefined) requireValue(Number.isInteger(schema[key]) && schema[key] >= 0, 'DATA_SCHEMA', `${key} must be a nonnegative integer`);
+  if (schema.uniqueItems !== undefined) requireValue(typeof schema.uniqueItems==='boolean','DATA_SCHEMA','uniqueItems must be boolean');
+  if (schema.pattern !== undefined) {
+    requireValue(typeof schema.pattern==='string' && schema.pattern.length>0 && schema.pattern.length<=512 && safePattern(schema.pattern),'DATA_SCHEMA_PATTERN','pattern must use the bounded linear subset without nesting, alternation, escapes, counted repetition or repeated groups');
+    try { new RegExp(schema.pattern,'u'); } catch { requireValue(false,'DATA_SCHEMA_PATTERN','pattern must be a valid bounded regular expression'); }
+  }
   canonicalJSON(schema);
 }
 
@@ -39,11 +53,13 @@ export function validateData(value, schema = {}, path = '$') {
   }
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems || schema.maxItems !== undefined && value.length > schema.maxItems) fail('array length is outside bounds');
+    if (schema.uniqueItems && new Set(value.map(item=>canonicalJSON(item))).size!==value.length) fail('array items are not unique');
     if (schema.items) value.forEach((item, index) => validateData(item, schema.items, `${path}/${index}`));
   }
   if (typeof value === 'string') {
     const length = [...value].length;
     if (schema.minLength !== undefined && length < schema.minLength || schema.maxLength !== undefined && length > schema.maxLength) fail('string length is outside bounds');
+    if (schema.pattern !== undefined && !new RegExp(schema.pattern,'u').test(value)) fail('string does not match pattern');
   }
-  if (typeof value === 'number' && (schema.minimum !== undefined && value < schema.minimum || schema.maximum !== undefined && value > schema.maximum)) fail('number is outside bounds');
+  if (typeof value === 'number' && (schema.minimum !== undefined && value < schema.minimum || schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum || schema.maximum !== undefined && value > schema.maximum)) fail('number is outside bounds');
 }

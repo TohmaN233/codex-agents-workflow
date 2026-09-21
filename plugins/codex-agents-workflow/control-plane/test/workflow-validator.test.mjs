@@ -48,6 +48,7 @@ test('identity, topology and final acceptance reject each malformed graph', () =
     ['FINALIZER_BYPASS', w => { w.edges.push(edge('work', 'end')); }],
     ['FINALIZER_ORDER', w => { w.edges = [edge('start', 'final'), edge('final', 'work'), edge('work', 'end')]; }],
     ['BINDING_SOURCE', w => { w.nodes.find(n => n.id === 'work').input_bindings = { future: '/nodes/final/output/value' }; }],
+    ['BINDING_SOURCE', w => { const producer=w.nodes.find(n => n.id === 'work'); producer.outputs_schema={type:'object',properties:{result:{type:'string'}},required:['result'],additionalProperties:false}; w.nodes.find(n => n.id === 'final').input_bindings={missing:'/nodes/work/output/missing'}; }],
     ['OUTPUT_BINDINGS', w => { w.output_bindings = { missing: '/nodes/missing/output/value' }; }],
     ['PATH_SCOPE', w => { Object.assign(w.nodes.find(n => n.id === 'work'), { access: 'bounded_write', path_scope: ['src/**'] }); }],
   ];
@@ -132,5 +133,13 @@ test('finite condition language has typed comparisons, JSON Pointer and short-ci
   assert.throws(() => evaluateExpression(expr('gt', literal('2'), literal(1)), {}), { code: 'CONDITION_TYPE' });
   assert.deepEqual(readPointer({ 'a/b': { '~': 3 } }, '/a~1b/~0'), { found: true, value: 3 });
   assert.throws(() => resolveBindings({ result: '/missing' }, {}), { code: 'BINDING_MISSING' });
+  assert.deepEqual({ ...resolveBindings({ result: { coalesce: ['/missing', '/present'] }, optional: { path: '/missing', default: '' } }, { present: 3 }) }, { result: 3, optional: '' });
+  assert.throws(() => resolveBindings({ result: { coalesce: ['/missing', '/also-missing'] } }, {}), { code: 'BINDING_MISSING' });
   assert.deepEqual(intersectBoundaries(['src', 'README.md'], ['src/lib', 'README.md', 'other']), ['README.md', 'src/lib']);
+});
+
+test('current validation rejects pre-declared context packs and legacy widening', () => {
+  const old = readyWorkflow(); delete old.context_projection_version; invalid(old, 'CONTEXT_PROJECTION_VERSION');
+  const widened = readyWorkflow(); widened.nodes.find(node => node.id === 'final').context_projection = { legacy_workflow_inputs: true, compatibility_reason: 'Historical compatibility.' };
+  invalid(widened, 'LEGACY_CONTEXT_PROJECTION');
 });

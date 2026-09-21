@@ -1,0 +1,7 @@
+{
+  "user_review": { "approved": false, "reviewer": "", "reviewed_at": "" },
+  "budget_approval": { "approval_id": "", "currency": "USD", "limit_micros": 0 },
+  "platform": { "kind": "wsl", "toolchain_id": "replace-with-reviewed-native-toolchain", "sandbox": "native", "launcher": { "executable": "C:\\Windows\\System32\\wsl.exe", "distribution": "Ubuntu" } },
+  "native_qualification_report": null,
+  "launch_intent": { "confirmed": false }
+}

@@ -16,6 +16,9 @@ import { initialRunState, advanceRun, graphInfo, setOutcome, interruptActiveNode
 import { resolveWorkflowPins } from './workflow-pins.mjs';
 import { childIdentity, childPermissions, validateChildClosure } from './workflow-subworkflow.mjs';
 import { planParallelBranches } from './parallel/branch-planner.mjs';
+import { mainSessionIdentity, sameMainSession } from './execution/main-session-adapter.mjs';
+import { hostToolContracts, validateHostToolReceipt } from './execution/host-tool-runner.mjs';
+import { recordUsage as commitUsage, reserveCost } from './workflow-cost-ledger.mjs';
 
 const CHILD_COMPLETION = Symbol('verified child completion');
 
@@ -213,10 +216,10 @@ export class WorkflowRuntime {
   }
   async recordExecutorEvent(runId, { node_id, attempt_id, lease_token, control_token, event }) {
     const fields = {
-      codex_event: ['method', 'thread_id', 'turn_id', 'item_type', 'status'],
-      tool_operation: ['call_id', 'tool', 'path', 'phase', 'sha256', 'before_sha256', 'after_sha256', 'entries', 'start_line', 'end_line', 'total_lines', 'bytes'],
+      codex_event: ['method', 'thread_id', 'turn_id', 'item_type', 'status', 'diagnostic'],
+      tool_operation: ['call_id', 'tool', 'root', 'path', 'phase', 'sha256', 'before_sha256', 'after_sha256', 'entries', 'start_line', 'end_line', 'total_lines', 'bytes', 'code', 'diagnostic', 'program', 'cwd', 'exit_code', 'signal', 'duration_ms'],
       profile_owned: ['home', 'executable_sha256', 'pid'],
-      session_state: ['status', 'code'],
+      session_state: ['status', 'code', 'diagnostic'],
       model_catalog: ['requested_model', 'requested_effort', 'inventory_count', 'match_count', 'effort_supported', 'model_ids'],
       result_proposed: ['artifact', 'sha256', 'final_acceptance_required'],
       skill_read: ['call_id', 'path'],
@@ -226,7 +229,7 @@ export class WorkflowRuntime {
       Object.values(event.metadata).every(value => value === null || typeof value === 'boolean' || typeof value === 'string' && value.length <= 4096 || Number.isSafeInteger(value)) &&
       Buffer.byteLength(canonicalJSON(event)) <= 32000,
       'EXECUTOR_EVENT_SCHEMA', 'Executor events accept bounded metadata only, never raw auth/model payloads');
-    if(event.kind==='tool_operation' && event.metadata.tool==='read_workflow_resource_range') {
+    if(event.kind==='tool_operation' && event.metadata.tool==='read_workflow_resource_range' && event.metadata.phase==='read') {
       const {start_line:start,end_line:end,total_lines:total,bytes}=event.metadata;
       requireValue([start,end,total,bytes].every(Number.isSafeInteger)&&start>=1&&end>=start&&end-start<200&&total>=end&&bytes>=0&&bytes<=32768,'EXECUTOR_EVENT_SCHEMA','Resource range evidence must contain bounded valid coverage');
     }
@@ -333,7 +336,15 @@ export class WorkflowRuntime {
       const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
       requireValue(definition.type !== 'subworkflow' || authority === CHILD_COMPLETION, 'CHILD_ACCEPTANCE_REQUIRED', 'SubWorkflow output must be collected from its exact accepted child Run');
       validateData(payload.structured_output, definition.outputs_schema);
-      if (['provider', 'thread'].includes(definition.executor?.kind)) requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Provider or Codex task-thread completion requires a persisted exact task identity');
+      if (['provider', 'thread'].includes(definition.executor?.kind) || definition.executor?.kind === 'main' && (state.constraints.require_main_session_identity === true || state.cost_ledger.budget || state.constraints.require_usage_ledger === true)) {
+        requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Semantic completion requires a persisted exact task identity');
+        if (state.cost_ledger.budget || state.constraints.require_usage_ledger === true) requireValue(state.cost_ledger.calls.find(item => item.call_id === attempt.dispatch.request_id)?.usage, 'USAGE_REQUIRED', 'Plan 1 semantic work needs recorded actual or explicitly unknown usage before completion');
+      }
+      if (definition.type === 'tool') requireValue(attempt.host_tool?.receipt?.status === 'succeeded', 'HOST_TOOL_RECEIPT_REQUIRED', 'Tool completion requires a successful exact host receipt');
+      if (definition.decision) {
+        const decision = definition.decision; const output = payload.structured_output;
+        requireValue(output && output.decision_id === decision.id && decision.options.includes(output.decision) && Array.isArray(output.references) && decision.required_references.every(reference => output.references.includes(reference)), 'DECISION_OUTPUT_INVALID', 'Semantic output does not satisfy its finite decision contract');
+      }
       if (definition.executor?.kind === 'thread') assertThreadCompletion(state, pins, attempt, payload);
       const permission = nodePermissions(definition, state);
       requireValue(!payload.outside_paths.length, 'SCOPE_VIOLATION', 'Completion reports writes outside the permitted scope');
@@ -341,6 +352,15 @@ export class WorkflowRuntime {
       requireValue(permission.access === 'bounded_write' || !changed.length, 'SCOPE_VIOLATION', 'Read-only node reports filesystem changes');
       const key = value => process.platform === 'win32' ? value.toLowerCase() : value;
       requireValue(changed.every(path => permission.allowed_paths.some(root => root === '.' || key(path) === key(root) || key(path).startsWith(key(root) + '/'))), 'SCOPE_VIOLATION', 'Changed paths exceed the exact execution envelope');
+      if (definition.decision && payload.structured_output.decision === 'blocked') {
+        node.output = payload.structured_output;
+        node.error = { code: 'WORKFLOW_NODE_BLOCKED', message: `Node ${definition.id} reported a blocked decision` };
+        attempt.status = 'failed'; attempt.finished_at = new Date().toISOString(); attempt.completion_hash = fingerprint; attempt.completion = payload; attempt.error = node.error;
+        setOutcome(state, graphInfo(pins.root.workflow), node_id, 'failed');
+        if (state.status === 'failed') interruptActiveNodes(state, 'Another node failed without a recovery edge');
+        else advanceRun(state, pins);
+        touch(state); return;
+      }
       if (node_id === pins.root.workflow.finalization.node_id) requireValue(definition.executor.kind === 'main' && attempt.owner === state.main_actor && payload.acceptance?.accepted === true, 'FINAL_ACCEPTANCE_REQUIRED', 'Finalization requires explicit main-agent acceptance');
       node.output = payload.structured_output; node.error = null;
       attempt.status = 'succeeded'; attempt.finished_at = new Date().toISOString(); attempt.completion_hash = fingerprint; attempt.completion = payload;
@@ -380,6 +400,11 @@ export class WorkflowRuntime {
         requireValue(reconciliation?.attempt_id === previous.id && reconciliation.dispatch_request_id === previous.dispatch.request_id && ['not_started', 'terminated', 'explicit_retry'].includes(reconciliation.outcome) && Array.isArray(reconciliation.evidence) && reconciliation.evidence.length, 'DISPATCH_RECONCILIATION_REQUIRED', 'Uncertain external work must be reconciled or explicitly retried with evidence');
         if (definition.executor?.kind === 'thread') requireValue(['not_started', 'terminated'].includes(reconciliation.outcome), 'THREAD_RECONCILIATION_REQUIRED', 'A task turn must be observed not started or terminated before retry; explicit retry cannot release a shared task lane');
         previous.reconciliation = structuredClone(reconciliation);
+      }
+      if (previous?.host_tool && (!previous.host_tool.receipt || previous.host_tool.receipt.status === 'timed_out')) {
+        requireValue(reconciliation?.attempt_id === previous.id && reconciliation.host_tool === previous.host_tool.tool && Array.isArray(reconciliation.evidence) && reconciliation.evidence.length, 'HOST_TOOL_RECONCILIATION_REQUIRED', 'A host tool with no durable receipt must be reconciled before retry');
+        requireValue(previous.host_tool.idempotency === 'safe' && reconciliation.outcome === 'safe_replay' || ['reconcile_required', 'non_idempotent'].includes(previous.host_tool.idempotency) && reconciliation.outcome === 'not_started', 'HOST_TOOL_RECONCILIATION_REQUIRED', 'Only the pinned host-tool idempotency mode may release a retry');
+        previous.host_tool.reconciliation = structuredClone(reconciliation);
       }
       for (const descendant of graph.visit(node_id)) {
         if (descendant === node_id) continue;
@@ -463,6 +488,12 @@ export class WorkflowRuntime {
       authorize(state, control_token); const { attempt } = attemptFor(state, node_id, attempt_id, lease_token);
       if (attempt.dispatch) { requireValue(attempt.dispatch.request_id === request_id && attempt.dispatch.envelope_hash === envelope_hash, 'DISPATCH_CONFLICT', 'Attempt already has a different dispatch intent'); return; }
       requireValue(state.status === 'running', 'RUN_NOT_RUNNING', 'Paused or terminal Runs cannot dispatch new external work');
+      const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
+      if (['main', 'provider', 'thread'].includes(definition?.executor?.kind)) {
+        const maximum = definition.cost?.maximum_micros ?? definition.decision?.budget?.maximum_micros ?? null;
+        if (state.constraints.require_usage_ledger === true) requireValue(maximum !== null, 'COST_RESERVATION_REQUIRED', 'Plan 1 usage accounting requires each semantic call to declare a worst-case cost');
+        reserveCost(state.cost_ledger, { call_id: request_id, node_id, attempt_id, maximum_micros: maximum });
+      }
       assertThreadDispatchAvailable(state, pins, node_id, attempt_id);
       attempt.dispatch = { request_id, envelope_hash, phase: 'intent', receipt: null, cancellation_pending: false }; touch(state);
     });
@@ -478,6 +509,11 @@ export class WorkflowRuntime {
       requireValue(attempt.dispatch?.request_id === request_id, 'DISPATCH_INTENT_MISSING', 'Receipt does not match a persisted dispatch intent');
       if (attempt.dispatch.receipt) { requireValue(canonicalJSON(attempt.dispatch.receipt) === serialized, 'DISPATCH_CONFLICT', 'Receipt differs from the exact previously recorded task'); return; }
       const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
+      if (definition?.executor?.kind === 'main' && (state.constraints.require_main_session_identity === true || state.cost_ledger.budget || state.constraints.require_usage_ledger === true)) {
+        const identity = mainSessionIdentity(receipt, state.main_actor);
+        if (state.main_session_identity) requireValue(sameMainSession(state.main_session_identity, identity), 'MAIN_SESSION_CHANGED', 'Main semantic work cannot implicitly start a new session or call chain');
+        else state.main_session_identity = identity;
+      }
       if (definition?.executor?.kind === 'thread') {
         assertThreadReceipt(state, definition.executor, receipt);
         assertThreadStartIdentity(state, definition, attempt_id, receipt);
@@ -486,6 +522,53 @@ export class WorkflowRuntime {
       if (node.active_attempt_id === attempt_id && node.status === 'claimed') { node.status = 'running'; attempt.status = 'running'; }
       else attempt.dispatch.cancellation_pending = true;
       touch(state);
+    });
+    return publicRun(result);
+  }
+
+  async recordUsage(runId, { node_id, attempt_id, lease_token, request_id, usage, control_token }) {
+    const result = await this.transition(runId, 'usage', state => {
+      authorize(state, control_token); const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });
+      requireValue(attempt.dispatch?.request_id === request_id, 'USAGE_CALL_MISSING', 'Usage must attach to an exact dispatched model call');
+      commitUsage(state.cost_ledger, request_id, usage); touch(state);
+    });
+    return publicRun(result);
+  }
+
+  async recordHostToolIntent(runId, { node_id, attempt_id, lease_token, control_token, contract, input }) {
+    const result = await this.transition(runId, 'host_tool_intent', (state, pins) => {
+      authorize(state, control_token); const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });
+      const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
+      requireValue(definition?.type === 'tool' && definition.executor?.kind === 'tool', 'HOST_TOOL_NODE', 'Only a pinned tool node may execute a host tool');
+      const expected = hostToolContracts(pins.root.workflow).get(definition.executor.tool);
+      requireValue(expected && canonicalJSON(expected) === canonicalJSON(contract), 'HOST_TOOL_CONTRACT', 'Host execution differs from the pinned tool contract');
+      const inputHash = digest(canonicalJSON(input));
+      if (attempt.host_tool) {
+        requireValue(attempt.host_tool.contract_sha256 === digest(canonicalJSON(contract)) && attempt.host_tool.input_sha256 === inputHash, 'HOST_TOOL_CONFLICT', 'Host tool attempt has different pinned input or contract'); return structuredClone(attempt.host_tool);
+      }
+      attempt.host_tool = { run_id: runId, node_id, attempt_id, tool: contract.id, contract_sha256: digest(canonicalJSON(contract)), input_sha256: inputHash,
+        input_summary: { keys: Object.keys(input ?? {}).sort(), bytes: Buffer.byteLength(canonicalJSON(input)) }, phase: 'intent', receipt: null, idempotency: contract.idempotency.mode }; touch(state);
+      return structuredClone(attempt.host_tool);
+    });
+    return { receipt: result.result, idempotent: result.idempotent ?? false, sequence: result.sequence };
+  }
+
+  async recordHostToolReceipt(runId, { node_id, attempt_id, lease_token, control_token, receipt }) {
+    validateHostToolReceipt(receipt);
+    const result = await this.transition(runId, 'host_tool_receipt', async (state, pins) => {
+      // Run cancellation fences completion but must still durably journal the
+      // qualified broker's exact termination receipt for the owned attempt.
+      authorize(state, control_token); const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });
+      const host = attempt.host_tool; requireValue(host && host.phase === 'intent', 'HOST_TOOL_INTENT_MISSING', 'Host receipt needs an exact prior intent');
+      requireValue(receipt.run_id === runId && receipt.node_id === node_id && receipt.attempt_id === attempt_id && receipt.tool === host.tool && receipt.contract_sha256 === host.contract_sha256 && receipt.input_sha256 === host.input_sha256, 'HOST_TOOL_RECEIPT', 'Host receipt differs from the exact Run/node/attempt/tool/input intent');
+      requireValue(Number.isFinite(Date.parse(receipt.started_at)) && Number.isFinite(Date.parse(receipt.finished_at)) && Date.parse(receipt.finished_at) >= Date.parse(receipt.started_at) && receipt.duration_ms >= 0, 'HOST_TOOL_RECEIPT', 'Host receipt timestamps are inconsistent');
+      if (receipt.status === 'succeeded') {
+        requireValue(receipt.output_ref.artifact === `executor-${attempt_id}-${receipt.output_ref.sha256}.json`, 'HOST_TOOL_RECEIPT', 'Host output reference must use the exact executor-result artifact identity');
+        const stored = await this.runs.readExecutorResult(runId, attempt_id, receipt.output_ref.sha256);
+        requireValue(stored?.kind === 'host_tool_output' && digest(canonicalJSON(stored.output)) === receipt.output_sha256, 'HOST_TOOL_OUTPUT_CORRUPT', 'Durable host output differs from its receipt digest');
+      }
+      if (host.receipt) { requireValue(canonicalJSON(host.receipt) === canonicalJSON(receipt), 'HOST_TOOL_CONFLICT', 'Host tool receipt differs from the prior exact receipt'); return; }
+      host.receipt = structuredClone(receipt); host.phase = 'received'; touch(state);
     });
     return publicRun(result);
   }

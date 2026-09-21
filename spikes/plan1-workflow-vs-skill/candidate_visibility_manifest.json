@@ -1,0 +1,16 @@
+{
+  "schema": "plan1-candidate-visibility-manifest-v1",
+  "status": "FROZEN_PENDING_WORKFLOW_REPUBLICATION",
+  "arms": ["N-main", "S-main", "W-control", "W-main"],
+  "execution_zone": ["task instructions", "legal inputs", "common public code", "common thin wrappers", "arm-authorized resources"],
+  "excluded_from_execution_zone": ["oracle", "hidden tests", "gold values", "hidden scorer", "immutable input originals", "other-arm packets", "source Skill files in Workflow arms", "Workflow definitions and resources in N-main or S-main"],
+  "arm_projection": {
+    "N-main": ["public task root"],
+    "S-main": ["public task root", "frozen source Skill packet"],
+    "W-control": ["public task root", "complete self-contained Workflow-native resource bundle"],
+    "W-main": ["public task root", "node-declared self-contained Workflow-native resources only"]
+  },
+  "public_task_root_manifest_sha256": "7f1437ed585b86b8609169073251e8e9bd09a6ffcba5921fd93fbff58dbd78c8",
+  "contamination_rule": "A session-log read or prompt reference to another arm's forbidden packet invalidates the run.",
+  "residual_information_register": []
+}

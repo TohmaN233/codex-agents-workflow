@@ -88,8 +88,8 @@ Skill credential scanning must distinguish literal values from code expressions,
 type annotations and shell templates. Preserve executable source bytes when no
 credential literal is present; true redactions remain visible Draft blockers.
 
-The v0.8.0 candidate is `plugins/codex-agents-workflow`; its control-plane package/server is
-0.5.0. Configuration v7 is activated through explicit transactional migration.
+The v1.0.0 candidate is `plugins/codex-agents-workflow`; its control-plane package/server is
+1.0.0. Configuration v7 is activated through explicit transactional migration.
 `default-config.json` remains the v6 migration seed and compatibility fixture;
 installation and tests must not migrate real user configuration automatically.
 Use the shipped Skill references for runtime terminology. Do not describe pending CI or release steps as complete.
@@ -109,6 +109,40 @@ reader only. A Codex task-thread handoff instead carries a bounded immutable UTF
 snapshot in its initial or continuation prompt. Binary or over-budget resources fail
 before task creation; the controller never leaks the content-addressed object root or
 derives a local/Markdown link by joining it with a logical resource ID.
+
+Execution envelopes project only declared `input_bindings` and pinned logical resource
+references. Full ancestor results are forbidden by default; a legacy projection needs
+an explicit bounded compatibility reason and is visible in the envelope. Standalone
+tool nodes require an exact pinned host-tool contract and registered identity; the
+host journals intent and exact receipt before accepting output. `workflow_drive`
+advances deterministic/control/host-tool work without dispatching semantic model work
+unless the compact application host explicitly selects the managed-native lane.
+In that lane the host, never the controller model, owns native child profile/thread/turn
+creation, Run/node/attempt/lease identity, exact model/effort, Run-resolved PATH,
+usage/effect observation, receipt persistence, completion and cancellation. Each child
+uses a fresh temporary CODEX_HOME with Skills, plugins, project instructions and
+delegation disabled; the child receives only its semantic prompt/resource snapshots and
+returns only its semantic output schema. Legacy granular `dispatch` retains its explicit
+handoff contract for external hosts, but compact `begin_main` must automatically cross
+managed native Provider nodes and expose only pending/terminal state or the next Main
+semantic packet. Do not reintroduce `spawn_config`, task names, agent IDs or completion
+envelopes into the controller model contract.
+For Workflows whose remaining semantic nodes stay on the main Agent, `begin_main` and
+`complete_main` are application-host APIs, never model tools. They preserve the
+same journaled prepare/start/drive/claim/dispatch/complete transitions. The host
+retains a private `host_binding` containing every Run/controller/lease field and
+projects only an `agent_packet` containing the current prompt, semantic form and
+declared resource texts. The model returns semantic values only; the host validates
+them, owns the strict journal envelope, finite-decision identity/references, observed
+effects, defaults and final acceptance form. New Skill conversions pin this boundary
+as `host_automation` in the Workflow definition. Do not widen the agent packet to
+full Run state or future-node resources, expose host-only operations in the model
+tool catalog, or replace the host lifecycle with repeated model-driven calls. A
+semantic `decision: "blocked"` or host-form `accepted: false` is a durable host
+failure and must not complete successfully or advance downstream nodes.
+When a Run enables its cost budget or main-session contract, it reserves declared
+worst-case semantic cost before dispatch, records actual or explicitly unknown usage,
+and requires one unchanged host-attested main session/call-chain identity.
 
 Provider bindings, approval semantics and non-glob path boundaries are user policy.
 No auto-enable, substitute Provider, implicit retry or Strict downgrade. Structural
@@ -255,6 +289,11 @@ pinned analysis/request.txt packet. Preserve intended source phases even when
 execution capabilities are missing; never substitute a blocker-only workflow or
 claim execution. Refer to pinned detailed instructions rather than copying them
 into every node. Review conversion semantics, not imported implementation quality.
+Deterministic semantics-preserving output canonicalization is a separate typed
+conversion requirement. Mark it compiled only when an exact pre-authorized host
+tool performs and journals the change before revalidation; otherwise retain it as
+agent-assisted or unsupported. Never spend a model retry on host-owned formatting
+or silently rewrite semantic content.
 The resource broker offers audited 1–200-line/32-KiB pinned reads for large
 references; partial reads report coverage and never establish full-file review.
 Generation progress exposes journal-derived round, model, elapsed stage time and
@@ -283,13 +322,48 @@ Missing, redacted, unsafe and source-linked resources remain conversion blockers
 .env.example/.env.template are data templates scanned for literal credentials; real
 credential files remain excluded. System /usr,/opt,/etc paths are runtime references.
 
-New automatic generation Runs pin review_contract_version=2. Generation and review
-share fourteen stable rule IDs. Review reports checks/evidence only; code computes
-the verdict and validates source ranges and graph-ID coverage. Checklist-only
-failures retry only the closed reviewer session within the pinned budget, preserving
-the accepted generator output. Semantic findings repair the graph. Both human
-acceptance and result application revalidate the checklist. Historical unversioned
-Runs retain their original approval contract; never reinterpret existing pins.
+Current automatic authoring Runs pin the conversion contract and use
+workflow-semantic-blueprint/v3. The planner emits only a fixed-shape semantic
+inventory: activities, approvals, named sequence/parallel/choice groups, semantic
+data, named nested data types, source dispositions and requirement assignments. It never emits Workflow
+nodes, edges, IDs, JSON Schema, JSON Pointers, bindings, providers, executors,
+permissions, retry settings, source spans, certificates or package fields. The Host
+validates the closed structured-output schema before the turn, resolves the semantic
+reference graph as a DAG, and deterministically generates every mechanical field.
+Activities that cite a pinned executable resource must describe structured outputs
+with named data types; coarse object/list declarations fail the semantic gate before
+review. The Host binds exactly source-mentioned supporting resources to their nodes,
+resolves named types without cycles and generates nested JSON Schema. Persisted v2
+blueprints are normalized mechanically rather than sent back to a model.
+Repeated choice targets and nested mutually exclusive exits converge without duplicate
+nodes; redundant semantic_rule_N assignments are discarded because semantic rules
+already own their activity mapping. For observed approval requirements, the Host may
+project only one source-grounded gate and its post-gate reachable operations. A
+`continues` hint becomes a task continuation only for a direct sequential edge between
+same-Provider isolated workers; the Host ignores every cross-main, cross-branch or
+cross-Provider hint and owns all lifecycle fields. Skill
+snapshots and ordinary Workflow briefs use separate source adapters but the same
+WorkflowForge compiler and review contract (`system.skill2workflow` and
+`system.build-workflow`). Brief-built task Workflows start Cooperative; Strict remains
+an explicit policy selection.
+
+Authoring has at most two planner attempts: the initial attempt and one semantic
+repair. Only meaning-level omission, contradiction, distortion, invalid semantic
+reference/ownership, or complete review findings may request that repair. JSON,
+schema, spelling/field, envelope, reviewer-protocol, authentication, transport and
+host/compiler failures consume no repair and stop visibly. Never retry a reviewer
+protocol failure, never ask a model to correct Host-owned formatting, and never
+classify an unknown infrastructure exception as a conversion finding. Both human
+acceptance and result application re-run the deterministic compiler and review gate.
+Historical pinned Runs retain their own contract.
+
+Workflow distribution uses the content-addressed `codex.workflow.package` format.
+Exported packages include package/API and Workflow-schema compatibility, an exact
+dependency manifest, immutable snapshot/resources and a whole-package digest.
+Installation accepts a local package or an explicit HTTPS URL (optionally pinned by
+download SHA-256), validates all identities before one atomic store creation, and
+never installs dependencies or silently rebinds Providers. Installed definitions may
+remain Draft/blocked until local dependencies are explicitly configured.
 
 The human editor separates publication from task launch. Publishing saves and
 validates using revision CAS; launch requires an already published clean revision.

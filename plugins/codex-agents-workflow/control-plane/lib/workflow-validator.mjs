@@ -2,12 +2,15 @@ import { informationalImportObservation } from './workflow-import-observations.m
 import { nativeBindingIssue } from './native-binding.mjs';
 import { NODE_TYPES, HUMAN_GATE_OUTPUT, validateWorkflowShape } from './workflow-schema.mjs';
 import { workflowId } from './workflow-paths.mjs';
-import { pathBoundaries, pointerParts, validateExpression } from './workflow-bindings.mjs';
+import { bindingPointers, pathBoundaries, pointerParts, validateExpression } from './workflow-bindings.mjs';
 import { validateDataSchema, validateData } from './workflow-data-schema.mjs';
 import { validateSkillReference, effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { skillPathKey } from './execution/codex-skill-policy.mjs';
 import { assertThreadExecutor } from './thread-handoff.mjs';
 import { threadLineage } from './thread-protocol.mjs';
+import { hostToolContracts } from './execution/host-tool-runner.mjs';
+import { validateNodeCost } from './workflow-cost-ledger.mjs';
+import { managedNativeResultSchema } from './execution/host-main-automation.mjs';
 
 const EXECUTED = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
 const SHA = /^[a-f0-9]{64}$/;
@@ -19,6 +22,9 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
   if (stack.length > 32) { issue('SUBWORKFLOW_DEPTH', 'SubWorkflow nesting limit exceeded'); return { valid: false, launch_ready: false, errors, blockers, order: [] }; }
   try { validateWorkflowShape(workflow); } catch (error) { issue(error.code ?? 'WORKFLOW_SCHEMA', error.message); return { valid: false, launch_ready: false, errors, blockers, order: [] }; }
   try { effectiveSkillPolicy(workflow.skill_policy); } catch (error) { issue(error.code, error.message); return { valid: false, launch_ready: false, errors, blockers, order: [] }; }
+  if (workflow.context_projection_version !== 2) issue('CONTEXT_PROJECTION_VERSION', 'Current Workflows must use declared-only context projection version 2');
+  let toolContracts = new Map();
+  try { toolContracts = hostToolContracts(workflow); } catch (error) { issue(error.code, error.message); }
   for (const key of ['inputs_schema', 'outputs_schema']) try { validateDataSchema(workflow[key] ?? {}); } catch (error) { issue(error.code, error.message, { field: key }); }
   const providers = new Map((context.providers ?? []).map(provider => [provider.id, provider]));
   const nodes = new Map(); const edges = new Map();
@@ -29,6 +35,9 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     else nodes.set(node.id, node);
     if (!NODE_TYPES.has(node.type)) issue('NODE_TYPE', 'Unsupported node type', { node_id: node.id });
     if (node.outputs_schema !== undefined) try { validateDataSchema(node.outputs_schema); } catch (error) { issue(error.code, error.message, { node_id: node.id }); }
+    if (['agent', 'skill_ref'].includes(node.type) && node.executor?.kind === 'provider' && providers.get(node.executor.provider_id)?.kind === 'native_agent') try {
+      managedNativeResultSchema(node);
+    } catch (error) { issue(error.code ?? 'AGENT_OUTPUT_SCHEMA', error.message, { node_id: node.id }); }
     if (node.type === 'human_gate' && node.outputs_schema !== undefined) {
       try { validateData(HUMAN_GATE_OUTPUT, node.outputs_schema); }
       catch { issue('HUMAN_GATE_OUTPUT', 'Human gates produce only {approved:true}; they do not collect custom response fields', { node_id: node.id }); }
@@ -123,7 +132,8 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (node.type === 'tool' && executor?.kind !== 'tool') issue('TOOL_EXECUTOR', 'Tool nodes require a tool executor', location);
       if (node.type === 'tool' && executor?.kind === 'tool') {
         if (typeof executor.tool !== 'string' || !executor.tool.trim() || executor.tool.length > 256) issue('TOOL_ID', 'Tool nodes must name an exact host tool', location);
-        else if (!(context.tools ?? []).includes(executor.tool)) issue('TOOL_UNAVAILABLE', 'Named host tool is unavailable', location, blockers);
+        else if (!toolContracts.has(executor.tool)) issue('TOOL_CONTRACT', 'Tool node needs an exact pinned host-tool contract', location);
+        else if (!(context.host_tools ?? []).includes(executor.tool)) issue('TOOL_UNAVAILABLE', 'Named host tool is unavailable', location, blockers);
       }
       if (node.type === 'human_gate' && executor?.kind !== 'human') issue('HUMAN_EXECUTOR', 'Human gates require a human executor', location);
       if ((node.type === 'subworkflow') !== (executor?.kind === 'subworkflow')) issue('SUBWORKFLOW_EXECUTOR', 'SubWorkflow nodes require their dedicated executor', location);
@@ -131,17 +141,48 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (node.type === 'skill_ref' && !['main', 'provider'].includes(executor?.kind)) issue('AGENT_EXECUTOR', 'SkillRef nodes require main or Provider execution', location);
       if (node.type === 'agent' && (typeof node.prompt_template !== 'string' || !node.prompt_template.trim())) issue('NODE_PROMPT', 'Agent requires instructions', location);
     }
+    function checkSchemaPath(schema, parts) {
+      let current = schema;
+      for (const part of parts) {
+        if (!object(current) || Object.keys(current).length === 0) return;
+        if (current.type === 'array') {
+          if (!/^\d+$/.test(part) || !current.items) throw new Error('Binding path is not declared by the producer output schema');
+          current = current.items; continue;
+        }
+        if (object(current.properties) && Object.hasOwn(current.properties, part)) { current = current.properties[part]; continue; }
+        if (object(current.additionalProperties)) { current = current.additionalProperties; continue; }
+        if (current.additionalProperties === false) throw new Error('Binding path is not declared by the producer output schema');
+        return;
+      }
+    }
     function checkPointer(pointer) {
       try {
         const parts = pointerParts(pointer);
-        if (parts[0] === 'inputs') return;
+        if (parts[0] === 'inputs') { checkSchemaPath(workflow.inputs_schema ?? {}, parts.slice(1)); return; }
         if (parts[0] !== 'nodes' || !nodes.has(parts[1]) || parts[2] !== 'output') throw new Error('Unknown binding source');
         if (parts[1] === node.id || !visit(parts[1]).has(node.id)) throw new Error('Binding must refer to an upstream producer');
         if (nodes.get(parts[1]).type === 'human_gate' && parts.length > 3 && !(parts.length === 4 && Object.hasOwn(HUMAN_GATE_OUTPUT, parts[3]))) throw new Error('Human gate output has only the approved field');
+        checkSchemaPath(nodes.get(parts[1]).outputs_schema ?? {}, parts.slice(3));
       } catch (error) { issue('BINDING_SOURCE', error.message, location); }
     }
-    if (node.input_bindings !== undefined && !object(node.input_bindings)) issue('BINDING_SCHEMA', 'Input bindings must be a map of JSON Pointers', location);
-    else for (const pointer of Object.values(node.input_bindings ?? {})) checkPointer(pointer);
+    if (node.input_bindings !== undefined && !object(node.input_bindings)) issue('BINDING_SCHEMA', 'Input bindings must be a map of JSON Pointers or bounded selectors', location);
+    else for (const binding of Object.values(node.input_bindings ?? {})) {
+      try { for (const pointer of bindingPointers(binding)) checkPointer(pointer); }
+      catch (error) { issue(error.code ?? 'BINDING_SCHEMA', error.message, location); }
+    }
+    if (node.context_projection !== undefined) {
+      const projection = node.context_projection;
+      if (!object(projection) || Object.keys(projection).some(key => !['legacy_ancestor_results', 'legacy_workflow_inputs', 'compatibility_reason'].includes(key)) || (projection.legacy_ancestor_results !== true && projection.legacy_workflow_inputs !== true) || typeof projection.compatibility_reason !== 'string' || !projection.compatibility_reason.trim() || projection.compatibility_reason.length > 512) issue('CONTEXT_PROJECTION', 'Legacy context is opt-in and needs an explicit bounded reason', location);
+      else if (workflow.context_projection_version === 2) issue('LEGACY_CONTEXT_PROJECTION', 'Declared-only Workflows cannot re-enable broad legacy context', location);
+    }
+    if (node.cost !== undefined) {
+      try { validateNodeCost(node.cost); } catch (error) { issue(error.code, error.message, location); }
+    }
+    if (node.decision !== undefined) {
+      const decision = node.decision;
+      if (!['agent', 'skill_ref'].includes(node.type) || !object(decision) || Object.keys(decision).some(key => !['id', 'options', 'required_references', 'budget'].includes(key)) || typeof decision.id !== 'string' || !/^[a-z][a-z0-9_-]{0,127}$/.test(decision.id) || !Array.isArray(decision.options) || decision.options.length < 1 || decision.options.length > 64 || decision.options.some(option => typeof option !== 'string' || !option || option.length > 128) || new Set(decision.options).size !== decision.options.length || !Array.isArray(decision.required_references) || decision.required_references.some(path => typeof path !== 'string' || !(node.resources ?? []).includes(path)) || new Set(decision.required_references).size !== decision.required_references.length) issue('DECISION_CONTRACT', 'Decision needs finite ID/options and references declared by this node', location);
+      else if (decision.budget !== undefined) try { validateNodeCost(decision.budget); } catch (error) { issue('DECISION_CONTRACT', error.message, location); }
+    }
     if (node.type === 'condition') {
       const labels = new Set();
       if (!Array.isArray(node.cases) || !node.cases.length) issue('CONDITION_CASES', 'Condition needs ordered cases', location);
@@ -246,8 +287,14 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
   }
   if (workflow.import_status !== undefined) {
     const imported = workflow.import_status;
-    if (!object(imported) || !['coarse', 'ai_expanded'].includes(imported.mode) || !Array.isArray(imported.unresolved)) issue('IMPORT_STATUS', 'Imported Workflow needs explicit dependency observations');
-    else if (imported.unresolved.some(i=>!informationalImportObservation(i))) issue('IMPORT_UNRESOLVED', 'Imported Workflow has unresolved resource, dependency or credential observations', { unresolved: imported.unresolved.filter(i=>!informationalImportObservation(i)) }, blockers);
+    if (!object(imported) || !['coarse', 'authored', 'ai_expanded'].includes(imported.mode) || !Array.isArray(imported.unresolved)) issue('IMPORT_STATUS', 'Source-backed Workflow needs explicit dependency observations');
+    else {
+      if (imported.unresolved.some(i=>!informationalImportObservation(i))) issue('IMPORT_UNRESOLVED', 'Imported Workflow has unresolved resource, dependency or credential observations', { unresolved: imported.unresolved.filter(i=>!informationalImportObservation(i)) }, blockers);
+      if (imported.mode === 'ai_expanded') {
+        if (!['fully_compiled','agent_assisted','unsupported'].includes(imported.conversion_level) || imported.conversion_contract_version !== 3 || !Array.isArray(imported.requirement_coverage)) issue('CONVERSION_STATUS', 'Expanded imports need the current versioned conversion level and requirement coverage');
+        else if (imported.conversion_level === 'unsupported') issue('CONVERSION_UNSUPPORTED', 'Required source behavior has no faithful runtime representation', { requirement_coverage: imported.requirement_coverage.filter(item => item.status === 'unsupported') }, blockers);
+      }
+    }
   }
   if (!workflow.enabled) issue('WORKFLOW_DISABLED', 'Workflow is disabled', {}, blockers);
   if (workflow.status !== 'ready') issue('WORKFLOW_DRAFT', 'Draft Workflow cannot start', {}, blockers);

@@ -1,4 +1,4 @@
 interface:
   display_name: "Codex Agents Workflow"
-  short_description: "Find and run Workflows for collaborative tasks"
-  default_prompt: "Use $workflow-control-plane to find a Workflow suited to my task, run its steps, and verify the result."
+  short_description: "Run or manage directly applicable Workflows"
+  default_prompt: "Use $workflow-control-plane to run a registered Workflow only if it directly matches my concrete task, or manage one without starting a Run."

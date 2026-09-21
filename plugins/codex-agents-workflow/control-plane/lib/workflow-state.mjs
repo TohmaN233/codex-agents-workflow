@@ -2,6 +2,7 @@ import { evaluateExpression, resolveBindings } from './workflow-bindings.mjs';
 import { validateData } from './workflow-data-schema.mjs';
 import { approvalBinding, bindingContext } from './workflow-execution-envelope.mjs';
 import { requireValue } from './workflow-paths.mjs';
+import { initialCostLedger } from './workflow-cost-ledger.mjs';
 
 export const FINISHED_NODES = new Set(['succeeded', 'failed', 'skipped', 'cancelled']);
 export const EXECUTOR_NODES = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
@@ -30,7 +31,8 @@ export function initialRunState({ runId, pinsHash, pins, inputs, permissions, co
     schema_version: 1, run_id: runId, workflow_id: pins.root.workflow.id, workflow_revision: pins.root.revision_hash,
     pins_hash: pinsHash, control_hash: controlHash, main_actor: mainActor, status: 'running',
     created_at: now, updated_at: now, inputs, permissions, constraints, require_approval: requireApproval,
-    pause_reason: null, error: null, approvals: {}, output: null,
+    pause_reason: null, error: null, approvals: {}, output: null, main_session_identity: null,
+    cost_ledger: initialCostLedger(constraints.cost_budget ?? null),
     parallel: {},
     nodes: Object.fromEntries(pins.root.workflow.nodes.map(node => [node.id, {
       status: 'pending', attempts: [], active_attempt_id: null, output: null, error: null,

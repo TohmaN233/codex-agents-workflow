@@ -20,6 +20,11 @@ export function migrateTaskType(taskType, providers) {
     skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] },
   };
   const mainId = taskType.stages.length ? 'final-acceptance' : 'main-task';
+  const commonBindings = {
+    task: { path: '/inputs/task', default: '' },
+    context: { path: '/inputs/context', default: '' },
+    verification: { path: '/inputs/verification', default: '' },
+  };
   const main = {
     id: mainId, type: 'agent', label: taskType.stages.length ? 'Final acceptance' : 'Main task',
     executor: { kind: 'main' }, role: 'finalizer',
@@ -28,17 +33,22 @@ export function migrateTaskType(taskType, providers) {
     prompt_template: taskType.stages.length
       ? 'Verify the completed workflow results against the task and evidence, resolve acceptance, and report the final outcome.\nTask: {{task}}\nContext: {{context}}\nConstraints: {{constraints}}\nVerification: {{verification}}'
       : 'Complete the task within the current Run permissions and verify the result.\nTask: {{task}}\nContext: {{context}}\nConstraints: {{constraints}}\nVerification: {{verification}}',
-    approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: {},
+    approval: { required: false }, retry: { max_attempts: 1 },
+    input_bindings: { ...commonBindings, ...(taskType.stages.length ? { result: `/nodes/${taskType.stages.at(-1).id}/output` } : {}) },
   };
-  workflow.nodes = [{ id: 'start', type: 'start' }, ...taskType.stages.map(stage => ({
+  workflow.nodes = [{ id: 'start', type: 'start' }, ...taskType.stages.map((stage, index) => ({
     id: stage.id, type: 'agent', label: stage.id, executor: { kind: 'provider', provider_id: stage.provider_id },
     role: stage.role, access: stage.access,
     ...(stage.access === 'bounded_write' ? { path_scope: { binding: 'run.allowed_paths' } } : {}),
     prompt_template: stage.template, approval: { required: stage.requires_user_approval },
-    retry: { max_attempts: 1 }, input_bindings: {},
+    retry: { max_attempts: 1 }, input_bindings: {
+      ...commonBindings,
+      ...(index ? { previous_result: `/nodes/${taskType.stages[index - 1].id}/output` } : {}),
+    },
   })), main, { id: 'end', type: 'end' }];
   workflow.edges = workflow.nodes.slice(0, -1).map((node, index) => edge(node.id, workflow.nodes[index + 1].id));
   workflow.finalization = { required: true, node_id: mainId };
+  workflow.requirements.providers = [...new Set(taskType.stages.map(stage => stage.provider_id))].sort();
   const checked = validateWorkflowGraph(workflow, { providers });
   requireValue(checked.valid, 'MIGRATION_TASK_TYPE', `Task Type ${taskType.id} cannot be migrated`, { task_type_id: taskType.id, validation: checked });
   return workflow;

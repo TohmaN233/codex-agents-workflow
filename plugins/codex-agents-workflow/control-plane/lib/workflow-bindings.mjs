@@ -16,12 +16,28 @@ export function readPointer(root, pointer) {
   return { found: true, value };
 }
 
+export function bindingPointers(binding) {
+  if (typeof binding === 'string') return [binding];
+  requireValue(binding && typeof binding === 'object' && !Array.isArray(binding), 'BINDING_SCHEMA', 'A binding must be a JSON Pointer or a bounded selector');
+  const keys = Object.keys(binding);
+  requireValue(keys.every(key => ['path', 'coalesce', 'default'].includes(key)), 'BINDING_SCHEMA', 'Binding selectors contain only path, coalesce and default');
+  const pointers = Object.hasOwn(binding, 'path') ? [binding.path] : binding.coalesce;
+  requireValue((Object.hasOwn(binding, 'path') ? 1 : 0) + (Object.hasOwn(binding, 'coalesce') ? 1 : 0) === 1,
+    'BINDING_SCHEMA', 'A binding selector needs exactly one path or coalesce list');
+  requireValue(Array.isArray(pointers) && pointers.length >= 1 && pointers.length <= 32, 'BINDING_SCHEMA', 'A coalesce binding needs 1 to 32 JSON Pointers');
+  for (const pointer of pointers) pointerParts(pointer);
+  if (Object.hasOwn(binding, 'default')) canonicalJSON(binding.default);
+  return pointers;
+}
+
 export function resolveBindings(bindings, context) {
   const output = Object.create(null);
-  for (const [name, pointer] of Object.entries(bindings ?? {})) {
-    const result = readPointer(context, pointer);
-    requireValue(result.found, 'BINDING_MISSING', `Required binding ${name} is unavailable`, { binding: name, pointer });
-    output[name] = result.value;
+  for (const [name, binding] of Object.entries(bindings ?? {})) {
+    const pointers = bindingPointers(binding);
+    const result = pointers.map(pointer => ({ pointer, ...readPointer(context, pointer) })).find(item => item.found && item.value !== undefined);
+    if (result) output[name] = result.value;
+    else if (typeof binding === 'object' && Object.hasOwn(binding, 'default')) output[name] = structuredClone(binding.default);
+    else requireValue(false, 'BINDING_MISSING', `Required binding ${name} is unavailable`, { binding: name, pointers });
   }
   return output;
 }

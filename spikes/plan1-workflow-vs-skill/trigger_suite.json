@@ -1,0 +1,27 @@
+{
+  "schema": "plan1-trigger-suite-v1",
+  "status": "DRAFT_PENDING_USER_CONFIRMATION",
+  "decision_contract": {
+    "run": "The prompt asks for a concrete end result that directly matches a Ready converted Workflow's declared purpose and required inputs are available.",
+    "no_run": "The prompt is planning, discussion, audit, comparison, experiment design, a plugin mention, or an unrelated/simple task.",
+    "need_input": "A matching concrete task lacks an input required by the Workflow schema."
+  },
+  "cases": [
+    { "id": "positive-crystallography", "expected": "run", "workflow_task": "crystallographic-wyckoff-position-analysis", "prompt": "Using the supplied CIF files, implement the requested Python function that returns Wyckoff multiplicities and representative rational coordinates." },
+    { "id": "positive-earthquake", "expected": "run", "workflow_task": "earthquake-plate-calculation", "prompt": "Using the supplied earthquake and plate GeoJSON files, find the Pacific Plate earthquake furthest from its boundary and write answer.json." },
+    { "id": "positive-lake", "expected": "run", "workflow_task": "lake-warming-attribution", "prompt": "Using the four supplied lake datasets, calculate the warming trend and dominant driver contribution and write the two required CSV files." },
+    { "id": "positive-video", "expected": "run", "workflow_task": "video-silence-remover", "prompt": "Remove the opening and long pauses from the supplied input video and produce the compressed video plus the required report." },
+    { "id": "negative-plan", "expected": "no_run", "workflow_task": null, "prompt": "为这个插件设计并冻结 Skill→Workflow 对比实验计划；现在不要执行任何 Workflow 或实验臂。" },
+    { "id": "negative-audit", "expected": "no_run", "workflow_task": null, "prompt": "审计 Workflow 的触发规则，并比较 Skill 与 Workflow 的适用边界；不要启动 Run。" },
+    { "id": "negative-plugin-mention", "expected": "no_run", "workflow_task": null, "prompt": "使用 Codex Agents Workflow 插件解释它有哪些能力，但不要执行或创建 Workflow。" },
+    { "id": "negative-simple", "expected": "no_run", "workflow_task": null, "prompt": "把 {\"b\":2,\"a\":1} 格式化为缩进两格的 JSON。" },
+    { "id": "missing-input", "expected": "need_input", "workflow_task": "crystallographic-wyckoff-position-analysis", "prompt": "请分析晶体的 Wyckoff 位置并实现函数；我还没有提供任何 CIF 文件。" }
+  ],
+  "acceptance": {
+    "false_positive_count": 0,
+    "positive_recall": 1.0,
+    "need_input_accuracy": 1.0,
+    "extra_model_router_calls": 0,
+    "note": "This small deterministic suite is a regression gate for the observed over-trigger, not a population-level G4 claim."
+  }
+}

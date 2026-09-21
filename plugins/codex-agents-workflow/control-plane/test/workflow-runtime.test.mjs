@@ -8,6 +8,7 @@ import { WorkflowRuntime } from '../lib/workflow-runtime.mjs';
 import { createDraft } from '../lib/workflow-schema.mjs';
 import { canonicalJSON, digest } from '../lib/workflow-revisions.mjs';
 import { decodeEvents } from '../lib/workflow-events.mjs';
+import { compilePrompt } from '../lib/workflow-executor.mjs';
 
 const agent = id => ({ id, type: 'agent', executor: { kind: 'main' }, role: 'implementer', access: 'read_only', prompt_template: '{{task}}', approval: { required: false }, retry: { max_attempts: 3 }, input_bindings: {} });
 const edge = (source, target, label) => ({ id: source + '-' + target, source, target, ...(label ? { label } : {}) });
@@ -62,10 +63,12 @@ test('executor event journal accepts narrow metadata under controller authority 
   await assert.rejects(f.runtime.recordExecutorEvent(run.run_id, { ...args, control_token: 'wrong' }), { code: 'RUN_AUTHORITY' });
   await assert.rejects(f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'codex_event', metadata: { authUrl: 'sensitive' } } }), { code: 'EXECUTOR_EVENT_SCHEMA' });
   await assert.rejects(f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'session_state', metadata: { status: { authUrl: 'sensitive' } } } }), { code: 'EXECUTOR_EVENT_SCHEMA' });
+  await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'tool_operation', metadata: { call_id: 'bad-range', tool: 'read_workflow_resource_range', path: 'source/SKILL.md', phase: 'rejected', code: 'CODEX_RESOURCE_RANGE', diagnostic: 'Requested range exceeds the host bound' } } });
+  await assert.rejects(f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'tool_operation', metadata: { call_id: 'bad-evidence', tool: 'read_workflow_resource_range', path: 'source/SKILL.md', phase: 'read' } } }), { code: 'EXECUTOR_EVENT_SCHEMA' });
   await f.runtime.recordExecutorEvent(run.run_id, args);
   await f.runtime.cancel(run.run_id, control(run));
   await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'session_state', metadata: { status: 'cancelled' } } });
-  const state = await f.runtime.get(run.run_id); assert.equal(state.status, 'cancelled'); assert.equal(state.nodes.work.attempts[0].executor_event_count, 2);
+  const state = await f.runtime.get(run.run_id); assert.equal(state.status, 'cancelled'); assert.equal(state.nodes.work.attempts[0].executor_event_count, 3);
   await assert.rejects(f.runtime.execution(run.run_id, args), { code: 'STALE_LEASE' });
 });
 
@@ -227,6 +230,25 @@ test('input and output contracts validate actual data, bind final output and rej
   const result = await complete(f, run, await claim(f, run, 'final'), {}, { acceptance: { accepted: true } }); assert.deepEqual(result.output, { count: 3 });
   const bad = definition(); bad.inputs_schema = { type: 'object', patternProperties: {} };
   await assert.rejects(f.store.save('example', bad, { expected_revision: (await f.store.snapshot('example')).revision_hash }), error => error.code === 'WORKFLOW_NOT_READY');
+});
+
+test('finite output contracts enforce safe patterns, exclusive minima and unique items', async t => {
+  const w=definition();w.nodes.find(n=>n.id==='work').outputs_schema={type:'object',required:['paths','duration'],properties:{paths:{type:'array',uniqueItems:true,items:{type:'string',pattern:'^edit/[^/]+[.]json$'}},duration:{type:'number',exclusiveMinimum:0}},additionalProperties:false};
+  const f=await fixture(t,w);const run=await f.start();const work=await claim(f,run,'work');
+  await assert.rejects(complete(f,run,work,{paths:['edit/a.json','edit/a.json'],duration:1}),{code:'DATA_INVALID'});
+  await assert.rejects(complete(f,run,work,{paths:['outside/a.json'],duration:1}),{code:'DATA_INVALID'});
+  await assert.rejects(complete(f,run,work,{paths:['edit/a.json'],duration:0}),{code:'DATA_INVALID'});
+  assert.equal((await complete(f,run,work,{paths:['edit/a.json'],duration:0.1})).nodes.work.status,'succeeded');
+  const unsafe=definition();unsafe.inputs_schema={type:'string',pattern:'^(a+)+$'};
+  await assert.rejects(f.store.save('example',unsafe,{expected_revision:(await f.store.snapshot('example')).revision_hash}),error=>error.code==='WORKFLOW_NOT_READY');
+});
+
+test('prompt compilation decodes serialized JSON bindings once instead of double escaping them', () => {
+  const proposal_json=JSON.stringify({items:Array.from({length:200},(_,index)=>({id:index,path:`edit/${index}.json`}))});
+  const envelope={prompt_template:'Review proposal_json.',inputs:{proposal_json},context_projection:{references:['analysis/request.txt']},constraints:{}};
+  const oldSize=envelope.prompt_template.length+canonicalJSON(envelope.inputs).length;
+  const prompt=compilePrompt(envelope,oldSize-100);
+  assert.match(prompt,/"proposal_json":\{"items":/);assert(!prompt.includes('\\"items\\"'));
 });
 
 

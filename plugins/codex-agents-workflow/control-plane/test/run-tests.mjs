@@ -43,6 +43,8 @@ const files = [
   'parallel-planner.test.mjs',
   'parallel-worktrees.test.mjs',
   'parallel-runtime.test.mjs',
+  'plan1-runtime.test.mjs',
+  'plan1-host-tools.test.mjs',
   'workflow-service.test.mjs',
   'strict-execution.test.mjs',
   'codex-tool-broker.test.mjs',
@@ -53,6 +55,7 @@ const files = [
   'strict-manager.test.mjs',
   'strict-session-view.test.mjs',
   'display-data.test.mjs',
+  'skill-routing-contract.test.mjs',
   'skill-import.test.mjs',
 ].map((name) => join(root, name));
 

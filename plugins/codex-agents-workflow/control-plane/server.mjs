@@ -8,6 +8,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { WorkflowService } from './lib/workflow-service.mjs';
 import { closeStrictManagers } from './lib/execution/strict-session-manager.mjs';
+import { closeManagedNativeManagers } from './lib/execution/managed-native-manager.mjs';
+import { plan1HostToolRegistry } from './lib/execution/plan1-host-tools.mjs';
 import { workflowToolDefinitions, WORKFLOW_TOOL_OPERATIONS } from './lib/workflow-tools.mjs';
 
 import {
@@ -31,7 +33,7 @@ import {
 const CONTROL_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = join(CONTROL_DIR, 'default-config.json');
 const WEB_DIR = join(CONTROL_DIR, 'web');
-const SERVER_VERSION = '0.5.0';
+const SERVER_VERSION = '1.0.0';
 const DEFAULT_CONSOLE_PORT = 58712;
 const MAX_HTTP_BODY = 8 * 1024 * 1024;
 
@@ -230,7 +232,7 @@ export async function startConsole({
       }
       if (url.pathname.startsWith('/api/workflow/') && req.method === 'POST') {
         const operation = url.pathname.slice('/api/workflow/'.length);
-        const service = new WorkflowService({ configPath, defaultConfigPath, env });
+        const service = new WorkflowService({ configPath, defaultConfigPath, env, capabilities: { hostToolRegistry: plan1HostToolRegistry() } });
         jsonResponse(res, 200, await service.call(operation, await readJsonBody(req), { human: true }));
         return;
       }
@@ -453,7 +455,7 @@ export async function handleRpc(request, {
         if (['workflow_create', 'workflow_save'].includes(name) && args.workflow?.status !== 'draft') {
           throw Object.assign(new Error('Model tool edits must remain Draft; publish the exact reviewed revision in the human console'), { code: 'HUMAN_PUBLICATION_REQUIRED' });
         }
-        const service = new WorkflowService({ configPath, defaultConfigPath, env, fetchImpl });
+        const service = new WorkflowService({ configPath, defaultConfigPath, env, fetchImpl, capabilities: { hostToolRegistry: plan1HostToolRegistry() } });
         const result = await service.call(name.slice('workflow_'.length), args);
         return { jsonrpc: '2.0', id, result: textToolResult(result) };
       }
@@ -648,7 +650,7 @@ async function main() {
       await scheduler.shutdown();
       await Promise.allSettled([...pendingWrites]);
       await stopConsole();
-      await closeStrictManagers();
+      await Promise.all([closeStrictManagers(), closeManagedNativeManagers()]);
       if (outputFailure) throw outputFailure;
       if (failures.length) throw failures[0];
     })();
@@ -689,7 +691,7 @@ if (isMain) {
   const shutdown = () => {
     if (shuttingDown) return; shuttingDown = true;
     const cleanup = activeStdioLifecycle?.requestShutdown?.()
-      || Promise.allSettled([stopConsole(), closeStrictManagers()]);
+      || Promise.allSettled([stopConsole(), closeStrictManagers(), closeManagedNativeManagers()]);
     cleanup.then((result) => {
       const failures = Array.isArray(result)
         ? result.filter(item => item.status === 'rejected')

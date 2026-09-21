@@ -1,0 +1,13 @@
+{
+  "task_id": "lake-warming-attribution",
+  "platform": "wsl-ubuntu-native",
+  "docker": false,
+  "network_during_task": false,
+  "oracle_exit": 0,
+  "verifier_exit": 0,
+  "verifier_passed": 2,
+  "verifier_total": 2,
+  "empty_counterexample_exit": 1,
+  "artifacts": ["/root/output/trend_result.csv", "/root/output/dominant_factor.csv"],
+  "status": "READY"
+}

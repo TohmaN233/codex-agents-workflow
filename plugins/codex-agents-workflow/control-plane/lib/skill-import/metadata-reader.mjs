@@ -7,6 +7,7 @@ const name = value => typeof value === 'string' && value.trim() && value.length 
 // Preserve the resource and an explicit Draft blocker instead of ignoring it.
 export function readDependencyMetadata(snapshot) {
   const requirements = { tools: [], mcp_servers: [], executables: [], environment: [] };
+  const tool_policy = { allowed: [] };
   const unresolved = []; const declarations = [];
   const issue = (code, path, field) => unresolved.push({ code, path, field, origin: 'declared' });
   const sources = [{ path: 'source/SKILL.md', data: snapshot.metadata }];
@@ -41,7 +42,7 @@ export function readDependencyMetadata(snapshot) {
     if (data['allowed-tools'] !== undefined) {
       const values = Array.isArray(data['allowed-tools']) ? data['allowed-tools'] : typeof data['allowed-tools'] === 'string' ? data['allowed-tools'].split(/\s+/).filter(Boolean) : null;
       if (!values || values.length > 128 || values.some(value => !name(value))) issue('INVALID_DEPENDENCY_METADATA', path, 'allowed-tools');
-      else { requirements.tools.push(...values); declarations.push({ path, kind: 'tools', names: values }); }
+      else { tool_policy.allowed.push(...values); declarations.push({ path, kind: 'allowed_tools', names: values }); }
     }
     if (data.dependencies === undefined) continue;
     if (!object(data.dependencies)) { issue('INVALID_DEPENDENCY_METADATA', path, 'dependencies'); continue; }
@@ -59,5 +60,6 @@ export function readDependencyMetadata(snapshot) {
       for (const extra of Object.keys(tool)) if (!['type', 'value', 'description', 'command', 'url', 'transport'].includes(extra)) issue('METADATA_FIELD_REQUIRES_REVIEW', path, field + '.' + extra);
     }
   }
-  return { requirements, unresolved, declarations };
+  tool_policy.allowed = [...new Set(tool_policy.allowed)].sort();
+  return { requirements, tool_policy, unresolved, declarations };
 }

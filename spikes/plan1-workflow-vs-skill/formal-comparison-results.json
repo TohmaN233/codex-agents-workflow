@@ -1,0 +1,27 @@
+{
+  "schema": "plan1-formal-comparison-summary/v1",
+  "completed_at": "2026-09-20T14:03:11.8180090Z",
+  "status": "TERMINAL",
+  "model": "gpt-5.6-terra",
+  "thinking": "medium",
+  "runs": 40,
+  "arms": {
+    "N-main": { "runs": 12, "mean_score": 0.3778, "strict_passes": 0, "mean_total_tokens": 573982, "total_tokens": 6887788 },
+    "S-main": { "runs": 12, "mean_score": 0.9722, "strict_passes": 9, "mean_total_tokens": 527807, "total_tokens": 6333679 },
+    "W-main": { "runs": 12, "mean_score": 0.9618, "strict_passes": 8, "mean_total_tokens": 301309, "total_tokens": 3615709 },
+    "W-control": { "runs": 4, "mean_score": 0.9722, "strict_passes": 3, "mean_total_tokens": 419006, "total_tokens": 1676026 }
+  },
+  "comparisons": {
+    "W-main_vs_S-main": { "mean_score_difference": -0.0104, "mean_total_token_reduction": 0.429 },
+    "W-main_vs_N-main": { "mean_score_difference": 0.5840, "mean_total_token_reduction": 0.475 },
+    "W-main_vs_W-control": { "mean_total_token_reduction": 0.281 }
+  },
+  "tasks": [
+    { "id": "crystallographic-wyckoff-position-analysis", "S-main": { "mean_score": 1.0, "mean_total_tokens": 451650 }, "W-main": { "mean_score": 1.0, "mean_total_tokens": 216391 }, "W-main_token_reduction": 0.521 },
+    { "id": "earthquake-plate-calculation", "S-main": { "mean_score": 1.0, "mean_total_tokens": 405055 }, "W-main": { "mean_score": 0.9583, "mean_total_tokens": 248416 }, "W-main_token_reduction": 0.387 },
+    { "id": "lake-warming-attribution", "S-main": { "mean_score": 1.0, "mean_total_tokens": 538002 }, "W-main": { "mean_score": 1.0, "mean_total_tokens": 333052 }, "W-main_token_reduction": 0.381 },
+    { "id": "video-silence-remover", "S-main": { "mean_score": 0.8889, "mean_total_tokens": 716519 }, "W-main": { "mean_score": 0.8889, "mean_total_tokens": 407378 }, "W-main_token_reduction": 0.431 }
+  ],
+  "measurement": "Codex thread_token_usage.total_tokens including cached input tokens",
+  "scope": "Four implementation-qualified task case studies; not a universal claim for every Skill"
+}

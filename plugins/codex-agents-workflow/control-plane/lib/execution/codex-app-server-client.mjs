@@ -49,6 +49,9 @@ export function createCodexClient(binary, { home, cwd, overrides = [], env = pro
             write({ id: message.id, result }); return;
           }
           if (message.method !== 'item/tool/call' || !onToolCall) throw new Error('Unexpected interactive App Server request');
+          // Interactive tool requests are agent activity even though request
+          // bodies are deliberately kept out of the retained event log.
+          for (const waiter of [...eventWaiters]) waiter.matches(message);
           const result = await onToolCall(message.params);
           write({ id: message.id, result });
           return;
@@ -86,18 +89,31 @@ export function createCodexClient(binary, { home, cwd, overrides = [], env = pro
       });
     },
     initialized() { if (fatal) throw fatal; write({ method: 'initialized' }); },
-    waitFor(matches, { after = 0, timeout = 60000 } = {}) {
+    waitFor(matches, { after = 0, timeout = 60000, activity } = {}) {
       if (fatal) return Promise.reject(fatal);
       const found = events.slice(after).find(matches);
       if (found) return Promise.resolve(found);
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => waiter.reject(new Error('App Server event deadline')), timeout);
+        let timer;
+        const arm = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => {
+            const error = new Error(activity ? 'App Server event inactivity deadline' : 'App Server event deadline');
+            if (activity) error.code = 'APP_SERVER_INACTIVITY_TIMEOUT';
+            waiter.reject(error);
+          }, timeout);
+        };
         const waiter = {
-          matches,
+          matches: message => {
+            if (matches(message)) return true;
+            if (activity?.(message)) arm();
+            return false;
+          },
           resolve: value => { clearTimeout(timer); eventWaiters.delete(waiter); resolve(value); },
           reject: error => { clearTimeout(timer); eventWaiters.delete(waiter); reject(error); },
         };
         eventWaiters.add(waiter);
+        arm();
       });
     },
     async close() {

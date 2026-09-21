@@ -112,7 +112,7 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
       {currentLogin && Object.entries(currentLogin).filter(([key,value]) => /url/i.test(key) && typeof value === 'string' && /^https?:\/\//.test(value)).map(([key,value]) => <a key={key} href={String(value)} target="_blank" rel="noreferrer">{t('打开官方登录页面', 'Open the official sign-in page')}</a>)}
       {result && <Details title={t('最近一次操作结果', 'Most recent operation result')} value={result}/>}
       {token && ['succeeded','failed','cancelled'].includes(state.status) && <button onClick={() => call('cleanup_parallel')}>{t('清理已验收且未变化的工作树', 'Clean up accepted, unchanged worktrees')}</button>}
-      {state.status === 'succeeded' && pack.provenance?.kind === 'skill_expansion_job' && token && <button onClick={() => call('apply_expansion_result', { workflow_id: pack.provenance.source_workflow_id, expected_revision: pack.provenance.source_revision })}>{t('将验收后的规划应用到源 Draft', 'Apply the accepted plan to the source Draft')}</button>}
+      {state.status === 'succeeded' && ['authoring_workflow_run','skill_expansion_job'].includes(pack.provenance?.kind) && token && <button onClick={() => call('apply_authoring_result', { workflow_id: pack.provenance.source_workflow_id, expected_revision: pack.provenance.source_revision })}>{t('将验收后的规划应用到源 Draft', 'Apply the accepted plan to the source Draft')}</button>}
       <Details title={t('运行事件（后端日志）', 'Run events (backend log)')} value={events}/>
     </aside></div></div>;
 }

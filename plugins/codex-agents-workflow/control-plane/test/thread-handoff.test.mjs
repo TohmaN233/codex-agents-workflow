@@ -56,16 +56,20 @@ test('thread handoffs carry resolved scope on starts and permission updates on c
   assert.equal('target' in continuation, false);
 });
 
-test('execution envelopes distinguish thread snapshots from the audited non-thread reader', () => {
+test('execution envelopes distinguish thread/main snapshots from the managed Provider resource broker', () => {
   const thread = envelopeFor({ id: 'work', type: 'agent', executor: { kind: 'thread', provider_id: provider.id, lifecycle: 'start' }, access: 'read_only', resources: ['source/SKILL.md'] });
   assert.deepEqual(thread.resource_access, { reader: 'thread_snapshot', paths: ['source/SKILL.md'] });
   assert.match(thread.prompt_template, /immutable UTF-8 snapshots/);
   assert.doesNotMatch(thread.prompt_template, /read_workflow_resource/);
   assert.equal(thread.thread.protocol_version, 2);
 
-  const nonThread = envelopeFor({ id: 'work', type: 'agent', executor: { kind: 'main' }, access: 'read_only', resources: ['source/SKILL.md'] });
-  assert.deepEqual(nonThread.resource_access, { reader: 'read_workflow_resource', paths: ['source/SKILL.md'] });
-  assert.match(nonThread.prompt_template, /read_workflow_resource/);
+  const main = envelopeFor({ id: 'work', type: 'agent', executor: { kind: 'main' }, access: 'read_only', resources: ['source/SKILL.md'] });
+  assert.deepEqual(main.resource_access, { reader: 'host_inline_snapshot', paths: ['source/SKILL.md'] });
+  assert.match(main.prompt_template, /agent_packet\.resources/);
+
+  const managed = envelopeFor({ id: 'work', type: 'agent', executor: { kind: 'provider', provider_id: provider.id }, access: 'read_only', resources: ['source/SKILL.md'] });
+  assert.deepEqual(managed.resource_access, { reader: 'read_workflow_resource', paths: ['source/SKILL.md'] });
+  assert.match(managed.prompt_template, /read_workflow_resource/);
 });
 
 test('v2 handoffs expose the dispatch marker and preserve the user result schema', () => {

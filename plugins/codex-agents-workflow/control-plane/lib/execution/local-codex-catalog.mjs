@@ -38,7 +38,7 @@ export async function localCodexCatalog({env=process.env,extra=[],clientFactory=
   const overrides=Object.entries(STRICT_SETTINGS).filter(([key])=>key!=='cli_auth_credentials_store').map(([key,value])=>key+' = '+JSON.stringify(value));
   const client=clientFactory(source.binary,{home,cwd:home,env:isolatedEnvironment(env,home),overrides,catalogOnly:true});
   try {
-    await client.call('initialize',{clientInfo:{name:'codex_workflow_catalog',version:'0.8.0'},capabilities:{experimentalApi:true}});client.initialized();
+    await client.call('initialize',{clientInfo:{name:'codex_workflow_catalog',version:'1.0.0'},capabilities:{experimentalApi:true}});client.initialized();
     const account=await client.call('account/read',{refreshToken:false});
     requireValue(account?.account || account?.requiresOpenaiAuth===false,'HOST_AUTH_UNAVAILABLE','Existing local Codex login is unavailable; no login page was opened');
     const models=[],seen=new Set();let cursor;

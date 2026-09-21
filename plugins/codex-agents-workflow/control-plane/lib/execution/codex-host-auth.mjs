@@ -30,7 +30,7 @@ export function createHostAuthBroker({ binary, cwd, env = process.env, clientFac
       .map(([key, value]) => `${key} = ${JSON.stringify(value)}`);
     const client = clientFactory(binary, { home, cwd, env: isolatedEnvironment(env, home), overrides, credentialOnly: true });
     try {
-      await client.call('initialize', { clientInfo: { name: 'codex_workflow_host_auth', version: '0.8.0' }, capabilities: { experimentalApi: true } }); client.initialized();
+      await client.call('initialize', { clientInfo: { name: 'codex_workflow_host_auth', version: '1.0.0' }, capabilities: { experimentalApi: true } }); client.initialized();
       cached = decodeHostAccess(await client.call('getAuthStatus', { includeToken: true, refreshToken: true }), { now: now() });
       return cached;
     } finally { await client.close(); }

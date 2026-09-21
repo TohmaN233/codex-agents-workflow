@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: "Coordinate native subagents when the user requests delegation or a task benefits from implementation and independent review, and no suitable registered Workflow applies. Use workflow-control-plane first for existing Workflows."
+description: "Coordinate native subagents when the user requests delegation or a concrete execution task benefits from implementation and independent review, and no directly matching registered Workflow applies. Planning or discussing Workflows does not require a Workflow Run."
 ---
 
 # Codex Agents Workflow Orchestration

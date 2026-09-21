@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { prepareTaskInputs, generateTaskBrief } from './task-inputs.mjs';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
 import { readFile } from 'node:fs/promises';
-import { advanceGeneration, acceptGeneration, loginGeneration } from './skill-import/generation.mjs';
+import { advanceGeneration, acceptGeneration, loginGeneration, recheckGenerationProposal, acceptRecheckedGenerationReview } from './skill-import/generation.mjs';
 import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
 import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
@@ -21,11 +21,15 @@ import { resolveLegacyWorkflowRequest } from './legacy-control-adapter.mjs';
 import { connectorRegistryFor } from '../connectors/registry.mjs';
 import { requireValue, insideRoot, noSymlinks, ensureDirectory, workflowId } from './workflow-paths.mjs';
 import { importCoarseSkill, verifyCoarseRelocation } from './skill-import/coarse-compiler.mjs';
-import { expansionPacket, applyExpansion } from './skill-import/semantic-expander.mjs';
+import { expansionPacket, applyExpansion, compileExpansion } from './skill-import/semantic-expander.mjs';
+import { requireCurrentConversionCertificate } from './skill-import/conversion-certificate.mjs';
 import { buildProviderAdapter } from './providers.mjs';
 import { strictManagerFor } from './execution/strict-session-manager.mjs';
+import { managedNativeManagerFor } from './execution/managed-native-manager.mjs';
 import { importReviewPacket, reviewImportedDraft } from './skill-import/review-import.mjs';
-import { expansionRunPack } from './skill-import/expansion-run.mjs';
+import { authoringRunPack, decodeGeneratedEnvelope, decodeGeneratedProposal } from './skill-import/expansion-run.mjs';
+import { SEMANTIC_BLUEPRINT_CONTRACT, SEMANTIC_REPAIR_CONTRACT } from './authoring/blueprint-contract.mjs';
+import { validateGenerationProposal } from './skill-import/proposal-validation.mjs';
 import { SkillInventory } from './skill-import/inventory.mjs';
 import { discoverCodexSkills } from './skill-import/codex-inventory.mjs';
 import { resolveWorkflowPins } from './workflow-pins.mjs';
@@ -40,6 +44,13 @@ import { nodePermissions } from './workflow-execution-envelope.mjs';
 import { effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { nodeWorkspace } from './parallel/workspace.mjs';
 import { skillSourceStatus } from './skill-import/source-status.mjs';
+import { HostToolRunner, hostToolBindingIssues, requireHostToolBindings } from './execution/host-tool-runner.mjs';
+import { plan1HostToolRegistry } from './execution/plan1-host-tools.mjs';
+import { WorkflowDrive } from './workflow-drive.mjs';
+import { hostCompletionEnvelope } from './execution/host-main-automation.mjs';
+import { WorkflowAuthoringCompiler } from './skill-import/workflow-authoring.mjs';
+import { exportWorkflowPackage, installWorkflowPackage } from './workflow-package.mjs';
+import { AUTHORING_WORKFLOWS, isAuthoringRunProvenance } from './authoring/authoring-workflows.mjs';
 
 function inventorySelection(service, args) {
   requireValue(args.discovery === undefined || ['folders','host'].includes(args.discovery), 'SKILL_DISCOVERY_MODE', 'Discovery mode must be folders or host');
@@ -64,22 +75,33 @@ async function recoverControllerTree(strictManager, runtime, args) {
 export class WorkflowService {
   constructor({ configPath, defaultConfigPath, env = process.env, fetchImpl = globalThis.fetch, registry, capabilities = {} }) {
     this.configPath = resolve(configPath); this.defaultConfigPath = defaultConfigPath; this.env = env; this.fetchImpl = fetchImpl;
-    this.registry = registry ?? connectorRegistryFor({ configPath: this.configPath, env }); this.capabilities = capabilities;
+    this.registry = registry ?? connectorRegistryFor({ configPath: this.configPath, env });
+    // Built-in host contracts are part of the control plane, not an optional
+    // server decoration. CLI helpers, validation scripts and the web console
+    // must therefore observe the same launch/validation context.
+    this.capabilities = { ...capabilities, hostToolRegistry: capabilities.hostToolRegistry ?? plan1HostToolRegistry() };
+    this.hostExecutions = capabilities.hostExecutions ?? new Map();
     this.strictManager = capabilities.strictManager ?? strictManagerFor({ configPath: this.configPath, getConfig: () => this.config(), env });
+    this.managedNativeManager = capabilities.managedNativeManager ?? managedNativeManagerFor({ configPath: this.configPath, getConfig: () => this.config(), env });
     this.parallelManager = capabilities.parallelManager ?? parallelManagerFor({ configPath: this.configPath, env });
     this.folderInventory = new SkillInventory(folder => discoverFolderSkills(folder, {env}));
     this.skillInventory = capabilities.skillInventory ?? new SkillInventory(async workspace => discoverCodexSkills(workspace, { config: await this.config(), env }));
   }
   async config() { return loadConfig({ configPath: this.configPath, defaultConfigPath: this.defaultConfigPath }); }
   async validationContext(store, workflow, context) {
-    const initial = validateWorkflowGraph(workflow, context);
+    const addHostBindingErrors = validation => {
+      const errors = hostToolBindingIssues(workflow, this.capabilities.hostToolRegistry ?? {});
+      if (!errors.length) return validation;
+      return { ...validation, valid: false, launch_ready: false, errors: [...validation.errors, ...errors] };
+    };
+    const initial = addHostBindingErrors(validateWorkflowGraph(workflow, context));
     const deferred = new Set(['SKILL_MISSING', 'SKILL_STALE', 'SUBWORKFLOW_MISSING', 'SUBWORKFLOW_INVALID']);
     if (initial.errors.some(error => !deferred.has(error.code))) return { context, validation: initial };
     try {
       const root = { workflow, resources: [], revision_hash: digest(canonicalJSON(workflow)) };
       const closure = await resolveWorkflowPins(store, root, { rootResources: {} });
       const resolved = { ...context, ...closure.context };
-      return { context: resolved, validation: validateWorkflowGraph(workflow, resolved) };
+      return { context: resolved, validation: addHostBindingErrors(validateWorkflowGraph(workflow, resolved)) };
     } catch (error) {
       return { context, validation: { valid: false, launch_ready: false, errors: [{ code: error.code ?? 'DEPENDENCY_RESOLUTION_FAILED', message: error.message }], blockers: [], order: [] } };
     }
@@ -91,7 +113,15 @@ export class WorkflowService {
     // Provider authority always comes from the actual user config, never probes.
     context.providers = config.providers;
     context.environment = Object.keys(this.env).filter(key => Boolean(this.env[key]));
-    context.tools = [...new Set([...(context.tools ?? []), 'read_workflow_resource'])];
+    // A host tool is one capability with one stable name.  Expose registered
+    // broker IDs in both places: `host_tools` validates executable pinned
+    // contracts while `tools` satisfies the Workflow requirement declaration.
+    // Keeping two unrelated lists previously let a fixture validate under one
+    // spelling but fail launch-readiness under the other.
+    const registeredHostTools = Object.keys(this.capabilities.hostToolRegistry ?? {});
+    const availableHostTools = [...new Set([...(context.host_tools ?? []), ...(this.capabilities.host_tools ?? []), ...registeredHostTools])];
+    context.host_tools = availableHostTools;
+    context.tools = [...new Set([...(context.tools ?? []), 'read_workflow_resource', ...availableHostTools])];
     const storeRoot = insideRoot(dirname(this.configPath), join(dirname(this.configPath), config.workflow_store.relative_path));
     await noSymlinks(storeRoot); // A missing migrated generation is corruption, not an empty new library.
     const store = await new WorkflowStore(storeRoot, { validationContext: context }).initialize();
@@ -100,17 +130,19 @@ export class WorkflowService {
       strictCapability: this.capabilities.strictCapability ?? (async (pack, closure) => { await this.strictManager.capability(pack, config.providers, closure?.skills); return true; }),
       ...(this.capabilities.parallelWriteCapability ? { parallelWriteCapability: this.capabilities.parallelWriteCapability } : {}),
     }).initialize();
-    const executor = new WorkflowExecutor({ runtime, getConfig: () => this.config(), registry: this.registry, strictManager: this.strictManager, env: this.env, fetchImpl: this.fetchImpl });
-    return { config, context, store, runtime, executor };
+    const executor = new WorkflowExecutor({ runtime, getConfig: () => this.config(), registry: this.registry, strictManager: this.strictManager, managedNativeManager: this.managedNativeManager,
+      hostToolRunner: this.capabilities.hostToolRunner ?? new HostToolRunner({ registry: this.capabilities.hostToolRegistry ?? {}, env: this.env }), hostExecutions: this.hostExecutions, env: this.env, fetchImpl: this.fetchImpl });
+    return { config, context, store, runtime, executor, drive: new WorkflowDrive({ runtime, executor, store }) };
   }
   async call(operation, args = {}, { human = false } = {}) {
     if (operation === 'migrate_v6') { requireValue(human, 'HUMAN_CONFIGURATION_REQUIRED', 'Migration is a user-owned console action'); await this.config(); return migrateV6OnDisk({ configPath: this.configPath }); }
     if (operation === 'restore_v6') { requireValue(human, 'HUMAN_CONFIGURATION_REQUIRED', 'Backup restoration is a user-owned console action'); return restoreV6Backup({ configPath: this.configPath, expected_current_sha256: args.expected_current_sha256 }); }
     const conversationalRecovery = operation === 'recover_control' ? conversationControlRecoveryRequest(args) : null;
-    const { config, context, store, runtime, executor } = await this.open();
-    if (['start', 'claim_node', 'dispatch', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
+    const { config, context, store, runtime, executor, drive } = await this.open();
+    if (['start', 'begin_main', 'complete_main', 'claim_node', 'dispatch', 'drive', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     switch (operation) {
       case 'presets': return structuredClone(WORKFLOW_PRESETS);
+      case 'authoring_workflows': return structuredClone(AUTHORING_WORKFLOWS);
       case 'install_preset': {
         requireValue(human,'HUMAN_PRESET_INSTALL','Add presets from the authenticated console');
         requireValue(WORKFLOW_PRESETS.some(p=>p.id===args.preset_id),'WORKFLOW_PRESET_MISSING','Unknown Workflow preset');
@@ -119,6 +151,22 @@ export class WorkflowService {
         const rules=await loadRoutingSettings(dirname(this.configPath),config.providers);
         const workflow=createWorkflowPreset(args.preset_id,config.providers,rules);
         return store.create(workflow,{provenance:{kind:'bundled_preset',preset_id:args.preset_id}});
+      }
+      case 'export_workflow_package': {
+        const pack=await store.snapshot(args.workflow_id,args.revision_hash);
+        return exportWorkflowPackage(pack,await store.resources(pack.workflow.id,pack.revision_hash),{packageVersion:args.package_version ?? '1.0.0'});
+      }
+      case 'install_workflow_package': {
+        requireValue(human,'HUMAN_WORKFLOW_INSTALL','Workflow package installation belongs to the authenticated console');
+        let bundle=args.package;
+        if(args.source_url){
+          const url=new URL(args.source_url);requireValue(url.protocol==='https:','WORKFLOW_PACKAGE_URL','Remote Workflow packages require HTTPS');
+          const response=await this.fetchImpl(url,{redirect:'error'});requireValue(response.ok,'WORKFLOW_PACKAGE_FETCH',`Workflow package fetch failed with HTTP ${response.status}`);
+          const bytes=Buffer.from(await response.arrayBuffer());requireValue(bytes.length<=70*1024*1024,'WORKFLOW_PACKAGE_LIMIT','Remote Workflow package exceeds the bounded limit');
+          if(args.expected_sha256)requireValue(digest(bytes)===args.expected_sha256,'WORKFLOW_PACKAGE_FETCH_INTEGRITY','Downloaded Workflow package differs from the expected digest');
+          try{bundle=JSON.parse(bytes.toString('utf8'));}catch{requireValue(false,'WORKFLOW_PACKAGE_JSON','Remote Workflow package is not valid JSON');}
+        }
+        return installWorkflowPackage(store,bundle,{source:args.source_url ?? 'local-package'});
       }
       case 'generate_task_brief': {
         requireValue(human,'HUMAN_TASK_BRIEF','Task description generation belongs to the human console');
@@ -134,17 +182,19 @@ export class WorkflowService {
         requireValue(human,'HUMAN_CACHE_CLEANUP','Cache cleanup belongs to the human console');
         return cleanupCaches({store,runs:runtime.runs,home:this.env.CODEX_HOME || join(homedir(),'.codex'),auditRoot:dirname(this.configPath),env:this.env,preview:operation==='cache_cleanup_preview'});
       }
-      case 'generation_prompt_preview': {
+      case 'generation_prompt_preview': // persisted client compatibility
+      case 'authoring_prompt_preview': {
         requireValue(human,'HUMAN_GENERATION','Prompt preview belongs to the console');
         const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
         const provider=config.providers.find(p=>p.id===(args.provider_id || rules.generation?.planner_provider_id || rules.routes.planning.provider_id));
         const reviewerId=rules.generation?.review_provider_id ?? 'native-generation-reviewer';
         const reviewer=config.providers.find(p=>p.id===reviewerId) ?? (reviewerId==='native-generation-reviewer'?JSON.parse(await readFile(this.defaultConfigPath,'utf8')).providers.find(p=>p.id===reviewerId):null);
         const pack=await store.snapshot(args.workflow_id,args.revision_hash);
-        const job=expansionRunPack(pack,await store.resources(args.workflow_id,pack.revision_hash),provider,'generation-preview',rules,true,reviewer,config.providers);
+        const job=authoringRunPack(pack,await store.resources(args.workflow_id,pack.revision_hash),provider,'generation-preview',rules,true,reviewer,config.providers);
         return {invoked:false,source_revision:pack.revision_hash,generator:job.workflow.nodes.find(n=>n.id==='expand').prompt_template,reviewer:job.workflow.nodes.find(n=>n.id==='final').prompt_template,shared_request:job.resources['analysis/request.txt'],output_schemas:Object.fromEntries(job.workflow.nodes.filter(n=>n.outputs_schema).map(n=>[n.id,n.outputs_schema])),runtime_context:'Execution additionally supplies actual upstream results, output schema and any previous repair feedback. This preview does not invoke a model.'};
       }
-      case 'start_generation': {
+      case 'start_generation': // persisted client compatibility
+      case 'start_authoring': {
         requireValue(human,'HUMAN_GENERATION','Start automatic generation from the console');
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
         const rules = args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
@@ -156,18 +206,32 @@ export class WorkflowService {
         }
         const runId = workflowId(args.run_id);
         const workspace = args.workspace || await ensureDirectory(join(dirname(this.configPath),'skill-generation-workspaces','job-'+runId));
-        return this.call('create_expansion_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.generation?.planner_provider_id || rules.routes.planning.provider_id,routing_rules:rules,automatic_generation:true,main_actor:'human-console'});
+        return this.call('create_authoring_run',{...args,run_id:runId,workspace,provider_id:args.provider_id || rules.generation?.planner_provider_id || rules.routes.planning.provider_id,routing_rules:rules,automatic_generation:true,main_actor:'human-console'});
       }
-      case 'advance_generation': {
+      case 'advance_generation': // persisted client compatibility
+      case 'advance_authoring': {
         requireValue(human,'HUMAN_GENERATION','Automatic generation belongs to its console controller');
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
         return advanceGeneration(this,runtime,executor,args,{store,context});
       }
-      case 'login_generation': {
+      case 'recheck_generation': // persisted client compatibility
+      case 'recheck_authoring': {
+        requireValue(human,'HUMAN_GENERATION','Generation recheck belongs to its console controller');
+        requireValue(config.global.enabled && !isEnvironmentDisabled(this.env),'CONTROL_DISABLED','Workflow execution is disabled');
+        return recheckGenerationProposal(this,runtime,args,{store,context});
+      }
+      case 'accept_rechecked_generation_review': // persisted client compatibility
+      case 'accept_rechecked_authoring_review': {
+        requireValue(human,'HUMAN_GENERATION','Rechecked generation acceptance belongs to the human console');
+        return acceptRecheckedGenerationReview(this,runtime,args);
+      }
+      case 'login_generation': // persisted client compatibility
+      case 'login_authoring': {
         requireValue(human,'HUMAN_AUTHENTICATION_REQUIRED','Generation login belongs to the authenticated human console');
         return loginGeneration(this,runtime,args);
       }
-      case 'accept_generation': {
+      case 'accept_generation': // persisted client compatibility
+      case 'accept_authoring': {
         requireValue(human,'HUMAN_GENERATION','Generation acceptance belongs to the human console');
         return acceptGeneration(this,runtime,args);
       }
@@ -200,6 +264,12 @@ export class WorkflowService {
         if (args.provider_id) requireValue(provider, 'PROVIDER_MISSING', 'Selected instruction Provider does not exist');
         return importCoarseSkill(store, selected.path, { id: args.workflow_id, name: args.name, providerId: args.provider_id, role: provider?.config?.role ?? 'advisor', expectedSourceHash: selected.source_hash });
       }
+      case 'build_workflow': {
+        const provider=config.providers.find(item=>item.id===args.provider_id);
+        if(args.provider_id)requireValue(provider,'PROVIDER_MISSING','Selected instruction Provider does not exist');
+        const authoring=new WorkflowAuthoringCompiler({store});
+        return authoring.seed({kind:'brief',workflow_id:args.workflow_id,name:args.name,brief:args.brief,provider_id:args.provider_id,role:provider?.config?.role ?? 'advisor'});
+      }
       case 'verify_relocation': {
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
         return verifyCoarseRelocation(pack, await store.resources(args.workflow_id, pack.revision_hash));
@@ -220,12 +290,13 @@ export class WorkflowService {
         // preserve this selected Provider and record actual dispatch separately.
         return { ...packet, adapter, handoff_required: true, invoked: false, approval_required: provider.requires_user_approval };
       }
-      case 'create_expansion_run': {
+      case 'create_expansion_run': // persisted client compatibility
+      case 'create_authoring_run': {
         requireValue(config.global.enabled && !isEnvironmentDisabled(this.env), 'CONTROL_DISABLED', 'Workflow expansion is disabled');
         const provider = config.providers.find(item => item.id === args.provider_id);
         const pack = await store.snapshot(args.workflow_id, args.revision_hash);
         const rules=args.routing_rules ?? await loadRoutingSettings(dirname(this.configPath),config.providers);
-        const job = expansionRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer')),config.providers);
+        const job = authoringRunPack(pack, await store.resources(args.workflow_id, pack.revision_hash), provider, args.run_id, rules, args.automatic_generation === true, config.providers.find(p=>p.id === (rules.generation?.review_provider_id ?? 'native-generation-reviewer')),config.providers);
         await this.strictManager.capability({ ...job, resources: prepareResources(job.resources).manifest }, config.providers);
         const jobs = await new WorkflowStore(join(dirname(this.configPath), 'workflow-expansion-jobs'), { validationContext: context }).initialize();
         const saved = await jobs.create(job.workflow, job);
@@ -233,20 +304,36 @@ export class WorkflowService {
         return planning.start({ workflow_id: saved.workflow.id, revision_hash: saved.revision_hash, run_id: args.run_id,
           workspace: args.workspace, main_actor: args.main_actor, access: 'read_only', inputs: { task: 'Analyze this pinned Skill into an editable Draft' } });
       }
-      case 'apply_expansion_result': {
+      case 'apply_expansion_result': // persisted client compatibility
+      case 'apply_authoring_result': {
         const state = await runtime.authorizeController(args.run_id, args);
         requireValue(state.status === 'succeeded', 'EXPANSION_ACCEPTANCE_REQUIRED', 'Expansion Run needs main-controller acceptance before applying its proposal');
-        const { pins } = await runtime.runs.read(args.run_id); const provenance = pins.root.provenance;
-        requireValue(provenance?.kind === 'skill_expansion_job' && provenance.source_workflow_id === args.workflow_id && provenance.source_revision === args.expected_revision,
+        const record = await runtime.runs.read(args.run_id); const {pins}=record,provenance = pins.root.provenance;
+        requireValue(isAuthoringRunProvenance(provenance) && provenance.source_workflow_id === args.workflow_id && provenance.source_revision === args.expected_revision,
           'EXPANSION_RESULT_IDENTITY', 'Expansion result belongs to a different source Workflow revision');
-        if(provenance.review_contract_version===2){
+        const resources=await store.resources(args.workflow_id,args.expected_revision);
+        const expansionContext={...context,routing_rules:provenance.routing_rules,routing_catalog:provenance.routing_catalog};
+        const payload=decodeGeneratedEnvelope(state.nodes.expand.output);
+        let proposal;
+        if([SEMANTIC_BLUEPRINT_CONTRACT,SEMANTIC_REPAIR_CONTRACT].includes(payload?.contract)){
+          const sourcePack=await store.snapshot(args.workflow_id,args.expected_revision);
+          proposal=validateGenerationProposal(state.nodes.expand.output,{pack:sourcePack,resources,provenance,context:expansionContext,previousPlan:record.state.generation_repair?.previous_proposal ?? null}).proposal;
+        } else proposal=decodeGeneratedProposal(state.nodes.expand.output,provenance.source_revision,{requirePlanningAnalysis:provenance.routing_rules?.selection_mode === 'automatic'});
+        // Revalidate at the mutation boundary.  A persisted model completion is
+        // not authority to bypass a newer conversion contract.
+        if(Number.isInteger(provenance.review_contract_version) && provenance.review_contract_version >= 2){
+          if(provenance.review_contract_version >= 4){
+            const sourcePack=await store.snapshot(args.workflow_id,args.expected_revision);
+            const validated=validateGenerationProposal(state.nodes.expand.output,{pack:sourcePack,resources,provenance,context:expansionContext});
+            proposal=validated.proposal;
+          }
           const final=state.nodes.final;const attempt=final.attempts.find(a=>a.id===final.active_attempt_id);
           requireValue(attempt?.result_proposal,'GENERATION_REVIEW_BLOCKED','A persisted checklist review is required');
           const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);
-          const review=evaluateReview(completion.structured_output,state.nodes.expand.output,await store.resources(args.workflow_id,args.expected_revision));
+          const review=evaluateReview(completion.structured_output,proposal,resources,{version:provenance.review_contract_version});
           requireValue(review.approved,'GENERATION_REVIEW_BLOCKED','Checklist findings remain unresolved');
         }
-        return applyExpansion(store, args.workflow_id, state.nodes.expand.output, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null });
+        return applyExpansion(store, args.workflow_id, proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null });
       }
       case 'apply_expansion': return applyExpansion(store, args.workflow_id, args.proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: args.routing_rules } });
       case 'list': return Promise.all((await store.list()).map(async pack => ({ id: pack.workflow.id, name: pack.workflow.name, status: pack.workflow.status, enabled: pack.workflow.enabled, revision_hash: pack.revision_hash, description: pack.workflow.description, skill_policy: pack.workflow.skill_policy, validation: (await this.validationContext(store, pack.workflow, context)).validation })));
@@ -261,6 +348,7 @@ export class WorkflowService {
       case 'publish': {
         requireValue(human, 'HUMAN_PUBLICATION_REQUIRED', 'Ready publication belongs to the authenticated human editor');
         const pack = await store.snapshot(args.workflow_id, args.expected_revision);
+        requireCurrentConversionCertificate(pack.workflow,pack.resources,pack.import_report);
         const checked = await this.validationContext(store, { ...pack.workflow, status: 'ready' }, context);
         requireValue(checked.validation.valid, 'WORKFLOW_NOT_READY', 'Workflow structure or dependencies are invalid', { validation: checked.validation }); store.validationContext = checked.context;
         return publishEditorWorkflow(store, args);
@@ -268,6 +356,7 @@ export class WorkflowService {
       case 'validate': return (await this.validationContext(store, args.workflow, context)).validation;
       case 'create': {
         if (args.workflow.status === 'ready') {
+          requireCurrentConversionCertificate(args.workflow,prepareResources(args.resources ?? {}).manifest,args.import_report ?? {});
           const checked = await this.validationContext(store, args.workflow, context);
           requireValue(checked.validation.valid, 'WORKFLOW_NOT_READY', 'Workflow dependencies or structure are invalid', { validation: checked.validation }); store.validationContext = checked.context;
         }
@@ -275,6 +364,8 @@ export class WorkflowService {
       }
       case 'save': {
         if (args.workflow.status === 'ready') {
+          const previous=await store.snapshot(args.workflow_id,args.expected_revision);
+          requireCurrentConversionCertificate(args.workflow,args.resources===undefined?previous.resources:prepareResources(args.resources).manifest,args.import_report ?? previous.import_report);
           const checked = await this.validationContext(store, args.workflow, context);
           requireValue(checked.validation.valid, 'WORKFLOW_NOT_READY', 'Workflow dependencies or structure are invalid', { validation: checked.validation }); store.validationContext = checked.context;
         }
@@ -295,6 +386,8 @@ export class WorkflowService {
       }
       case 'start': {
         const request = resolveLegacyWorkflowRequest(config, args);
+        const launchPack = await store.snapshot(request.workflow_id, request.revision_hash);
+        requireHostToolBindings(launchPack.workflow, this.capabilities.hostToolRegistry ?? {});
         if (request.launch_mode === 'task') {
           requireValue(human,'HUMAN_TASK_LAUNCH','Task launch defaults belong to the human console');
           const pack=await store.snapshot(request.workflow_id,request.revision_hash);
@@ -317,6 +410,33 @@ export class WorkflowService {
           request.access ??= 'read_only';
         }
         return runtime.start(request);
+      }
+      case 'begin_main': {
+        const pack = await store.snapshot(args.workflow_id, args.revision_hash);
+        requireHostToolBindings(pack.workflow, this.capabilities.hostToolRegistry ?? {});
+        const closure = await resolveWorkflowPins(store, pack);
+        const environment = await discoverRuntimeEnvironment({ executables: [...closure.packs.flatMap(item => item.workflow.requirements.executables ?? []), ...closure.skills.flatMap(skill => skill.requirements.executables ?? [])] }, { env: this.env, extraDirectories: args.environment_directories ?? [] });
+        if (environment.status !== 'ready') return { status: 'environment_attention', environment: { status: environment.status, tools: environment.tools, missing: environment.missing, next_action: environment.next_action } };
+        const request = resolveLegacyWorkflowRequest(config, args);
+        const run = await runtime.start(request);
+        return drive.advanceToMain(run.run_id, { control_token: run.control_token, owner: args.main_actor, request_prefix: `begin-${run.run_id}` });
+      }
+      case 'complete_main': {
+        const record = await runtime.runs.read(args.run_id);
+        const definition = record.pins.root.workflow.nodes.find(node => node.id === args.node_id);
+        requireValue(definition?.executor?.kind === 'main', 'MAIN_NODE_REQUIRED', 'Compact completion applies only to the current main-agent node');
+        const finalAcceptance = record.pins.root.workflow.finalization?.required === true && record.pins.root.workflow.finalization.node_id === definition.id;
+        const completion = hostCompletionEnvelope(definition, args, finalAcceptance);
+        if (definition.decision && completion.structured_output.decision === 'blocked') {
+          await runtime.failNode(args.run_id, { ...args, error: { code: 'WORKFLOW_NODE_BLOCKED', message: typeof args.summary === 'string' && args.summary.length ? args.summary : `Main node ${definition.id} reported a blocked decision` } });
+          return drive.advanceToMain(args.run_id, { control_token: args.control_token, owner: args.owner, request_prefix: args.request_prefix ?? `continue-${args.run_id}` });
+        }
+        if (finalAcceptance && args.accepted === false) {
+          await runtime.failNode(args.run_id, { ...args, error: { code: 'FINAL_ACCEPTANCE_REJECTED', message: typeof args.summary === 'string' && args.summary.length ? args.summary : `Main finalizer ${definition.id} rejected the result` } });
+          return drive.advanceToMain(args.run_id, { control_token: args.control_token, owner: args.owner, request_prefix: args.request_prefix ?? `continue-${args.run_id}` });
+        }
+        await runtime.completeNode(args.run_id, { ...args, completion });
+        return drive.advanceToMain(args.run_id, { control_token: args.control_token, owner: args.owner, request_prefix: args.request_prefix ?? `continue-${args.run_id}` });
       }
       case 'runs': return runtime.runs.list();
       case 'get': return runtime.get(args.run_id);
@@ -369,6 +489,7 @@ export class WorkflowService {
         return { ...attached, child: { ...await runtime.get(identity.run_id), control_token: identity.control_token } };
       }
       case 'next': return runtime.next(args.run_id);
+      case 'drive': return drive.advance(args.run_id, args);
       case 'claim_node': return runtime.claimNode(args.run_id, args);
       case 'complete_node': return runtime.completeNode(args.run_id, args);
       case 'fail_node': return runtime.failNode(args.run_id, args);
@@ -382,7 +503,7 @@ export class WorkflowService {
         catch (error) { if (!error.fenced_run_ids) throw error; ids = error.fenced_run_ids; errors.push(error); }
         // An unreadable child journal cannot prevent shutdown of its exact
         // already-fenced owned session or the other independently known children.
-        const stopped = await Promise.allSettled([...ids.map(id => this.strictManager.stopRun(id)), ...[...authorities].map(([id, token]) => executor.cancelPendingConnectors(id, token))]);
+        const stopped = await Promise.allSettled([...ids.flatMap(id => [this.strictManager.stopRun(id), this.managedNativeManager.stopRun(id)]), ...[...authorities].flatMap(([id, token]) => [executor.cancelPendingConnectors(id, token), executor.cancelPendingHostTools(id, token)])]);
         errors.push(...stopped.filter(item => item.status === 'rejected').map(item => item.reason));
         if (errors.length) throw Object.assign(new AggregateError(errors, 'Run tree was fenced but some executors have unconfirmed cancellation'), { code: 'RUN_CANCEL_INCOMPLETE', details: { failures: errors.map(error => ({ code: error.code ?? 'EXECUTOR_STOP_FAILED', message: error.message })) } });
         return runtime.get(args.run_id);
@@ -397,6 +518,7 @@ export class WorkflowService {
       case 'collect_strict': return this.strictManager.collect(runtime, args.run_id, args);
       case 'cleanup_strict_orphans': return this.strictManager.cleanupOrphans(runtime, args.run_id, args);
       case 'dispatch_receipt': return runtime.recordDispatchReceipt(args.run_id, args);
+      case 'record_usage': return runtime.recordUsage(args.run_id, args);
       case 'reconcile_connector': return executor.reconcileConnector(args.run_id, args);
       case 'collect_connector': return executor.collectConnector(args.run_id, args);
       case 'collect_subworkflow': return runtime.collectSubworkflow(args.run_id, args);

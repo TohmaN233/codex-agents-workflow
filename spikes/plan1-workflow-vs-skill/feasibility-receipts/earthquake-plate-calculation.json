@@ -1,0 +1,13 @@
+{
+  "task_id": "earthquake-plate-calculation",
+  "platform": "wsl-ubuntu-native",
+  "docker": false,
+  "network_during_task": false,
+  "oracle_exit": 0,
+  "verifier_exit": 0,
+  "verifier_passed": 8,
+  "verifier_total": 8,
+  "empty_counterexample_exit": 5,
+  "artifacts": ["/root/answer.json"],
+  "status": "READY"
+}

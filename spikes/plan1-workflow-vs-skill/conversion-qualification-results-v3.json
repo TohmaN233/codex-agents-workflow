@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "kind": "skill2workflow_conversion_qualification",
+  "generated_at": "2026-09-21T05:22:50.840Z",
+  "experiment_rerun": false,
+  "planner": {
+    "provider_id": "native-terra"
+  },
+  "reviewer": {
+    "provider_id": "native-generation-reviewer"
+  },
+  "status": "FAIL",
+  "results": [
+    {
+      "example": "zenonzard",
+      "source": {
+        "path": "D:/Zenonzard_game/.agents/skills/write-zenonzard-cards/SKILL.md"
+      },
+      "validation": {
+        "status": "FAIL",
+        "error": {
+          "code": "GENERATION_REPAIR_LIMIT",
+          "message": "zenonzard: GENERATION_REPAIR_LIMIT: 唯一一次语义修订已用完，保留全部结果供检查。",
+          "details": {
+            "phase": "attention",
+            "error": {
+              "code": "GENERATION_REPAIR_LIMIT",
+              "message": "唯一一次语义修订已用完，保留全部结果供检查。"
+            },
+            "feedback": {
+              "code": "AUTHORING_SEMANTIC",
+              "message": "Blueprint has unreachable semantic components: block_missing_brief, collect_initial_context, build_initial_architecture_trace, reconcile_initial_rule_behavior, select_initial_shared_implementation, implement_initial_card_change, author_initial_scenarios, run_initial_positive_scenario, run_initial_boundary_scenario, assemble_initial_semantic_evidence, run_initial_focused_tests, run_initial_compileall, run_initial_node_check, run_initial_git_diff_check, assemble_initial_validation, independent_initial_review, assess_initial_acceptance, block_initial_failure, record_initial_project_updates, deliver_initial_validated_change, refresh_correction_context, rebuild_corrected_architecture_trace, reconcile_corrected_rule_behavior, select_corrected_shared_implementation, correct_card_change, author_corrected_scenarios, run_corrected_positive_scenario, run_corrected_boundary_scenario, assemble_corrected_semantic_evidence, run_corrected_focused_tests, run_corrected_compileall, run_corrected_node_check, run_corrected_git_diff_check, assemble_corrected_validation, independent_post_correction_review, assess_post_correction_acceptance, block_post_correction_failure, record_corrected_project_updates, deliver_corrected_validated_change, initial_discovery_and_production, initial_post_runner_validation, initial_full_assessment, initial_delivery, corrected_discovery_and_production, corrected_post_runner_validation, corrected_repair_and_assessment, corrected_delivery, initial_semantic_execution, initial_static_validation, corrected_semantic_execution, corrected_static_validation, brief_readiness_route, initial_acceptance_route, post_correction_acceptance_route",
+              "findings": [],
+              "validation": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "example": "video-use",
+      "source": {
+        "path": "C:/Users/tgy23/Documents/Codex/2026-09-04/wo-m/outputs/sol-video-workflow-lab/.agents/skills/video-use/SKILL.md"
+      },
+      "validation": {
+        "status": "FAIL",
+        "error": {
+          "code": "APP_SERVER_INACTIVITY_TIMEOUT",
+          "message": "video-use: APP_SERVER_INACTIVITY_TIMEOUT: APP_SERVER_INACTIVITY_TIMEOUT: App Server event inactivity deadline",
+          "details": {
+            "phase": "attention",
+            "status": "failed",
+            "error": {
+              "code": "APP_SERVER_INACTIVITY_TIMEOUT",
+              "message": "APP_SERVER_INACTIVITY_TIMEOUT: App Server event inactivity deadline",
+              "retry_class": "mechanical",
+              "automatic_retry": false
+            },
+            "models": {
+              "max_rounds": 2,
+              "review_provider_id": "native-generation-reviewer"
+            },
+            "diagnostics": [
+              {
+                "kind": "session_state",
+                "metadata": {
+                  "status": "closed"
+                },
+                "sequence": 263
+              },
+              {
+                "kind": "session_state",
+                "metadata": {
+                  "code": "APP_SERVER_INACTIVITY_TIMEOUT",
+                  "diagnostic": "APP_SERVER_INACTIVITY_TIMEOUT: App Server event inactivity deadline",
+                  "status": "failed"
+                },
+                "sequence": 264
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "plan1-qualification-preflight-v3",
+  "status": "FEASIBILITY_READY_FORMAL_QUALIFICATION_NOT_RUN",
+  "comparison_status": "NOT_RUN",
+  "platform": {
+    "kind": "wsl",
+    "launcher": "C:/Windows/System32/wsl.exe -d Ubuntu",
+    "sandbox": "bubblewrap 0.11.1",
+    "python": "3.12.13",
+    "network_during_task": false,
+    "docker": "FORBIDDEN"
+  },
+  "feasibility_report": "native_feasibility_report.json",
+  "tasks": [
+    { "task_id": "crystallographic-wyckoff-position-analysis", "feasibility_status": "READY", "formal_qualification_status": "NOT_RUN", "required_dependencies": ["pymatgen 2025.10.7", "sympy 1.14.0"] },
+    { "task_id": "earthquake-plate-calculation", "feasibility_status": "READY", "formal_qualification_status": "NOT_RUN", "required_dependencies": ["geopandas 1.0.1", "shapely 2.0.6", "pyproj 3.7.0"] },
+    { "task_id": "lake-warming-attribution", "feasibility_status": "READY", "formal_qualification_status": "NOT_RUN", "required_dependencies": ["pandas 2.2.3", "numpy 1.26.4", "scipy 1.14.1", "scikit-learn 1.5.2", "factor-analyzer 0.5.1", "pymannkendall 1.4.3"] },
+    { "task_id": "video-silence-remover", "feasibility_status": "READY", "formal_qualification_status": "NOT_RUN", "required_dependencies": ["ffmpeg 8.0.1", "numpy 1.26.4", "scipy 1.14.1"] }
+  ],
+  "statement": "All four tasks have been executed successfully without Docker or task-time network access. No model arm or comparison has run."
+}

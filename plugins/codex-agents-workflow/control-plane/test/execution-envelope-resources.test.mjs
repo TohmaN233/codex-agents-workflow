@@ -10,7 +10,8 @@ test('handoff exposes pinned resource IDs, never the content-addressed object di
 
   assert.equal('resources_root' in envelope, false);
   assert.deepEqual(envelope.resources, ['source/SKILL.md']);
-  assert.deepEqual(envelope.resource_access, { reader: 'read_workflow_resource', paths: ['source/SKILL.md'] });
+  assert.deepEqual(envelope.resource_access, { reader: 'host_inline_snapshot', paths: ['source/SKILL.md'] });
   assert.match(envelope.prompt_template, /logical identifiers, not filesystem paths/);
-  assert.match(envelope.prompt_template, /Never construct a local path or Markdown file link/);
+  assert.match(envelope.prompt_template, /agent_packet\.resources/);
+  assert.match(envelope.prompt_template, /do not call a resource tool/i);
 });

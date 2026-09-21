@@ -6,41 +6,56 @@ const properties = {
   control_token: { type: 'string', description: 'Main-controller capability returned by workflow_start. Never include it in worker prompts.' },
   lease_token: { type: 'string', description: 'Exact attempt lease returned by workflow_claim_node.' },
   request_id: string, owner: string, expected_sequence: { type: 'integer', minimum: 1 },
+  request_prefix: string, usage: object,
   expected_revision: string, workflow: object, resources: object, inputs: {}, workspace: string,
   access: { type: 'string', enum: ['read_only', 'bounded_write'] }, allowed_paths: { type: 'array', items: string, description: 'Current Run write targets: workspace-relative paths or absolute paths inside workspace. Use a task-derived scope; . means the entire workspace. Absolute targets are normalized and pinned as relative paths.' },
-  constraints: {}, main_actor: string, require_approval: { type: 'boolean' }, completion: object, error: object,
+  constraints: {}, main_actor: string, require_approval: { type: 'boolean' }, completion: object, output: object,
+  summary: string, artifacts: { type: 'array' }, evidence: { type: 'array' }, changed_paths: { type: 'array', items: string }, outside_paths: { type: 'array', items: string },
+  accepted: { type: 'boolean' }, error: object,
   reconciliation: object, after_restart: { type: 'boolean' }, reason: string, approval_id: string, decision: { type: 'boolean' },
   authorization: { type: 'object', description: 'Host attestation of an explicit current user message authorizing recovery of this exact Run.', properties: { confirmed: { type: 'boolean', enum: [true] }, source: { type: 'string', enum: ['user_message'] }, statement: { type: 'string', minLength: 1, maxLength: 2000 } }, required: ['confirmed', 'source', 'statement'], additionalProperties: false },
   after_sequence: { type: 'integer', minimum: 0 }, receipt: object,
-  skill_id: string, provider_id: string, name: string, proposal: object, accepted: { type: 'boolean' },
-  region_id: string, patch_sha256: string,
+  skill_id: string, provider_id: string, name: string, brief: string, proposal: object, accepted: { type: 'boolean' },
+  region_id: string, patch_sha256: string, package_version:string, package:object, source_url:string, expected_sha256:string,
   resource_path: string, text: string, remove: { type: 'boolean' },
   control: object,
 };
 const lease = ['run_id', 'node_id', 'attempt_id', 'lease_token'];
 const main = ['run_id', 'control_token'];
 const recovery = [...main, 'node_id', 'attempt_id'];
+// These operations are application-host APIs. They remain routable through the
+// local server for the console/runtime, but are intentionally absent from the
+// model tool catalog so an agent can never be asked to transcribe controller
+// capabilities, leases or completion-envelope fields.
+const hostOnlySpecs = [
+  ['begin_main', 'Host-only main-session launch.', ['workflow_id', 'workspace', 'access', 'main_actor'], ['revision_hash', 'run_id', 'inputs', 'allowed_paths', 'constraints', 'require_approval','environment_directories']],
+  ['complete_main', 'Host-only semantic submission and deterministic continuation.', [...main, ...lease.slice(1), 'output', 'owner'], ['summary', 'artifacts', 'evidence', 'changed_paths', 'outside_paths', 'accepted', 'request_prefix']],
+  ['install_workflow_package', 'Install one integrity-checked local or HTTPS Workflow package through the authenticated console.', [], ['package','source_url','expected_sha256']],
+];
 const specs = [
   ['routing_defaults', 'Read editable default Skill expansion routing rules for the configured Providers.', [], []],
+  ['authoring_workflows', 'List the built-in Skill conversion and from-scratch Workflow authoring pipelines, their shared semantic contract, and retry boundary.', [], []],
   ['capabilities', 'Read current Strict qualification and declared host capabilities without starting a session or exposing credentials.', [], []],
   ['skill_inventory', 'Discover importable Skills in default Codex folders or a user folder without executing models; explicit host mode reads qualified host metadata.', [], ['workspace', 'folder', 'discovery']],
-  ['import_skill', 'Coarse-import a user-selected current Skill inventory entry into an immutable Strict Draft. Executes no scripts or model calls.', ['skill_id', 'workflow_id'], ['workspace', 'folder', 'discovery', 'name', 'provider_id']],
+  ['import_skill', 'Coarse-import a user-selected current Skill inventory entry into an immutable Cooperative Draft with explicit dependency observations. Executes no scripts or model calls.', ['skill_id', 'workflow_id'], ['workspace', 'folder', 'discovery', 'name', 'provider_id']],
+  ['build_workflow', 'Create a source-backed Workflow Draft from a plain-language brief. It uses the same semantic compiler and review contract as Skill conversion, without pretending the brief is a Skill.', ['workflow_id','name','brief'], ['provider_id']],
+  ['export_workflow_package', 'Export one immutable Workflow revision as a content-addressed portable package suitable for local or cloud distribution.', ['workflow_id'], ['revision_hash','package_version']],
   ['verify_relocation', 'Verify pinned imported resource availability without reading the original Skill. Does not prove functional execution.', ['workflow_id', 'revision_hash'], []],
   ['import_review', 'Read unresolved import observations and exact inferred nodes/edges for human review. This does not confirm or publish them.', ['workflow_id'], ['revision_hash']],
   ['inline_skill', 'Convert one exact SkillRef and its explicitly pinned nested Skills to editable resource-backed instructions. Always creates a Draft and never runs source scripts.', ['workflow_id', 'node_id', 'expected_revision'], []],
   ['prepare_expansion', 'Prepare a read-only expansion packet for the user-selected Provider. This does not invoke that Provider or grant approval.', ['workflow_id', 'revision_hash', 'provider_id'], ['routing_rules']],
   ['apply_expansion', 'Validate an inferred graph against its exact coarse revision and save another Draft. Never changes Provider/write/finalizer authority.', ['workflow_id', 'expected_revision', 'proposal'], ['routing_rules']],
-  ['create_expansion_run', 'Create a read-only Strict planning Run using the user-selected native Provider. Use normal claim/dispatch/collect operations; its source Draft is unchanged.', ['workflow_id', 'revision_hash', 'provider_id', 'run_id', 'workspace', 'main_actor'], ['routing_rules']],
-  ['apply_expansion_result', 'Apply a main-accepted planning Run to its exact source revision as an unreviewed Draft. Never dispatches or retries a model.', [...main, 'workflow_id', 'expected_revision'], []],
+  ['create_authoring_run', 'Instantiate system.skill2workflow or system.build-workflow as a read-only authoring Workflow Run. Its source Draft is unchanged.', ['workflow_id', 'revision_hash', 'provider_id', 'run_id', 'workspace', 'main_actor'], ['routing_rules']],
+  ['apply_authoring_result', 'Apply a human-accepted authoring Workflow result to its exact source revision as an unreviewed Draft. Never dispatches or retries a model.', [...main, 'workflow_id', 'expected_revision'], []],
   ['list', 'List Workflow metadata and structural/environment readiness, without prompt bodies.', [], []],
   ['presets', 'List bundled collaborative Workflow presets available in the console.', [], []],
   ['read', 'Read one explicit immutable Workflow revision for inspection or editing.', ['workflow_id'], ['revision_hash']],
-  ['source_status', 'Compare explicitly pinned Skill instruction source hashes and report update_available or read diagnostics. Never changes Workflow resources or an existing Run.', ['workflow_id'], ['revision_hash']],
+  ['source_status', 'Compare the complete imported Skill source inventory, plus explicit linked Skill sources, against pinned hashes and report update_available or read diagnostics. Never changes Workflow resources or an existing Run.', ['workflow_id'], ['revision_hash']],
   ['revisions', 'Read immutable revision history metadata. Opening a revision verifies its resource content separately.', ['workflow_id'], []],
   ['read_resource', 'Read an exact pinned Pack resource for inspection. Binary or large content is not editable as text.', ['workflow_id', 'resource_path'], ['revision_hash']],
   ['write_resource', 'Save one user-requested bounded resource edit as a Draft under revision CAS. Imported resource changes require review and never touch the original source.', ['workflow_id', 'expected_revision', 'resource_path'], ['text', 'remove']],
   ['validate', 'Validate a graph, pinned bindings and current launch blockers.', ['workflow'], []],
-  ['create', 'Create a user-requested Workflow Pack as Draft. Imported Skill drafts remain Strict; Ready publication belongs to the human console.', ['workflow'], ['resources']],
+  ['create', 'Create a user-requested Workflow Pack as Draft. Skill imports declare their own Strict or Cooperative execution policy; Ready publication belongs to the human console.', ['workflow'], ['resources']],
   ['save', 'Save one complete Draft definition using the previously read revision hash. Model edits cannot publish Ready.', ['workflow_id', 'workflow', 'expected_revision'], ['resources']],
   ['prepare_environment', 'Mandatory before task execution: discover required executables across PATH and common system/user installations. Missing tools require user consent to install through the host, then recheck. Does not install or start a Run.', ['workflow_id'], ['revision_hash','environment_directories']],
   ['start', 'Start one Ready Workflow with explicit workspace permissions. Preserve control_token only in the main controller. No implicit Provider fallback or Strict downgrade.', ['workflow_id', 'workspace', 'access', 'main_actor'], ['revision_hash', 'run_id', 'inputs', 'allowed_paths', 'constraints', 'require_approval','environment_directories']],
@@ -57,6 +72,7 @@ const specs = [
   ['reattach_subworkflow', 'Reattach the existing pinned child Run and rotate the parent lease without recreating either Run.', recovery, []],
   ['child_control', 'Return the exact existing child main-controller capability to its authorized parent controller. Never put it in worker prompts.', recovery, []],
   ['next', 'Read ready node IDs and pending approvals. This does not claim or dispatch work.', ['run_id'], []],
+  ['drive', 'Advance consecutive deterministic/control/host-tool nodes without a model turn. Stops before semantic agent work, approval/input, ambiguity, failure or terminal state; it never dispatches paid model work.', [...main], ['owner', 'request_prefix']],
   ['claim_node', 'Atomically claim one ready node and return its narrow execution lease. Main nodes require the exact main actor.', [...main, 'node_id', 'owner', 'request_id'], ['expected_sequence']],
   ['complete_node', 'Commit successful node output plus artifacts, evidence, changed_paths and outside_paths. Final acceptance requires main authority.', [...lease, 'completion'], []],
   ['fail_node', 'Commit an explicit node failure diagnostic under its active lease.', [...lease, 'error'], []],
@@ -68,6 +84,7 @@ const specs = [
   ['events', 'Read sequenced event metadata without prompts or controller secrets.', main, ['after_sequence']],
   ['dispatch', 'Persist intent, then invoke the pinned built-in/API Provider or return a main/native/Codex-thread/MCP handoff. Codex-thread handoffs carry an exact create-or-continue task contract, bounded pinned text snapshots when needed, and exact collection instructions. Repeated uncertain dispatch never resubmits.', [...lease, 'control_token'], []],
   ['dispatch_receipt', 'Persist exact task identity from the external tool result for one existing dispatch intent.', [...lease, 'control_token', 'request_id', 'receipt'], []],
+  ['record_usage', 'Journal actual request usage, cached/visual usage when reported, or explicit unknown metering. Budgeted semantic work cannot complete without it.', [...lease, 'control_token', 'request_id', 'usage'], []],
   ['reconcile_connector', 'Inspect only the preallocated exact connector task after an uncertain dispatch. Does not retry it.', [...lease, 'control_token'], []],
   ['collect_connector', 'Collect an active exact connector task. Commit completion only with observed terminal and workspace-scope evidence.', [...lease, 'control_token'], []],
   ['collect_subworkflow', 'Collect the exact child Run after its main-agent acceptance. Output stays in the parent node namespace; collection never invokes another executor.', [...lease, 'control_token'], []],
@@ -79,7 +96,7 @@ const specs = [
   ['collect_strict', 'Read or reconcile a durable isolated result without another model submission. Finalization requires explicit main-controller acceptance.', [...lease, 'control_token'], ['accepted']],
   ['cleanup_strict_orphans', 'After fencing an interrupted attempt, stop and remove only its verified orphan profile. Never resubmits work or terminates an active owner.', [...lease, 'control_token'], []],
 ];
-export const WORKFLOW_TOOL_OPERATIONS = new Set(specs.map(([name]) => name));
+export const WORKFLOW_TOOL_OPERATIONS = new Set([...specs, ...hostOnlySpecs].map(([name]) => name));
 export function workflowToolDefinitions() {
   return specs.map(([name, description, required, optional]) => ({ name: 'workflow_' + name, description,
     inputSchema: { type: 'object', properties: Object.fromEntries([...required, ...optional].map(key => [key, properties[key]])), required, additionalProperties: false },

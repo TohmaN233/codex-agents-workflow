@@ -1,0 +1,43 @@
+{
+  "schema": "plan1-source-manifest-v2",
+  "plan_version": "3.0",
+  "comparison_status": "NOT_RUN",
+  "source_commit": "b2fc20988ae728a811ffdc94449f6c071197d6a2",
+  "skillsbench_commit": "b63b7b2850226b6aa4fb5929a8c1ac7bc4d9a6af",
+  "source_inputs": [
+    { "path": "C:/Users/tgy23/Downloads/Compressed/workflow_research_plans_v3/PLAN_1_Workflow_vs_Skill.md", "sha256": "46295decd41a26f793fb9d3c335200a09fa08acbbc203c8e0908499a38dc76d5" },
+    { "path": "C:/Users/tgy23/Downloads/Compressed/workflow_research_plans_v3/COMMON_EVALUATION.md", "sha256": "a2a551a27749410910b8929a73010d9d56e6bdea388aaeceb9e88765adcd947f" },
+    { "path": "C:/Users/tgy23/Downloads/Compressed/workflow_research_plans_v3/TASK_CATALOGUE.json", "sha256": "0697ace6a1ef86d4254fb9c0810ac79a26e95cb7e35aef76f8222811a3ec1321" }
+  ],
+  "platform_policy": {
+    "docker": "FORBIDDEN",
+    "allowed": ["wsl", "windows"],
+    "comparison_rule": "Every arm uses the exact same user-reviewed native platform and toolchain."
+  },
+  "tasks": [
+    {
+      "task_id": "crystallographic-wyckoff-position-analysis", "task_root": "tasks/crystallographic-wyckoff-position-analysis", "role": "scientific_api_workflow",
+      "input_paths": ["tasks/crystallographic-wyckoff-position-analysis/environment/Al2O3_mp-7048.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/C_mp-169.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/C_mp-683919.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/CF4_mp-1167.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/FeS2_mp-1522.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/FeS2_mp-226.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/HgSe_mp-1018722.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/SiO2_mp-12787.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/SiO2_mp-542814.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/SiO2_mp-6945.cif", "tasks/crystallographic-wyckoff-position-analysis/environment/SiO2_mp-7000.cif"],
+      "existing_code_paths": ["tasks/crystallographic-wyckoff-position-analysis/environment/skills/pymatgen/scripts/structure_analyzer.py", "tasks/crystallographic-wyckoff-position-analysis/environment/skills/pymatgen/references/wyckoff-positions-from-cif.md"],
+      "verifier_path": "tasks/crystallographic-wyckoff-position-analysis/verifier/test_outputs.py", "reference_solution_path": "tasks/crystallographic-wyckoff-position-analysis/oracle/solve.sh"
+    },
+    {
+      "task_id": "earthquake-plate-calculation", "task_root": "tasks/earthquake-plate-calculation", "role": "geospatial_analysis_workflow",
+      "input_paths": ["tasks/earthquake-plate-calculation/environment/earthquakes_2024.json", "tasks/earthquake-plate-calculation/environment/PB2002_boundaries.json", "tasks/earthquake-plate-calculation/environment/PB2002_plates.json"],
+      "existing_code_paths": ["tasks/earthquake-plate-calculation/environment/skills/geospatial-analysis/SKILL.md"],
+      "verifier_path": "tasks/earthquake-plate-calculation/verifier/test_outputs.py", "reference_solution_path": "tasks/earthquake-plate-calculation/oracle/solve.sh"
+    },
+    {
+      "task_id": "lake-warming-attribution", "task_root": "tasks/lake-warming-attribution", "role": "statistical_attribution_workflow",
+      "input_paths": ["tasks/lake-warming-attribution/environment/data/water_temperature.csv", "tasks/lake-warming-attribution/environment/data/climate.csv", "tasks/lake-warming-attribution/environment/data/land_cover.csv", "tasks/lake-warming-attribution/environment/data/hydrology.csv"],
+      "existing_code_paths": ["tasks/lake-warming-attribution/environment/skills/trend-analysis/SKILL.md", "tasks/lake-warming-attribution/environment/skills/pca-decomposition/SKILL.md", "tasks/lake-warming-attribution/environment/skills/contribution-analysis/SKILL.md", "tasks/lake-warming-attribution/environment/skills/meteorology-driver-classification/SKILL.md"],
+      "verifier_path": "tasks/lake-warming-attribution/verifier/test_outputs.py", "reference_solution_path": "tasks/lake-warming-attribution/oracle/solve.sh"
+    },
+    {
+      "task_id": "video-silence-remover", "task_root": "tasks/video-silence-remover", "role": "media_pipeline_workflow",
+      "input_paths": ["tasks/video-silence-remover/environment/data/input_video.mp4"],
+      "existing_code_paths": ["tasks/video-silence-remover/environment/skills/audio-extractor/scripts/extract_audio.py", "tasks/video-silence-remover/environment/skills/energy-calculator/scripts/calc_energy.py", "tasks/video-silence-remover/environment/skills/silence-detector/scripts/detect_silence.py", "tasks/video-silence-remover/environment/skills/pause-detector/scripts/detect_pauses.py", "tasks/video-silence-remover/environment/skills/segment-combiner/scripts/combine_segments.py", "tasks/video-silence-remover/environment/skills/video-processor/scripts/process_video.py", "tasks/video-silence-remover/environment/skills/report-generator/scripts/generate_report.py"],
+      "verifier_path": "tasks/video-silence-remover/verifier/test_outputs.py", "reference_solution_path": "tasks/video-silence-remover/oracle/solve.sh"
+    }
+  ]
+}
