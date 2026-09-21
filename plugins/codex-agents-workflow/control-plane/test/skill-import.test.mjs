@@ -23,7 +23,8 @@ import { skillSourceStatus } from '../lib/skill-import/source-status.mjs';
 import { observedSourceRequirements, projectObservedRequirements } from '../lib/skill-import/source-requirements.mjs';
 import { validateData } from '../lib/workflow-data-schema.mjs';
 import { sourceSectionInventory, validateSourceDispositions } from '../lib/skill-import/source-dispositions.mjs';
-import { requireCurrentConversionCertificate } from '../lib/skill-import/conversion-certificate.mjs';
+import { CONVERSION_CONTRACT } from '../lib/skill-import/conversion-contract.mjs';
+import { createConversionCertificate, requireCurrentConversionCertificate } from '../lib/skill-import/conversion-certificate.mjs';
 import { exclusiveConditionFanIn } from '../lib/skill-import/fan-in-topology.mjs';
 
 test('dependency scanning distinguishes shell-local colors from external environment reads', () => {
@@ -367,11 +368,12 @@ test('automatic planning pins model suitability and compiles main, independent p
   assert.equal(result.workflow.nodes.find(n=>n.id==='confirm').approval.required,true);
   assert.throws(()=>compileExpansion(pack,resources,{...proposal,planning_analysis:undefined},context),{code:'EXPANSION_PLANNING_ANALYSIS'});
   assert.throws(()=>compileExpansion(pack,resources,proposal,{...context,providers:[],routing_catalog:providers}),{code:'ROUTING_PROVIDER_UNAVAILABLE'});
-  const saved=await applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context,inference_confirmation:'Confirmed all displayed nodes and edges'});
+  const saved=await applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context,inference_confirmation:'Confirmed all displayed nodes and edges',conversion_review_contract_version:CONVERSION_CONTRACT.version});
   assert(!validateWorkflowGraph(saved.workflow,context).blockers.some(i=>i.code==='AI_INFERENCE_UNREVIEWED'));
   assert(saved.workflow.nodes.find(n=>n.id==='a').origin.review.note);
   assert.equal(saved.workflow.status,'draft');
   assert.doesNotThrow(()=>requireCurrentConversionCertificate(saved.workflow,saved.resources,saved.import_report));
+  assert.throws(()=>createConversionCertificate(saved.workflow,saved.resources,{source_revision:pack.revision_hash,proposal_hash:saved.import_report.expansion.proposal_hash}),{code:'CONVERSION_REVIEW_CONTRACT_STALE'});
   const mutated=structuredClone(saved.workflow);mutated.nodes.find(node=>node.id==='synthesize').prompt_template+=' changed';
   assert.throws(()=>requireCurrentConversionCertificate(mutated,saved.resources,saved.import_report),{code:'CONVERSION_CERTIFICATE_STALE'});
   assert.deepEqual(saved.workflow.requirements.executables,pack.workflow.requirements.executables);
@@ -384,7 +386,7 @@ test('automatic planning pins model suitability and compiles main, independent p
   assert.deepEqual(regenerated.workflow.nodes.find(n=>n.id==='a').resources,['source/SKILL.md']);
   assert.equal(regenerated.workflow.nodes.find(n=>n.id==='a').origin.reviewed,false);
   assert.throws(()=>compileExpansion(saved,resources,rerouted,{providers}),{code:'EXPANSION_ROUTING_REQUIRED'});
-  await assert.rejects(applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context}),{code:'REVISION_CONFLICT'});
+  await assert.rejects(applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context,conversion_review_contract_version:CONVERSION_CONTRACT.version}),{code:'REVISION_CONFLICT'});
 });
 
 test('folder discovery scans default Codex roots without a binary and reselects custom folders by source hash', async t => {
@@ -415,7 +417,7 @@ test('routed expansion assigns each responsibility independently and pins editab
   ];
   const pack = await importCoarseSkill(f.store,f.source,{id:'routed'});
   const resources = await f.store.resources('routed');
-  const rules = {...defaultRoutingRules(providers),selection_mode:"fixed"};
+  const rules = {...defaultRoutingRules(providers),selection_mode:"fixed",generation:{planner_provider_id:'native-terra',review_provider_id:'native-reviewer',max_rounds:2}};
   const span = {resource:'source/SKILL.md',start_line:10,end_line:10};
   const proposal = {source_revision:pack.revision_hash,nodes:[
     {id:'build',type:'agent',task_type:'implementation',routing_reason:'Routine production',prompt_template:'Implement',confidence:0.9,source_span:span},
@@ -433,19 +435,19 @@ test('routed expansion assigns each responsibility independently and pins editab
   assert.equal(result.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
   assert.equal(result.workflow.nodes.find(n=>n.id==='final').executor.kind,'main');
   assert.equal(result.workflow.status,'draft');
-  const job = expansionRunPack(pack,resources,providers[1],'planning-job',rules);
+  const job = expansionRunPack(pack,resources,providers[1],'planning-job',rules,false,providers[2],providers);
   rules.routes.implementation.provider_id='native-terra';
   assert.equal(job.provenance.routing_rules.routes.implementation.provider_id,'native-luna');
   assert.doesNotMatch(job.resources['analysis/request.txt'],/Every agent requires task_type/);
   assert.match(job.resources['analysis/request.txt'],/compact activity profile/);
   const dependencyPack=structuredClone(pack);dependencyPack.workflow.requirements.executables=['ffmpeg','ffprobe'];
-  const dependencyJob=expansionRunPack(dependencyPack,resources,providers[1],'dependency-planning-job',packet.routing_rules);
+  const dependencyJob=expansionRunPack(dependencyPack,resources,providers[1],'dependency-planning-job',packet.routing_rules,false,providers[2],providers);
   assert.match(dependencyJob.resources['analysis/request.txt'],/Imported Draft baseline requirements/);
   assert.match(dependencyJob.resources['analysis/request.txt'],/"ffprobe"/);
-  const expanded = await applyExpansion(f.store,'routed',proposal,{expected_revision:pack.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']}});
-  const regeneratedJob = expansionRunPack(expanded,resources,providers[1],'regeneration-job',packet.routing_rules);
+  const expanded = await applyExpansion(f.store,'routed',proposal,{expected_revision:pack.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']},conversion_review_contract_version:CONVERSION_CONTRACT.version});
+  const regeneratedJob = expansionRunPack(expanded,resources,providers[1],'regeneration-job',packet.routing_rules,false,providers[2],providers);
   assert.match(regeneratedJob.resources['analysis/request.txt'],/source\/SKILL.md/);
-  const regenerated = await applyExpansion(f.store,'routed',{...proposal,source_revision:expanded.revision_hash},{expected_revision:expanded.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']}});
+  const regenerated = await applyExpansion(f.store,'routed',{...proposal,source_revision:expanded.revision_hash},{expected_revision:expanded.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']},conversion_review_contract_version:CONVERSION_CONTRACT.version});
   assert.deepEqual(regenerated.resources,expanded.resources);
   assert.equal(regenerated.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
   assert.equal(regenerated.workflow.import_status.unresolved.filter(i=>i.code==='AI_INFERENCES_REQUIRE_REVIEW').length,1);
@@ -622,9 +624,9 @@ test('AI expansion stays Draft, pins inferences, preserves authority and retains
   const proposal = { source_revision: pack.revision_hash, nodes: [{ id: 'step', type: 'agent', prompt_template: 'Apply the pinned guide to {{task}}', ...inference }],
     edges: [{ id: 'start-step', source: 'start', target: 'step', ...inference }, { id: 'step-final', source: 'step', target: 'final', ...inference }] };
   const invalid = structuredClone(proposal); invalid.nodes[0].access = 'bounded_write';
-  await assert.rejects(applyExpansion(f.store, 'expanded', invalid, { expected_revision: pack.revision_hash, context: { providers: [provider] } }), { code: 'EXPANSION_AUTHORITY' });
+  await assert.rejects(applyExpansion(f.store, 'expanded', invalid, { expected_revision: pack.revision_hash, context: { providers: [provider] }, conversion_review_contract_version:CONVERSION_CONTRACT.version }), { code: 'EXPANSION_AUTHORITY' });
   assert.equal((await f.store.snapshot('expanded')).revision_hash, pack.revision_hash);
-  const next = await applyExpansion(f.store, 'expanded', proposal, { expected_revision: pack.revision_hash, context: { providers: [provider] } });
+  const next = await applyExpansion(f.store, 'expanded', proposal, { expected_revision: pack.revision_hash, context: { providers: [provider] }, conversion_review_contract_version:CONVERSION_CONTRACT.version });
   assert.equal(next.workflow.status, 'draft'); assert.equal(next.workflow.nodes.find(node => node.id === 'step').access, 'read_only');
   assert.equal(next.workflow.nodes.find(node => node.id === 'step').executor.provider_id, provider.id);
   assert.equal(next.workflow.nodes.find(node => node.id === 'final').executor.kind, 'main');
@@ -633,7 +635,7 @@ test('AI expansion stays Draft, pins inferences, preserves authority and retains
   const regenerated = expansionPacket(next, resources, provider, defaultRoutingRules([]), []);
   assert.match(regenerated.prompt, /previous graph is not source authority/);
   const stale = structuredClone(proposal); stale.source_revision = 'a'.repeat(64);
-  await assert.rejects(applyExpansion(f.store, 'expanded', stale, { expected_revision: next.revision_hash, context: { providers: [provider] } }), { code: 'EXPANSION_SCHEMA' });
+  await assert.rejects(applyExpansion(f.store, 'expanded', stale, { expected_revision: next.revision_hash, context: { providers: [provider] }, conversion_review_contract_version:CONVERSION_CONTRACT.version }), { code: 'EXPANSION_SCHEMA' });
   const review = importReviewPacket(next); assert.equal(review.inferences.length, 3);
   await assert.rejects(reviewImportedDraft(f.store, 'expanded', { expected_revision: next.revision_hash, decisions: [{ issue_id: review.issues.find(issue => issue.code === 'AI_INFERENCES_REQUIRE_REVIEW').id, resolution: 'resolved', note: 'Cannot blanket-approve inferred flow' }] }), { code: 'IMPORT_REVIEW_ISSUE' });
   const reviewed = await reviewImportedDraft(f.store, 'expanded', { expected_revision: next.revision_hash,
@@ -761,13 +763,14 @@ test('review validation drops invalid optional source spans but keeps mandatory 
 test('v4 contract rejects an all-pass generic proposal that omits exact artifact, method and interface rules', async t => {
   const f=await fixture(t,'Write `answer.json` with exact keys `id` and `place`. Use EPSG:4087 and round to 2 decimal places.');
   const provider={id:'chosen',enabled:true,kind:'native_agent',capabilities:{read:true},config:{role:'implementer'}};
+  const reviewer={id:'native-generation-reviewer',enabled:true,kind:'native_agent',capabilities:{read:true,write:false},config:{role:'reviewer'}};
   const pack=await importCoarseSkill(f.store,f.source,{id:'v4-generic',providerId:provider.id}); const resources=await f.store.resources('v4-generic');
   const origin={confidence:0.9,source_span:{resource:'source/SKILL.md',start_line:9,end_line:9}};
   const proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],required_executables:[],nodes:[{id:'do_task',type:'agent',operation_mode:'read',prompt_template:'Do the task.',input_bindings:{task:'/inputs/task'},resource_refs:['source/SKILL.md'],requirement_ids:[],...origin}],edges:[{id:'start-do',source:'start',target:'do_task',...origin},{id:'do-final',source:'do_task',target:'final',...origin}]};
   const checks=REVIEW_IDS.map(id=>({id,status:'pass',evidence:'All source requirements are covered.',node_ids:id==='source_support'?['do_task']:[],edge_ids:id==='source_support'?['start-do','do-final']:[],source_spans:[origin.source_span]}));
   const verdict=evaluateReview({checks},proposal,resources);
   assert.equal(verdict.approved,false); assert(verdict.findings.some(finding=>finding.includes('artifact_path'))); assert(verdict.findings.some(finding=>finding.includes('method_rule')));
-  const job=expansionRunPack(pack,resources,provider,'v4-projection',null);
+  const job=expansionRunPack(pack,resources,provider,'v4-projection',null,false,reviewer,[provider,reviewer]);
   assert.deepEqual(job.workflow.nodes.find(node=>node.id==='final').input_bindings,{proposal:'/nodes/expand/output/proposal'});
   const expand=job.workflow.nodes.find(node=>node.id==='expand');
   assert.deepEqual(expand.outputs_schema,AUTHORING_RUNTIME_ENVELOPE_SCHEMA);

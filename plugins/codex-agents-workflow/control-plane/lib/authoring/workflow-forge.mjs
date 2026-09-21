@@ -60,6 +60,14 @@ function validateBlueprint(blueprint,resources){
 
 function inflateBlueprint(raw){
   requireValue(object(raw)&&raw.contract===PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT,'AUTHORING_FORMAT','Authoring requires a normalized semantic blueprint');
+  const keyedCollections=[
+    ['activities',raw.activities ?? []],['approvals',raw.approvals ?? []],['sequences',raw.sequences ?? []],
+    ['parallels',raw.parallels ?? []],['choices',raw.choices ?? []],
+  ];
+  for(const [name,items] of keyedCollections){
+    requireValue(Array.isArray(items),'AUTHORING_FORMAT',`Blueprint ${name} must be an array`);
+    requireValue(new Set(items.map(item=>item?.key)).size===items.length,'AUTHORING_FORMAT',`Blueprint ${name} keys must be unique before compilation`);
+  }
   const activities=new Map((raw.activities ?? []).map(item=>[item.key,{...structuredClone(item),continues:item.continues || undefined,consumes:item.consumes.map(consume=>({name:consume.name,from:consume.source_kind==='input'?{input:consume.input}:{activity:consume.activity,output:consume.output}}))}]));
   const approvals=new Map((raw.approvals ?? []).map(item=>[item.key,structuredClone(item)]));
   const sequences=new Map((raw.sequences ?? []).map(item=>[item.key,structuredClone(item)]));

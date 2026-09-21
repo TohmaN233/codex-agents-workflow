@@ -55,6 +55,9 @@ const formatFail=message=>fail('AUTHORING_FORMAT',message);
 const semanticFail=message=>fail('AUTHORING_SEMANTIC',message);
 const keyOf=(collection,item)=>collection==='source_dispositions'?item.section_id:collection==='requirement_assignments'?item.requirement_id:item.key;
 const upsert=(items,changes,collection)=>{
+  const currentKeys=items.map(item=>keyOf(collection,item)),changeKeys=changes.map(item=>keyOf(collection,item));
+  if(new Set(currentKeys).size!==currentKeys.length)formatFail(`Semantic repair base has duplicate ${collection} keys`);
+  if(new Set(changeKeys).size!==changeKeys.length)formatFail(`Semantic repair contains duplicate ${collection} upserts`);
   const next=new Map(items.map(item=>[keyOf(collection,item),structuredClone(item)]));
   for(const item of changes)next.set(keyOf(collection,item),structuredClone(item));
   return [...next.values()];

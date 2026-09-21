@@ -298,7 +298,10 @@ test('generation repairs review findings with pinned providers and preserves rej
   assert.equal((await step()).phase,'generating');const nextApproval=await step();assert.equal(nextApproval.phase,'approval');await f.service.call('approve',{...control,approval_id:nextApproval.approvals[0].id,decision:true});assert.equal((await step()).phase,'reviewing');assert.equal((await step()).phase,'review_required');
   assert(prompts[2].includes('Clarify the review deliverable.'));
   const state=await f.service.call('get',control);assert.equal(state.nodes.expand.attempts.length,2);assert.equal(state.nodes.final.attempts.length,2);assert.equal(state.status,'running');
-  await f.service.call('cancel',control);assert.equal((await step()).phase,'attention');assert.equal(f.sessions.length,4);
+  const saved=await f.service.call('accept_generation',{...control,accepted:true},{human:true});
+  assert.equal(saved.workflow.status,'draft');assert.notEqual(saved.revision_hash,pack.revision_hash);
+  assert.match(saved.workflow.nodes.find(item=>item.id==='activity_001').prompt_template,/Clarify the review deliverable and its evidence\./);
+  assert.equal(f.sessions.length,4);
 });
 test('generation stops when deterministic preflight repeats the same semantic failure instead of burning every round', async t => {
   let proposal,plannerCalls=0;const f=await fixture(t,{turn:async()=>{
@@ -364,12 +367,13 @@ async function fixture(t, options = {}) {
   const provider = config.providers.find(item => item.enabled && item.kind === 'native_agent');
   const workflow = { ...createDraft('strict-test', 'Strict manager test'), status: 'ready', finalization: { required: true, node_id: 'final' } };
   const common = { type: 'agent', access: options.write ? 'bounded_write' : 'read_only', ...(options.write ? { path_scope: ['out.txt'] } : {}), approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: {}, prompt_template: '{{task}}', resources: ['pinned.txt'] };
-  workflow.nodes = [{ id: 'start', type: 'start' }, { ...common, id: 'work', role: provider.config.role, executor: { kind: 'provider', provider_id: provider.id }, ...(options.schema ? { outputs_schema: options.schema } : {}) },
+  const workId=options.workId ?? 'work';
+  workflow.nodes = [{ id: 'start', type: 'start' }, { ...common, id: workId, role: provider.config.role, executor: { kind: 'provider', provider_id: provider.id }, ...(options.schema ? { outputs_schema: options.schema } : {}) },
     { ...common, id: 'final', role: 'finalizer', access: 'read_only', executor: { kind: 'main' } }, { id: 'end', type: 'end' }];
-  workflow.edges = [['start', 'work'], ['work', 'final'], ['final', 'end']].map(([source, target]) => ({ id: source + '-' + target, source, target }));
+  workflow.edges = [['start', workId], [workId, 'final'], ['final', 'end']].map(([source, target]) => ({ id: source + '-' + target, source, target }));
   await service.call('create', { workflow, ...(options.provenance ? {provenance:options.provenance} : {}), resources: { 'pinned.txt': 'Immutable task instructions' } });
   const run = await service.call('start', { workflow_id: workflow.id, workspace, access: options.write ? 'bounded_write' : 'read_only', ...(options.write ? { allowed_paths: ['out.txt'] } : {}), main_actor: 'root', inputs: { task: 'Synthetic only' } });
-  const claim = async (node = 'work') => {
+  const claim = async (node = workId) => {
     const lease = await service.call('claim_node', { run_id: run.run_id, control_token: run.control_token, node_id: node, owner: node === 'final' ? 'root' : 'worker', request_id: 'claim-' + node });
     return { run_id: run.run_id, control_token: run.control_token, node_id: node, attempt_id: lease.attempt_id, lease_token: lease.lease_token };
   };
@@ -391,6 +395,13 @@ test('Strict settings are opt-in, reject secrets/unknown fields and never turn a
   assert.throws(() => validateStrictConfig({ main_model: '' }), { code: 'STRICT_CONFIG' });
   assert.throws(() => validateStrictConfig({ main_reasoning_effort: '' }), { code: 'STRICT_CONFIG' });
   await assert.rejects(qualifiedStrictSettings({ strict_executor: { enabled: true, codex_binary: resolve('fake.exe'), binary_sha256: 'a'.repeat(64) } }), { code: 'STRICT_EXECUTOR_UNQUALIFIED' });
+});
+
+test('an ordinary node named expand keeps its declared output contract',async t=>{
+  const schema={type:'object',required:['value'],additionalProperties:false,properties:{value:{type:'string'}}};
+  const f=await fixture(t,{workId:'expand',schema,turn:async()=>({output:JSON.stringify({value:'ordinary-workflow-output'}),thread_id:'ordinary-expand',turn_id:'turn',audit:{}})});
+  await f.service.call('dispatch',f.args);await f.entry(f.args).job;
+  assert.deepEqual((await f.service.call('get',f.args)).nodes.expand.output,{value:'ordinary-workflow-output'});
 });
 
 test('host authentication failure closes the node without offering managed login or starting a turn', async t => {
@@ -585,19 +596,19 @@ test('orphan cleanup selects exact Run/node/attempt ownership and refuses a live
 });
 
 test('selected-Provider expansion uses durable read-only execution and applies only an accepted exact-revision Draft', async t => {
-  let proposal;
+  let proposal,calls=0;
   const f = await fixture(t, { turn: async settings => {
     assert.equal(settings.toolBroker.tools().some(tool => tool.name === 'write_workspace'), false);
     const packet = await settings.toolBroker.call('read_workflow_resource', { path: 'analysis/request.txt' }, 'read-plan');
     assert(JSON.parse(packet.contentItems[0].text).text.includes(proposal.source_revision));
     const reference = await settings.toolBroker.call('read_workflow_resource', { path: 'source/reference.md' }, 'read-pinned-reference');
     assert.equal(JSON.parse(reference.contentItems[0].text).text, 'The marker is PINNED_BLUE, not this entire document.');
-    return { output: JSON.stringify(generatedProposal(proposal)), thread_id: 'planning-thread', turn_id: 'planning-turn', audit: {} };
+    return { output: JSON.stringify(calls++===0?generatedProposal(proposal):checklist(proposal)), thread_id: 'planning-thread', turn_id: 'planning-turn', audit: {} };
   } });
   const source = join(f.root, 'expansion-source'); await mkdir(source);
   await writeFile(join(source, 'SKILL.md'), '---\nname: plan\ndescription: planning fixture\n---\nAnalyze the task and return a result.');
   await writeFile(join(source, 'reference.md'), 'The marker is PINNED_BLUE, not this entire document.');
-  const { store } = await f.service.open(); const config = await f.service.config();
+  const { store,runtime } = await f.service.open(); const config = await f.service.config();
   const providers = config.providers.filter(item => item.enabled && item.kind === 'native_agent'); assert(providers.length >= 2);
   const pack = await importCoarseSkill(store, join(source, 'SKILL.md'), { id: 'source-draft', providerId: providers[0].id, role: providers[0].config.role });
   const origin = { confidence: 0.8, source_span: { resource: 'source/SKILL.md', start_line: 5, end_line: 5 } };
@@ -620,6 +631,7 @@ test('selected-Provider expansion uses durable read-only execution and applies o
     if (node === 'final') await f.service.call('collect_strict', { ...args, accepted: true });
   }
   assert.equal(f.sessions.length, 2); assert.equal((await store.snapshot(pack.workflow.id)).revision_hash, pack.revision_hash);
+  const completed=await runtime.runs.read(planning.run_id);assert.equal(completed.pins.root.provenance.review_contract_version,CONVERSION_CONTRACT.version);
   const expanded = await f.service.call('apply_expansion_result', apply);
   assert.equal(expanded.workflow.status, 'draft'); assert.equal(expanded.workflow.nodes.find(node => node.id === 'activity_001').executor.provider_id, originalRules.routes.implementation.provider_id);
   assert(expanded.workflow.import_status.unresolved.some(item => item.code === 'AI_INFERENCES_REQUIRE_REVIEW'));

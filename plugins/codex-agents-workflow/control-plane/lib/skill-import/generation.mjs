@@ -15,11 +15,27 @@ async function persistCanonicalProposal(runtime,args,record,proposal,repairs=[],
   const output={proposal:structuredClone(proposal)};
   if (canonicalJSON(record.state.nodes.expand.output)===canonicalJSON(output)) return;
   await runtime.transition(args.run_id,'generation_projection',state=>{
-    requireValue(state.control_hash===digest(args.control_token) && state.nodes.expand.status==='succeeded' && state.nodes.final.status==='ready','RUN_SEQUENCE_CONFLICT','Generation state changed before host projection');
+    const final=state.nodes.final,attempt=final.attempts.find(item=>item.id===final.active_attempt_id);
+    const unsubmittedClaim=final.status==='claimed' && final.active_attempt_id===args.attempt_id && !attempt?.dispatch;
+    requireValue(state.control_hash===digest(args.control_token) && state.nodes.expand.status==='succeeded' && (final.status==='ready' || unsubmittedClaim),'RUN_SEQUENCE_CONFLICT','Generation state changed before host projection');
     state.nodes.expand.output=structuredClone(output);
     state.generation_projection={source_output_hash:digest(canonicalJSON(record.state.nodes.expand.output)),projected_output_hash:digest(canonicalJSON(output)),contract_version:record.pins.root.provenance.review_contract_version,repair_actions:structuredClone(repairs),...(authoringPlan?{authoring_plan:structuredClone(authoringPlan)}:{}),at:new Date().toISOString()};
     state.updated_at=state.generation_projection.at;
   },{expected_sequence:record.sequence});
+}
+
+// Compile and persist the exact reviewer input before any authoring finalizer
+// can run. Both automatic advancement and the low-level claim/dispatch path use
+// this gate, so manual driving cannot review a raw semantic envelope.
+export async function prepareAuthoringReview(runtime,args,{store,context}) {
+  if(args.node_id && args.node_id!=='final')return null;
+  const record=await runtime.runs.read(args.run_id),provenance=record.pins.root.provenance;
+  if(!isAuthoringRunProvenance(provenance))return null;
+  const pack=await store.snapshot(provenance.source_workflow_id,provenance.source_revision);
+  const resources=await store.resources(provenance.source_workflow_id,provenance.source_revision);
+  const validated=validateGenerationProposal(record.state.nodes.expand.output,{pack,resources,provenance,context,previousPlan:record.state.generation_repair?.previous_proposal ?? null});
+  await persistCanonicalProposal(runtime,args,record,validated.proposal,validated.repairs,validated.authoring_plan);
+  return validated;
 }
 
 // One bounded transition per request. Only pinned read-only generation repairs
@@ -45,18 +61,16 @@ export async function advanceGeneration(service, runtime, executor, args, {store
     requireValue(node, 'GENERATION_RUN', 'Expansion Run is missing a required stage');
     if (node.status === 'succeeded') continue;
     if (node.status === 'ready') {
-      if(nodeId==='final' && pins.generation?.settings) {
-        const pack=await store.snapshot(source.workflow_id,source.expected_revision);
-        const resources=await store.resources(source.workflow_id,pack.revision_hash);
+      if(nodeId==='final') {
         try {
-          const validated=validateGenerationProposal(state.nodes.expand.output,{pack,resources,provenance:pins.root.provenance,context,previousPlan:state.generation_repair?.previous_proposal ?? null});
-          await persistCanonicalProposal(runtime,args,record,validated.proposal,validated.repairs,validated.authoring_plan);
+          await prepareAuthoringReview(runtime,{...args,node_id:'final'},{store,context});
         }
         catch(error){
           if(!isGenerationContractFailure(error)) throw error;
           const feedback={code:error.code,message:error.message,findings:error.findings ?? [],validation:error.validation ?? null};
-          if(semanticGenerationRepair(feedback))return repairGeneration(runtime,args,record,feedback);
-          return {phase:'attention',status:'mechanical_contract_error',error:{...feedback,retry_class:'mechanical',automatic_retry:false}};
+          const semantic=semanticGenerationRepair(feedback);
+          if(pins.generation?.settings && semantic)return repairGeneration(runtime,args,record,feedback);
+          return {phase:'attention',status:semantic?'semantic_contract_error':'mechanical_contract_error',error:{...feedback,retry_class:semantic?'semantic':'mechanical',automatic_retry:false}};
         }
       }
       const lease = await runtime.claimNode(args.run_id,{...args,node_id:nodeId,owner:state.main_actor,request_id:'generation-'+nodeId+'-'+node.attempts.length});

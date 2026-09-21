@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
-const files = [
+const names = [
   'i18n.test.mjs',
   'thread-protocol.test.mjs',
   'thread-handoff.test.mjs',
@@ -57,7 +58,16 @@ const files = [
   'display-data.test.mjs',
   'skill-routing-contract.test.mjs',
   'skill-import.test.mjs',
-].map((name) => join(root, name));
+  'authoring.test.mjs',
+];
+
+const discovered=(await readdir(root)).filter(name=>name.endsWith('.test.mjs')).sort();
+const declared=[...names].sort();
+if(JSON.stringify(discovered)!==JSON.stringify(declared)){
+  console.error('TEST_MANIFEST_INCOMPLETE',JSON.stringify({missing:discovered.filter(name=>!declared.includes(name)),stale:declared.filter(name=>!discovered.includes(name))}));
+  process.exit(1);
+}
+const files=names.map((name) => join(root, name));
 
 const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...files], {
   stdio: 'inherit',

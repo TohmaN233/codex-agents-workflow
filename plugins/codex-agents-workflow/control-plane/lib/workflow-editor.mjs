@@ -1,5 +1,6 @@
 import { requireValue, resourcePath } from './workflow-paths.mjs';
 import { digest } from './workflow-revisions.mjs';
+import { requireWorkflowResourceClosure } from './workflow-resource-validation.mjs';
 
 export async function readEditorResource(store, { workflow_id, revision_hash, resource_path }) {
   resourcePath(resource_path); const pack = await store.snapshot(workflow_id, revision_hash);
@@ -29,8 +30,8 @@ export async function writeEditorResource(store, { workflow_id, expected_revisio
 
 export async function publishEditorWorkflow(store, { workflow_id, expected_revision, reviewed }) {
   requireValue(reviewed === true, 'WORKFLOW_PUBLICATION_REVIEW', 'Ready publication requires explicit review of the exact saved revision');
-  const pack = await store.snapshot(workflow_id, expected_revision); const known = new Set(pack.resources.map(item => item.path));
-  for (const node of pack.workflow.nodes) requireValue((node.resources ?? []).every(path => known.has(path)), 'WORKFLOW_RESOURCE_MISSING', 'A node references a resource missing from the reviewed Pack', { node_id: node.id });
+  const pack = await store.snapshot(workflow_id, expected_revision);
+  requireWorkflowResourceClosure(pack.workflow,pack.resources);
   return store.save(workflow_id, { ...pack.workflow, status: 'ready' }, { expected_revision,
     provenance: { ...pack.provenance, publication: { actor: 'user', reviewed_revision: expected_revision, at: new Date().toISOString() } } });
 }

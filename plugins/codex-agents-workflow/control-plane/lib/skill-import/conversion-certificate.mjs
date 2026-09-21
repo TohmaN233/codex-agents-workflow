@@ -29,10 +29,11 @@ export function conversionResourceHash(resources) {
   return digest(canonicalJSON(manifestOf(resources)));
 }
 
-export function createConversionCertificate(workflow, resources, { source_revision, proposal_hash }) {
+export function createConversionCertificate(workflow, resources, { source_revision, proposal_hash, review_contract_version }) {
+  requireValue(review_contract_version===CONVERSION_CONTRACT.version,'CONVERSION_REVIEW_CONTRACT_STALE','A current conversion certificate requires the current review contract');
   return {
     version: 1,
-    review_contract_version: CONVERSION_CONTRACT.version,
+    review_contract_version,
     source_revision,
     proposal_hash,
     workflow_hash: conversionWorkflowHash(workflow),

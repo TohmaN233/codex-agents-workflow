@@ -18,14 +18,14 @@ function missingContractFields(proposal) {
 }
 
 export function deterministicProposalFindings(proposal,compiled,version,resources={}) {
-  const findings=[];
-  if (version>=6) findings.push(...missingContractFields(proposal));
+  const mechanical=[],semantic=[];
+  if (version>=6) mechanical.push(...missingContractFields(proposal));
   if (version>=4) {
-    findings.push(...compiled.workflow.import_status.requirement_coverage.filter(item=>item.status==='unsupported'));
-    for(const mapping of proposal.requirement_mappings ?? []) if(mapping.rationale?.startsWith('Host-projected to resource-consuming nodes because the planner supplied no semantic mapping')) findings.push({requirement_id:mapping.requirement_id,status:'fallback_review',reason:'A deterministic source requirement has no planner-supplied semantic mapping.'});
+    semantic.push(...compiled.workflow.import_status.requirement_coverage.filter(item=>item.status==='unsupported'));
+    for(const mapping of proposal.requirement_mappings ?? []) if(mapping.rationale?.startsWith('Host-projected to resource-consuming nodes because the planner supplied no semantic mapping')) semantic.push({requirement_id:mapping.requirement_id,status:'fallback_review',reason:'A deterministic source requirement has no planner-supplied semantic mapping.'});
   }
-  if (version>=8) findings.push(...validateSourceDispositions(proposal,resources));
-  return findings;
+  if (version>=8) semantic.push(...validateSourceDispositions(proposal,resources));
+  return {mechanical,semantic};
 }
 
 // One deterministic gate shared by pre-review, persisted-artifact recheck and
@@ -55,6 +55,7 @@ export function validateGenerationProposal(output,{pack,resources,provenance,con
   if (canonicalJSON(proposal)!==canonicalJSON(compiled.canonical_proposal)) repairs.push({kind:'host_semantic_status_projection',fields:['requirement_mappings','tool_output_schemas']});
   const canonicalProposal=compiled.canonical_proposal;
   const findings=deterministicProposalFindings(canonicalProposal,compiled,provenance.review_contract_version ?? 1,resources);
-  requireValue(findings.length===0,'GENERATION_DETERMINISTIC_AUDIT','The proposal does not satisfy the pinned deterministic conversion contract',{findings,validation:compiled.validation});
+  requireValue(findings.mechanical.length===0,'GENERATION_HOST_PROJECTION','The Host projection is incomplete and cannot be repaired by another model attempt',{findings:findings.mechanical,validation:compiled.validation});
+  requireValue(findings.semantic.length===0,'GENERATION_DETERMINISTIC_AUDIT','The proposal does not satisfy the pinned deterministic conversion contract',{findings:findings.semantic,validation:compiled.validation});
   return {decoded,proposal:canonicalProposal,compiled,repairs,authoring_plan:decodedResult.authoringPlan ?? null};
 }

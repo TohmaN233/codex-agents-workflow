@@ -8,7 +8,7 @@ import { WorkflowForge } from '../lib/authoring/workflow-forge.mjs';
 import { applySemanticRepair, INTERNAL_SEMANTIC_BLUEPRINT_SCHEMA, PREVIOUS_SEMANTIC_BLUEPRINT_CONTRACT as SEMANTIC_BLUEPRINT_CONTRACT, SEMANTIC_BLUEPRINT_CONTRACT as CURRENT_SEMANTIC_BLUEPRINT_CONTRACT, SEMANTIC_BLUEPRINT_SCHEMA, SEMANTIC_REPAIR_CONTRACT } from '../lib/authoring/blueprint-contract.mjs';
 import { sourceSectionInventory } from '../lib/skill-import/source-dispositions.mjs';
 import { observedSourceRequirements } from '../lib/skill-import/source-requirements.mjs';
-import { prepareResources, revisionHash } from '../lib/workflow-revisions.mjs';
+import { canonicalJSON, digest, prepareResources, revisionHash } from '../lib/workflow-revisions.mjs';
 import { WorkflowStore } from '../lib/workflow-store.mjs';
 import { exportWorkflowPackage, installWorkflowPackage, validateWorkflowPackage } from '../lib/workflow-package.mjs';
 import { generationRetryClass, isGenerationContractFailure, MAX_PLANNER_ATTEMPTS } from '../lib/skill-import/generation-retry-policy.mjs';
@@ -16,8 +16,9 @@ import { AUTHORING_WORKFLOWS, authoringWorkflowForPack } from '../lib/authoring/
 import { AUTHORING_RUNTIME_ENVELOPE_SCHEMA, authoringRunPack } from '../lib/skill-import/expansion-run.mjs';
 import { managedNativeResultSchema } from '../lib/execution/host-main-automation.mjs';
 import { validateData } from '../lib/workflow-data-schema.mjs';
+import { deterministicProposalFindings } from '../lib/skill-import/proposal-validation.mjs';
 
-const rules={version:1,instructions:'Host routing.',selection_mode:'automatic',routes:{implementation:{provider_id:'native-luna',role:'implementer'},complex_implementation:{provider_id:'native-terra',role:'implementer'},review:{provider_id:'native-reviewer',role:'reviewer'},planning:{provider_id:'native-terra',role:'implementer'}}};
+const rules={version:1,instructions:'Host routing.',selection_mode:'automatic',routes:{implementation:{provider_id:'native-luna',role:'implementer'},complex_implementation:{provider_id:'native-terra',role:'implementer'},review:{provider_id:'native-reviewer',role:'reviewer'},planning:{provider_id:'native-terra',role:'implementer'}},generation:{planner_provider_id:'native-terra',review_provider_id:'native-reviewer',max_rounds:2}};
 const providers=[
   {id:'native-luna',enabled:true,kind:'native_agent',capabilities:{read:true,write:true},config:{role:'implementer'}},
   {id:'native-terra',enabled:true,kind:'native_agent',capabilities:{read:true,write:true},config:{role:'implementer'}},
@@ -51,7 +52,26 @@ test('compact authoring contract derives the root and semantic repair changes on
   const empty={source_dispositions:[],requirement_assignments:[],records:[],lists:[],enums:[],activities:[],approvals:[],sequences:[],parallels:[],choices:[]};
   const repaired=applySemanticRepair(compact,{contract:SEMANTIC_REPAIR_CONTRACT,purpose:'',upsert:{...structuredClone(empty),activities:[{...compact.activities[1],instructions:'Review exact implementation evidence and report gaps.'}]},remove:empty});
   assert.equal(repaired.activities[0].instructions,compact.activities[0].instructions);assert.match(repaired.activities[1].instructions,/exact implementation evidence/);
+  const duplicatePatch={contract:SEMANTIC_REPAIR_CONTRACT,purpose:'',upsert:{...structuredClone(empty),activities:[compact.activities[0],compact.activities[0]]},remove:empty};
+  assert.throws(()=>applySemanticRepair(compact,duplicatePatch),{code:'AUTHORING_FORMAT'});
   assert(JSON.stringify(SEMANTIC_BLUEPRINT_SCHEMA).length<JSON.stringify(INTERNAL_SEMANTIC_BLUEPRINT_SCHEMA).length*0.82);
+});
+
+test('WorkflowForge rejects duplicate semantic keys before keyed collections become Maps',()=>{
+  const {pack,resources}=sourceFixture(),sections=sourceSectionInventory(resources),ids=sections.map(item=>item.section_id);
+  const base=blueprint({purpose:'Reject ambiguous semantic identity.',source_dispositions:dispositions(sections,['work']),activities:[activity('work','Perform the work.',ids)],root:'work'});
+  const candidates={
+    activities:activity('work','Duplicate the work.',ids),
+    approvals:{key:'approve',question:'Approve?',source_sections:ids},
+    sequences:{key:'sequence',members:['work'],failure_meaning:'all_required'},
+    parallels:{key:'parallel',members:['work','work'],failure_meaning:'all_required'},
+    choices:{key:'choice',decision_activity:'work',output:'result',branches:[{value:'yes',body:'work'}],default_body:'work'},
+  };
+  for(const [collection,item] of Object.entries(candidates)){
+    const candidate=structuredClone(base);
+    candidate[collection]=collection==='activities'?[candidate.activities[0],structuredClone(item)]:[structuredClone(item),structuredClone(item)];
+    assert.throws(()=>new WorkflowForge().compile({pack,resources,blueprint:candidate,context:{routing_rules:rules,routing_catalog:providers,providers}}),{code:'AUTHORING_FORMAT'});
+  }
 });
 
 test('WorkflowForge lowers a brief semantic blueprint and owns every mechanical graph field',()=>{
@@ -243,12 +263,14 @@ test('WorkflowForge keeps semantic keys separate from Host node IDs',()=>{
 });
 
 test('authoring retry policy never retries mechanical failures and permits only one semantic repair',()=>{
-  for(const code of ['DATA_INVALID','STRICT_OUTPUT_JSON','GENERATION_PROPOSAL_CONTRACT','AUTHORING_BLUEPRINT','AUTHORING_FORMAT','WORKFLOW_PACKAGE_INTEGRITY','EXPANSION_GRAPH_INVALID','ROUTING_CLASSIFICATION','EXPANSION_WRITE_PROVIDER','EXPANSION_THREAD_LIFECYCLE'])assert.equal(generationRetryClass({code}),'mechanical');
+  for(const code of ['DATA_INVALID','STRICT_OUTPUT_JSON','GENERATION_PROPOSAL_CONTRACT','GENERATION_HOST_PROJECTION','AUTHORING_BLUEPRINT','AUTHORING_FORMAT','WORKFLOW_PACKAGE_INTEGRITY','EXPANSION_GRAPH_INVALID','ROUTING_CLASSIFICATION','EXPANSION_WRITE_PROVIDER','EXPANSION_THREAD_LIFECYCLE'])assert.equal(generationRetryClass({code}),'mechanical');
   for(const code of ['AUTHORING_SEMANTIC','GENERATION_REVIEW_FINDINGS','GENERATION_DETERMINISTIC_AUDIT','EXPANSION_SOURCE_DISPOSITIONS'])assert.equal(generationRetryClass({code}),'semantic');
   assert.equal(MAX_PLANNER_ATTEMPTS,2);
   assert.equal(isGenerationContractFailure({code:'AUTHORING_SEMANTIC'}),true);
   assert.equal(isGenerationContractFailure({code:'DATA_INVALID'}),true);
   assert.equal(isGenerationContractFailure({code:'ENOENT'}),false);
+  const findings=deterministicProposalFindings({nodes:[{id:'work',type:'agent'}],requirement_mappings:[]},{workflow:{import_status:{requirement_coverage:[]}}},6,{});
+  assert.equal(findings.mechanical.length,4);assert.deepEqual(findings.semantic,[]);
 });
 
 test('Skill conversion and from-scratch authoring are two configurations of the same strict authoring Workflow',()=>{
@@ -260,7 +282,7 @@ test('Skill conversion and from-scratch authoring are two configurations of the 
   assert.equal(pack.workflow.skill_policy.mode,'cooperative');
   assert.equal(authoringWorkflowForPack(pack).id,'system.build-workflow');
   assert.equal(authoringWorkflowForPack({...pack,provenance:{kind:'skill_import',source_kind:'skill'}}).id,'system.skill2workflow');
-  const job=authoringRunPack(pack,resources,providers[1],'authoring-contract',rules,false,null,providers);
+  const job=authoringRunPack(pack,resources,providers[1],'authoring-contract',rules,false,providers[2],providers);
   assert.equal(job.provenance.authoring_workflow_id,'system.build-workflow');
   assert.deepEqual(AUTHORING_WORKFLOWS[1].stages.map(({id})=>id),job.workflow.nodes.map(({id})=>id));
   assert.deepEqual(AUTHORING_WORKFLOWS[1].edges.map(({source,target})=>[source,target]),job.workflow.edges.map(({source,target})=>[source,target]));
@@ -283,4 +305,11 @@ test('portable Workflow package validates content identity and installs atomical
   assert.equal(installed.workflow.id,'portable-brief');
   const tampered=structuredClone(bundle);tampered.objects[0].content_base64=Buffer.from('tampered').toString('base64');
   assert.throws(()=>validateWorkflowPackage(tampered),{code:'WORKFLOW_PACKAGE_INTEGRITY'});
+  const incomplete=structuredClone(bundle),missing=incomplete.snapshot.workflow.nodes.flatMap(node=>node.resources ?? [])[0];
+  incomplete.snapshot.workflow.status='ready';
+  incomplete.snapshot.resources=incomplete.snapshot.resources.filter(item=>item.path!==missing);
+  incomplete.objects=incomplete.objects.filter(item=>item.path!==missing);
+  incomplete.snapshot.revision_hash=revisionHash({workflow:incomplete.snapshot.workflow,resources:incomplete.snapshot.resources,provenance:incomplete.snapshot.provenance,import_report:incomplete.snapshot.import_report});
+  const {package_sha256:_old,...payload}=incomplete;incomplete.package_sha256=digest(canonicalJSON(payload));
+  assert.throws(()=>validateWorkflowPackage(incomplete),{code:'WORKFLOW_RESOURCE_MISSING'});
 });

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { lstat, readFile, realpath, writeFile } from 'node:fs/promises';
 import { execFile as execFileCallback } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { isAbsolute, parse, relative, resolve, sep, join } from 'node:path';
+import { isAbsolute, relative, resolve, sep, join } from 'node:path';
 import { promisify } from 'node:util';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { executeBoundProgram, qualifiedExecutionBinding } from './codex-tool-broker.mjs';
@@ -101,17 +101,18 @@ async function runChild(active, executable, args, { signal, maxBuffer = 8192 } =
   });
 }
 function contained(root, candidate) { const path = relative(root, candidate); return path === '' || (!path.startsWith('..') && !isAbsolute(path)); }
-async function noLinks(path) {
-  const absolute = resolve(path); const root = parse(absolute).root; let current = root;
+async function noLinks(root,path) {
+  const absolute = resolve(path);if(!contained(root,absolute))throw failure('PLAN1_PATH_ESCAPE',`Path escapes its root: ${path}`);let current=root;
   for (const part of relative(root, absolute).split(sep).filter(Boolean)) {
     current = join(current, part);
     if ((await lstat(current)).isSymbolicLink()) throw failure('PLAN1_SYMLINK', `Plan 1 path contains a symbolic link: ${current}`);
   }
-  return realpath(absolute);
+  const canonical=await realpath(absolute);if(!contained(root,canonical))throw failure('PLAN1_PATH_ESCAPE',`Path resolves outside its root: ${path}`);return canonical;
 }
 async function directory(path, label) {
   if (typeof path !== 'string' || !isAbsolute(path)) throw failure('PLAN1_PATH_REQUIRED', `Plan 1 ${label} must be absolute`);
-  const canonical = await noLinks(path); const item = await lstat(canonical);
+  const absolute=resolve(path),declared=await lstat(absolute);if(declared.isSymbolicLink())throw failure('PLAN1_SYMLINK',`Plan 1 ${label} cannot itself be a symbolic link`);
+  const canonical = await realpath(absolute); const item = await lstat(canonical);
   if (!item.isDirectory()) throw failure('PLAN1_DIRECTORY_INVALID', `Required directory is invalid: ${label}`);
   return canonical;
 }
@@ -122,7 +123,7 @@ async function taskPaths(input) {
 async function regularFile(root, path, { nonempty = false } = {}) {
   const target = resolve(root, path);
   if (!contained(root, target)) throw failure('PLAN1_PATH_ESCAPE', `Path escapes its root: ${path}`);
-  const canonical = await noLinks(target); const item = await lstat(canonical);
+  const canonical = await noLinks(root,target); const item = await lstat(canonical);
   if (!item.isFile() || (nonempty && item.size === 0)) throw failure('PLAN1_FILE_INVALID', `Required regular file is invalid: ${path}`);
   return { path: path.replaceAll('\\', '/'), bytes: item.size, sha256: digest(await readFile(canonical)) };
 }
@@ -168,7 +169,7 @@ function validateEarthquake(answer, { allowFractionalTime = false } = {}) {
 }
 async function normalizePublicOutput(taskId, workspace) {
   if (taskId !== 'earthquake-plate-calculation') return [];
-  const path = resolve(workspace, 'answer.json');
+  const path = await noLinks(workspace,resolve(workspace, 'answer.json'));
   const answer = JSON.parse(await readFile(path, 'utf8'));
   validateEarthquake(answer, { allowFractionalTime: true });
   const match = typeof answer.time === 'string' && answer.time.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+Z$/);

@@ -202,9 +202,12 @@ export function decodeGeneratedProposal(output, expectedRevision = null, options
   return decodeGeneratedProposalDetailed(output,expectedRevision,options).proposal;
 }
 
-export function authoringRunPack(pack, resources, provider, id, routingRules, automatic = false, reviewer = null, providers = []) {
-  const generation = automatic ? validateGenerationSettings(routingRules?.generation) : null;
-  if(generation) requireValue(reviewer?.id===generation.review_provider_id && reviewer.enabled && reviewer.kind==='native_agent' && reviewer.capabilities.read,'GENERATION_REVIEW_PROVIDER','Choose an enabled native Provider with read capability for review');
+export function authoringRunPack(pack, resources, provider, id, routingRules, _automatic = false, reviewer = null, providers = []) {
+  // Every authoring Run carries the same review contract. The service-level
+  // automatic flag controls Host advancement/repair only; it cannot weaken the
+  // pinned Workflow or turn checklist review into an optional execution mode.
+  const generation = validateGenerationSettings(routingRules?.generation);
+  requireValue(reviewer?.id===generation.review_provider_id && reviewer.enabled && reviewer.kind==='native_agent' && reviewer.capabilities.read,'GENERATION_REVIEW_PROVIDER','Choose an enabled native Provider with read capability for review');
   const packet = expansionPacket(pack, resources, provider, routingRules, providers);
   const authoring=authoringWorkflowForPack(pack);
   requireValue(provider.kind === 'native_agent', 'EXPANSION_EXECUTOR_UNAVAILABLE', 'Managed expansion currently requires a user-selected native Provider with qualified Strict execution');

@@ -1,6 +1,7 @@
 import { canonicalJSON, digest, prepareResources, revisionHash } from './workflow-revisions.mjs';
 import { requireValue } from './workflow-paths.mjs';
 import { requireCurrentConversionCertificate } from './skill-import/conversion-certificate.mjs';
+import { requireWorkflowResourceClosure } from './workflow-resource-validation.mjs';
 
 export const WORKFLOW_PACKAGE_FORMAT='codex.workflow.package';
 export const WORKFLOW_PACKAGE_VERSION=1;
@@ -38,7 +39,10 @@ export function validateWorkflowPackage(bundle){
   const expectedDependencies={providers:[...(snapshot.workflow.requirements?.providers ?? [])].sort(),tools:[...(snapshot.workflow.requirements?.tools ?? [])].sort(),mcp_servers:[...(snapshot.workflow.requirements?.mcp_servers ?? [])].sort(),executables:[...(snapshot.workflow.requirements?.executables ?? [])].sort()};
   requireValue(canonicalJSON(payload.dependencies)===canonicalJSON(expectedDependencies),'WORKFLOW_PACKAGE_DEPENDENCIES','Workflow package dependency manifest differs from its Workflow');
   requireValue(revisionHash(snapshot)===payload.snapshot.revision_hash,'WORKFLOW_PACKAGE_REVISION','Workflow package revision identity differs');
-  if(snapshot.workflow.status==='ready')requireCurrentConversionCertificate(snapshot.workflow,snapshot.resources,snapshot.import_report);
+  if(snapshot.workflow.status==='ready'){
+    requireWorkflowResourceClosure(snapshot.workflow,snapshot.resources);
+    requireCurrentConversionCertificate(snapshot.workflow,snapshot.resources,snapshot.import_report);
+  }
   return {package:structuredClone(payload.package),snapshot:structuredClone(payload.snapshot),resources,package_sha256};
 }
 

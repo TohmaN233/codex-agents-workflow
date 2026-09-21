@@ -1,8 +1,9 @@
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { validateData, validateDataSchema } from '../workflow-data-schema.mjs';
 import { intersectBoundaries, pathBoundaries } from '../workflow-bindings.mjs';
-import { canonicalNoLinks, requireValue } from '../workflow-paths.mjs';
-import { isAbsolute } from 'node:path';
+import { requireValue } from '../workflow-paths.mjs';
+import { isAbsolute,resolve } from 'node:path';
+import { lstat,realpath } from 'node:fs/promises';
 
 const MAX_OUTPUT = 128 * 1024;
 const statusValues = new Set(['succeeded', 'failed', 'timed_out', 'cancelled']);
@@ -49,8 +50,9 @@ async function declaredWorkspace(input, context) {
   if (!Object.hasOwn(input, 'workspace')) return;
   requireValue(typeof input.workspace === 'string' && isAbsolute(input.workspace), 'HOST_TOOL_WORKSPACE_REQUIRED', 'Host tool workspace input must be an absolute physical path');
   requireValue(typeof context?.workspace === 'string' && isAbsolute(context.workspace), 'HOST_TOOL_WORKSPACE_REQUIRED', 'Host tool requires its exact Run/node workspace context');
+  const root=async path=>{const absolute=resolve(path),entry=await lstat(absolute);requireValue(entry.isDirectory()&&!entry.isSymbolicLink(),'HOST_TOOL_WORKSPACE_SYMLINK','Declared host-tool workspace must be a real directory, not a link');return realpath(absolute);};
   let declared; let authorized;
-  try { [declared, authorized] = await Promise.all([canonicalNoLinks(input.workspace), canonicalNoLinks(context.workspace)]); }
+  try { [declared, authorized] = await Promise.all([root(input.workspace), root(context.workspace)]); }
   catch (error) { throw Object.assign(new Error(`Host tool workspace contains a symlink/reparse escape: ${error.message}`), { code: 'HOST_TOOL_WORKSPACE_SYMLINK' }); }
   requireValue(declared === authorized, 'HOST_TOOL_WORKSPACE_MISMATCH', 'Declared host-tool workspace differs from the exact Run/node-authorized workspace');
 }

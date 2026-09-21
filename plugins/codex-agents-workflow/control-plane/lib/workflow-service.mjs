@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { prepareTaskInputs, generateTaskBrief } from './task-inputs.mjs';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
 import { readFile } from 'node:fs/promises';
-import { advanceGeneration, acceptGeneration, loginGeneration, recheckGenerationProposal, acceptRecheckedGenerationReview } from './skill-import/generation.mjs';
+import { advanceGeneration, acceptGeneration, loginGeneration, recheckGenerationProposal, acceptRecheckedGenerationReview, prepareAuthoringReview } from './skill-import/generation.mjs';
 import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
 import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
@@ -27,8 +27,7 @@ import { buildProviderAdapter } from './providers.mjs';
 import { strictManagerFor } from './execution/strict-session-manager.mjs';
 import { managedNativeManagerFor } from './execution/managed-native-manager.mjs';
 import { importReviewPacket, reviewImportedDraft } from './skill-import/review-import.mjs';
-import { authoringRunPack, decodeGeneratedEnvelope, decodeGeneratedProposal } from './skill-import/expansion-run.mjs';
-import { SEMANTIC_BLUEPRINT_CONTRACT, SEMANTIC_REPAIR_CONTRACT } from './authoring/blueprint-contract.mjs';
+import { authoringRunPack } from './skill-import/expansion-run.mjs';
 import { validateGenerationProposal } from './skill-import/proposal-validation.mjs';
 import { SkillInventory } from './skill-import/inventory.mjs';
 import { discoverCodexSkills } from './skill-import/codex-inventory.mjs';
@@ -51,6 +50,7 @@ import { hostCompletionEnvelope } from './execution/host-main-automation.mjs';
 import { WorkflowAuthoringCompiler } from './skill-import/workflow-authoring.mjs';
 import { exportWorkflowPackage, installWorkflowPackage } from './workflow-package.mjs';
 import { AUTHORING_WORKFLOWS, isAuthoringRunProvenance } from './authoring/authoring-workflows.mjs';
+import { CONVERSION_CONTRACT } from './skill-import/conversion-contract.mjs';
 
 function inventorySelection(service, args) {
   requireValue(args.discovery === undefined || ['folders','host'].includes(args.discovery), 'SKILL_DISCOVERY_MODE', 'Discovery mode must be folders or host');
@@ -313,27 +313,18 @@ export class WorkflowService {
           'EXPANSION_RESULT_IDENTITY', 'Expansion result belongs to a different source Workflow revision');
         const resources=await store.resources(args.workflow_id,args.expected_revision);
         const expansionContext={...context,routing_rules:provenance.routing_rules,routing_catalog:provenance.routing_catalog};
-        const payload=decodeGeneratedEnvelope(state.nodes.expand.output);
-        let proposal;
-        if([SEMANTIC_BLUEPRINT_CONTRACT,SEMANTIC_REPAIR_CONTRACT].includes(payload?.contract)){
-          const sourcePack=await store.snapshot(args.workflow_id,args.expected_revision);
-          proposal=validateGenerationProposal(state.nodes.expand.output,{pack:sourcePack,resources,provenance,context:expansionContext,previousPlan:record.state.generation_repair?.previous_proposal ?? null}).proposal;
-        } else proposal=decodeGeneratedProposal(state.nodes.expand.output,provenance.source_revision,{requirePlanningAnalysis:provenance.routing_rules?.selection_mode === 'automatic'});
-        // Revalidate at the mutation boundary.  A persisted model completion is
-        // not authority to bypass a newer conversion contract.
-        if(Number.isInteger(provenance.review_contract_version) && provenance.review_contract_version >= 2){
-          if(provenance.review_contract_version >= 4){
-            const sourcePack=await store.snapshot(args.workflow_id,args.expected_revision);
-            const validated=validateGenerationProposal(state.nodes.expand.output,{pack:sourcePack,resources,provenance,context:expansionContext});
-            proposal=validated.proposal;
-          }
-          const final=state.nodes.final;const attempt=final.attempts.find(a=>a.id===final.active_attempt_id);
-          requireValue(attempt?.result_proposal,'GENERATION_REVIEW_BLOCKED','A persisted checklist review is required');
-          const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);
-          const review=evaluateReview(completion.structured_output,proposal,resources,{version:provenance.review_contract_version});
-          requireValue(review.approved,'GENERATION_REVIEW_BLOCKED','Checklist findings remain unresolved');
-        }
-        return applyExpansion(store, args.workflow_id, proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null });
+        requireValue(provenance.review_contract_version===CONVERSION_CONTRACT.version,'CONVERSION_REVIEW_CONTRACT_STALE','Historical authoring Runs remain readable but must be rerun under the current conversion contract before mutation');
+        // The mutation boundary always uses the current full validator and the
+        // checklist produced under that exact contract. Compatibility aliases
+        // cannot turn a historical review into a current certificate.
+        const sourcePack=await store.snapshot(args.workflow_id,args.expected_revision);
+        const proposal=validateGenerationProposal(state.nodes.expand.output,{pack:sourcePack,resources,provenance,context:expansionContext,previousPlan:record.state.generation_repair?.previous_proposal ?? null}).proposal;
+        const final=state.nodes.final;const attempt=final.attempts.find(a=>a.id===final.active_attempt_id);
+        requireValue(attempt?.result_proposal,'GENERATION_REVIEW_BLOCKED','A persisted checklist review is required');
+        const completion=await runtime.runs.readExecutorResult(args.run_id,attempt.id,attempt.result_proposal.sha256);
+        const review=evaluateReview(completion.structured_output,proposal,resources,{version:CONVERSION_CONTRACT.version});
+        requireValue(review.approved,'GENERATION_REVIEW_BLOCKED','Checklist findings remain unresolved');
+        return applyExpansion(store, args.workflow_id, proposal, { expected_revision: args.expected_revision, context: { ...context, routing_rules: provenance.routing_rules, routing_catalog:provenance.routing_catalog }, inference_confirmation: human && args.confirm_inferences === true ? 'User confirmed all shown inferred nodes and edges after generation review.' : null, conversion_review_contract_version:CONVERSION_CONTRACT.version });
       }
       case 'apply_expansion':
         requireValue(false,'AUTHORING_ENTRY_RETIRED','Direct proposal application was retired because it bypasses the pinned authoring Workflow and its shared validation gate; use create_authoring_run and apply_authoring_result');
@@ -492,7 +483,10 @@ export class WorkflowService {
       }
       case 'next': return runtime.next(args.run_id);
       case 'drive': return drive.advance(args.run_id, args);
-      case 'claim_node': return runtime.claimNode(args.run_id, args);
+      case 'claim_node': {
+        if(args.node_id==='final')await prepareAuthoringReview(runtime,args,{store,context});
+        return runtime.claimNode(args.run_id, args);
+      }
       case 'complete_node': return runtime.completeNode(args.run_id, args);
       case 'fail_node': return runtime.failNode(args.run_id, args);
       case 'retry_node': return runtime.retryNode(args.run_id, args);
@@ -511,7 +505,10 @@ export class WorkflowService {
         return runtime.get(args.run_id);
       }
       case 'events': return runtime.events(args.run_id, args);
-      case 'dispatch': return executor.dispatch(args.run_id, args);
+      case 'dispatch': {
+        if(args.node_id==='final')await prepareAuthoringReview(runtime,args,{store,context});
+        return executor.dispatch(args.run_id, args);
+      }
       case 'strict_status': return this.strictManager.status(runtime, args.run_id, args);
       case 'strict_login': {
         requireValue(human, 'HUMAN_AUTHENTICATION_REQUIRED', 'Managed login URLs are available only to the authenticated human console');
