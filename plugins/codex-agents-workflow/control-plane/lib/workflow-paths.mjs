@@ -1,4 +1,5 @@
 import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 
 export function requireValue(condition, code, message, details = {}) {
@@ -20,10 +21,27 @@ export function resourcePath(path) {
   return path;
 }
 
+function containsOrEquals(root,path){
+  const rel=relative(root,path);
+  return rel==='' || (!rel.startsWith('..'+sep) && rel!=='..' && !isAbsolute(rel));
+}
+
+// The runtime-selected home and temporary directories are trust boundaries,
+// not descendants controlled by a Workflow. Their operating-system ancestors
+// may be aliases (macOS commonly exposes /var through /private/var). Check the
+// boundary itself and every owned descendant without treating those external
+// ancestor aliases as an in-store link.
+function runtimeBoundary(absolute){
+  const candidates=[resolve(tmpdir()),resolve(homedir())].filter(root=>containsOrEquals(root,absolute)).sort((a,b)=>b.length-a.length);
+  return candidates[0] ?? parse(absolute).root;
+}
+
 export async function noSymlinks(path) {
   requireValue(isAbsolute(path), 'ABSOLUTE_PATH_REQUIRED', 'Store path must be absolute');
   const absolute = resolve(path);
-  const root = parse(absolute).root;
+  const root = runtimeBoundary(absolute);
+  const boundary=await lstat(root);
+  requireValue(!boundary.isSymbolicLink(), 'WORKFLOW_SYMLINK', `Symlink/reparse path is not allowed: ${root}`);
   let current = root;
   for (const part of relative(root, absolute).split(sep).filter(Boolean)) {
     current = join(current, part);
