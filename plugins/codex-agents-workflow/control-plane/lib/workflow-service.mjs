@@ -670,7 +670,7 @@ export class WorkflowService {
     if(continuation)return continuation;
     const activeSlots=activeNativeAssignmentSlots(record,definition,attempt);
     const agentIds=activeSlots.map(index=>attempt.native_agents?.[index]);
-    const recorded=definition.fanout?.scheduling==='serial'?attempt.native_serial_results
+    const recorded=definition.fanout?.scheduling==='serial'?(attempt.native_serial_results??[])
       :definition.fanout?.max_concurrency
         ?activeSlots.map(index=>attempt.native_parallel_results?.[index]):null;
     let results=recorded;
@@ -722,9 +722,10 @@ export class WorkflowService {
     requireValue(receipt?.executor==='codex-native-subagent','NATIVE_AGENT_RECEIPT',
       'The Host must seal the exact observed native Agent identities before completion');
     const activeSlots=activeNativeAssignmentSlots(record,definition,attempt);
-    const results=definition.fanout?.scheduling==='serial'?attempt.native_serial_results:definition.fanout?.max_concurrency
+    const results=definition.fanout?.scheduling==='serial'?(attempt.native_serial_results??[]):definition.fanout?.max_concurrency
       ?activeSlots.map(index=>attempt.native_parallel_results?.[index]):args.results;
-    requireValue(Array.isArray(results)&&results.every((item,index)=>item?.agent_id===receipt.agent_ids[index]),
+    requireValue(Array.isArray(results)&&results.length===receipt.agent_ids.length&&
+      results.every((item,index)=>item?.agent_id===receipt.agent_ids[index]),
       'NATIVE_AGENT_RESULT','Native results must match the recorded Agent IDs in dispatch order');
     let itemResults;
     if(definition.fanout?.result_mode==='per_item'){
@@ -750,7 +751,7 @@ export class WorkflowService {
     const agentIds=activeSlots.map(index=>attempt.native_agents?.[index]);
     requireValue(agentIds.every(id=>typeof id==='string'&&id.length>0),'NATIVE_AGENT_SPAWN_MISSING',
       'Every Host-planned native Agent must be journaled before sealing its dispatch');
-    if(definition.fanout?.scheduling==='serial')requireValue(attempt.native_serial_results?.length===count,
+    if(definition.fanout?.scheduling==='serial')requireValue((attempt.native_serial_results??[]).length===count,
       'NATIVE_AGENT_SERIAL_RESULT','Every serial sub-Agent must have a Host-observed validated result before sealing');
     if(definition.fanout?.max_concurrency)requireValue(Object.keys(attempt.native_parallel_results??{}).length===count,
       'NATIVE_AGENT_PARALLEL_RESULT','Every capped parallel sub-Agent must have a Host-observed validated result before sealing');

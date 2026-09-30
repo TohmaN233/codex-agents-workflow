@@ -656,6 +656,76 @@ test(`explicit per-item ${scheduling} retry completes after omitting a fully inh
 });
 }
 
+test('all-inherited serial per-item retry records an empty trusted dispatch and completes idempotently',async t=>{
+  const jobs=[10,20,30];let observerCalls=0;
+  const f=await fixture(t,async ids=>{
+    observerCalls++;
+    assert.fail(`All items are inherited; native child ${ids[0]} must not be observed`);
+  });
+  const workflow=definition('native-serial-all-inherited-retry','capped-one');
+  const worker=workflow.nodes.find(node=>node.id==='worker');
+  worker.fanout.result_mode='per_item';worker.fanout.scheduling='serial';delete worker.fanout.max_concurrency;
+  const {run,binding}=await startRun(f,workflow,{jobs});
+  const first=await f.service.call('native_next',binding);
+  assert.deepEqual(first.packets.map(packet=>packet.index),[0]);
+  await recordNativeSpawn(f,{...binding,attempt_id:first.attempt_id,index:0,agent_id:'seed-serial-child'});
+
+  const seed=await nativeAttemptContext(f,{...binding,attempt_id:first.attempt_id});
+  await seed.runtime.recordNativeItemResults(run.run_id,{...seed.binding,index:0,agent_id:'seed-serial-child',turn_id:'seed-complete-turn',
+    target_indices:jobs.map((_job,index)=>index),result:{items:jobs.map(job=>({outcome:'completed',result:[job]}))}});
+  await f.service.call('fail_node',{...seed.binding,error:{code:'TEST_RETRY_SEED',message:'Retry after all per-item results were journaled'}});
+  const failed=await f.service.call('get',binding);
+  const previous=failed.nodes.worker.attempts.at(-1);
+  assert.equal(failed.nodes.worker.status,'failed');
+  assert.deepEqual(Object.keys(previous.native_item_results).map(Number),[0,1,2]);
+
+  await f.service.call('retry_node',{...binding,node_id:'worker',reconciliation:{attempt_id:previous.id,
+    dispatch_request_id:previous.dispatch.request_id,outcome:'explicit_retry',evidence:[{kind:'all_items_already_accepted'}]}});
+  const recovered=await f.service.call('native_next',binding);
+  assert.equal(recovered.node_id,'worker');
+  assert.equal(recovered.next_action,'workflow_native_next');
+  const completed=await f.service.call('get',binding);
+  const attempt=completed.nodes.worker.attempts.at(-1);
+  assert.equal(completed.nodes.worker.status,'succeeded');
+  assert.deepEqual(completed.nodes.worker.output.results,jobs.map(job=>[job]));
+  assert.deepEqual(Object.keys(attempt.native_agents??{}),[],'The all-inherited retry must not spawn a child');
+  assert.deepEqual(attempt.native_serial_results??[],[]);
+  assert.deepEqual(attempt.dispatch.receipt.agent_ids,[]);
+  assert.deepEqual(attempt.dispatch.receipt.subagent_dispatch_ids,[]);
+  assert.deepEqual(attempt.dispatch.receipt.subagent_plan,{resolved_count:0,input_sha256:digest(canonicalJSON(jobs)),assignments:[]});
+  assert.deepEqual(attempt.managed_native_results,[]);
+  assert.deepEqual(attempt.completion.evidence.find(item=>item.kind==='subagent_pool'),
+    {kind:'subagent_pool',resolved_count:0,dispatch_ids:[]});
+  assert.deepEqual(attempt.completion.evidence.filter(item=>item.kind==='native_agent_result'),[]);
+  assert.equal(completed.nodes.final.status,'ready','The accepted full join must release the successor');
+  assert.equal(observerCalls,0);
+
+  const replay=await nativeAttemptContext(f,{...binding,attempt_id:attempt.id});
+  await replay.runtime.recordDispatchReceipt(run.run_id,{...replay.binding,request_id:attempt.dispatch.request_id,
+    receipt:attempt.dispatch.receipt});
+  await replay.runtime.completeNode(run.run_id,{...replay.binding,completion:attempt.completion});
+  let afterReplay=await f.service.call('get',binding);
+  assert.deepEqual(afterReplay.nodes.worker.output.results,jobs.map(job=>[job]));
+  assert.deepEqual(afterReplay.nodes.worker.attempts.at(-1).managed_native_results,[]);
+
+  const final=await replay.runtime.claimHostMain(run.run_id,{...binding,node_id:'final',owner:'root',request_id:'all-inherited-final'});
+  const finalArgs={...binding,node_id:'final',attempt_id:final.attempt_id,lease_token:final.lease_token};
+  const request_id=`dispatch-${final.attempt_id}`;
+  await replay.runtime.recordHostMainDispatchIntent(run.run_id,{...finalArgs,request_id,envelope_hash:digest(canonicalJSON(final))});
+  await replay.runtime.recordHostMainDispatchReceipt(run.run_id,{...finalArgs,request_id,receipt:{
+    invocation_id:`fixture-${final.attempt_id}`,executor:'codex-app-server-host-main',executable_sha256:'b'.repeat(64),
+    model:'fixture-main',effort:'medium',main_actor:'root',session_id:`logical-main-${run.run_id}`,call_chain_id:`workflow-run-${run.run_id}`}});
+  const proposal={status:'succeeded',summary:'Fixture accepts inherited serial results',structured_output:{accepted:true},
+    artifacts:[],evidence:[{kind:'fixture_acceptance'}],changed_paths:[],outside_paths:[]};
+  const saved=await replay.runtime.runs.saveExecutorResult(run.run_id,final.attempt_id,proposal);
+  await replay.runtime.recordExecutorEvent(run.run_id,{...finalArgs,event:{kind:'result_proposed',metadata:{...saved,final_acceptance_required:true}}});
+  assert.equal((await replay.runtime.completeHostMainResult(run.run_id,finalArgs,{accepted:true})).status,'succeeded');
+  afterReplay=await f.service.call('get',binding);
+  assert.equal(afterReplay.nodes.final.status,'succeeded');
+  assert.equal(afterReplay.status,'succeeded');
+  assert.equal(observerCalls,0);
+});
+
 test('parallel siblings each retain their own pinned correction allowance', async t => {
   const jobs = [10, 20, 30], turns = new Map(), repairs = [];
   const f = await fixture(t, async ids => {
