@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from './physical-tempdir.mjs';
 import { ManagedNativeManager, closeManagedNativeManagers, managedNativeManagerFor, runAssignedPool } from '../lib/execution/managed-native-manager.mjs';
 import { canonicalJSON, digest } from '../lib/workflow-revisions.mjs';
-import { resolvedSubagentPlan } from '../lib/workflow-runtime.mjs';
+import { resolvedSubagentPlan, WorkflowRuntime } from '../lib/workflow-runtime.mjs';
 import { assignFanoutItems, assignedFanoutWritePaths } from '../lib/execution/fanout-input-projection.mjs';
 
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
@@ -427,21 +427,21 @@ test('a closed managed-native manager rejects a later dispatch through a retaine
   assert.equal(receipts, 0, 'a closed manager must not register a dispatch receipt');
 });
 
-async function perItemFixture(t,{blockedIndex=null,pauseRepair=false,inheritedIndices=[],itemCount=20,initialFailures=[2,7]}={}){
+async function perItemFixture(t,{blockedIndex=null,pauseRepair=false,inheritedIndices=[],itemCount=20,initialFailures=[2,7],incremental=false,realItemValidator=false}={}){
   const root=await mkdtemp(join(tmpdir(),'managed-native-items-')),workspace=join(root,'workspace');await mkdir(workspace);
   t.after(async()=>rm(root,{recursive:true,maxRetries:3,retryDelay:100}));
   const items=Array.from({length:itemCount},(_,index)=>`card-${index}`),runId='run-items',attemptId='attempt-items';
   const provider={id:'item-provider',kind:'native_agent',enabled:true,capabilities:{read:true,write:true},
     config:{role:'implementer',model:'gpt-test',reasoning_effort:'low',inactivity_timeout_ms:0}};
   const fanout={input:'items',item_name:'card',result_output:'results',distribution:'partition',batch_size:10,
-    scheduling:'parallel',max_concurrency:2,join:'all_required',result_mode:'per_item'};
+    scheduling:'parallel',max_concurrency:2,join:'all_required',result_mode:'per_item',...(incremental?{item_delivery:'incremental'}:{})};
   const definition={id:'work',type:'agent',executor:{kind:'provider',provider_id:provider.id},retry:{max_attempts:3},subagent_count:'auto',fanout,
     input_bindings:{items:'/inputs/items'},
     outputs_schema:{type:'object',properties:{results:{type:'array',items:{type:'string'}}},required:['results'],additionalProperties:false}};
   const plan=resolvedSubagentPlan(definition,{inputs:{items},nodes:{}});
-  const attempt={id:attemptId,native_item_results:Object.fromEntries(inheritedIndices.map(index=>[index,{agent_id:`prior-${index}`,result:`done-${index}`}])),
+  const attempt={id:attemptId,status:'running',lease_hash:digest('lease'),native_item_results:Object.fromEntries(inheritedIndices.map(index=>[index,{agent_id:`prior-${index}`,result:`done-${index}`}])),
     inherited_native_item_indices:inheritedIndices,native_rejected_turns:{},dispatch:null};
-  const state={run_id:runId,inputs:{items},constraints:{},nodes:{work:{status:'running',active_attempt_id:attemptId,attempts:[attempt]}}};
+  const state={run_id:runId,control_hash:digest('control'),inputs:{items},constraints:{},nodes:{work:{status:'running',active_attempt_id:attemptId,attempts:[attempt]}}};
   const record={pins:{root:{workflow:{nodes:[definition]},resources:[]}},state};
   const envelope={run_id:runId,workflow_id:'workflow-items',node_id:'work',attempt_id:attemptId,executor:definition.executor,provider,
     access:'read_only',workspace,effective_allowed_paths:[],resources:[],skill_policy:{mode:'cooperative'},allowed_skills:[],skill_ref:null,
@@ -475,16 +475,23 @@ async function perItemFixture(t,{blockedIndex=null,pauseRepair=false,inheritedIn
     },recordManagedNativeResults:async(_run,args)=>{trusted.push(args.results);},recordUsage:async()=>{},
     completeNode:async(_run,args)=>{completions.push(args.completion);return {nodes:{work:{status:'succeeded'}}};},
     failAttemptAfterQuiescence:async()=>{state.nodes.work.status='failed';}};
+  if(realItemValidator){
+    runtime.runs.mutate=async(_run,_kind,change)=>({result:await change(state,record.pins,{state,events:[]})});
+    runtime.recordNativeItemResults=(run,args)=>WorkflowRuntime.prototype.recordNativeItemResults.call(runtime,run,args);
+    runtime.recordNativeRejectedTurn=(run,args)=>WorkflowRuntime.prototype.recordNativeRejectedTurn.call(runtime,run,args);
+    runtime.recordManagedNativeResults=async(run,args)=>{trusted.push(args.results);return WorkflowRuntime.prototype.recordManagedNativeResults.call(runtime,run,args);};
+  }
   const manager=new ManagedNativeManager({configPath:join(root,'control-plane.json'),env:{},
     getConfig:async()=>({global:{enabled:true},providers:[provider]}),qualify:async()=>({}),
     sessionFactory:async settings=>{
       settingsSeen.push(settings);const index=Number(settings.owner.attempt_id.match(/-(\d+)$/)[1])-1;
-      const assigned=plan.assignments[index].map(value=>items.indexOf(value));let count=0,interrupted=false;
+      const assigned=plan.assignments[index].map(value=>items.indexOf(value));let count=0,interrupted=false;const failedOnce=new Set();
       const resultFor=async(prompt,repair)=>{
         count++;turns.set(index,count);
-        const unresolved=assigned.filter(itemIndex=>!attempt.native_item_results[itemIndex]);
+        const allUnresolved=assigned.filter(itemIndex=>!attempt.native_item_results[itemIndex]);
+        const unresolved=incremental?allUnresolved.slice(0,1):allUnresolved;
         assert(!prompt.includes('"item_index"'));
-        if(repair){
+        if(repair && (!incremental||prompt.includes('Repair only'))){
           assert.doesNotMatch(prompt,/unresolved positions|item positions/i);
           const refs=JSON.parse(prompt.match(/\nInputs:\n([^\n]+)/)?.[1]??'{}');
           assert(refs.repair_items?.path);
@@ -493,9 +500,12 @@ async function perItemFixture(t,{blockedIndex=null,pauseRepair=false,inheritedIn
         const refs=JSON.parse(prompt.match(/\nInputs:\n([^\n]+)/)?.[1]??'{}');
         assert.deepEqual(JSON.parse(await readFile(refs.items_json.path,'utf8')),unresolved.map(itemIndex=>items[itemIndex]));
         assert.deepEqual(settings.allowedPaths,[]);
-        const entries=unresolved.map(itemIndex=>itemIndex===blockedIndex || index===0&&count===1&&initialFailures.includes(itemIndex)
-          ? {outcome:'blocked',block_reason:`card ${itemIndex} needs repair`}
-          : {outcome:'completed',result:`done-${itemIndex}`});
+        const entries=unresolved.map(itemIndex=>{
+          const failFirst=index===0&&initialFailures.includes(itemIndex)&&!failedOnce.has(itemIndex);
+          if(failFirst)failedOnce.add(itemIndex);
+          return itemIndex===blockedIndex||failFirst?{outcome:'blocked',block_reason:`card ${itemIndex} needs repair`}
+            :{outcome:'completed',result:`done-${itemIndex}`};
+        });
         const text=JSON.stringify({outcome:'completed',result:{items:entries},block_reason:''});
         return {output:text,thread_id:`thread-${index}`,turn_id:`turn-${index}-${count}`,usage:{unknown:false,input_tokens:1,output_tokens:1},
           audit:{input_sha256:digest(canonicalJSON([{type:'text',text:prompt}]))},item_types:['agentMessage'],command_audit:[]};
@@ -511,6 +521,21 @@ async function perItemFixture(t,{blockedIndex=null,pauseRepair=false,inheritedIn
     settings:{authentication:{mode:'environment_api_key'},codex_binary:'unused'}},prompt:'Implement the assigned cards.'};
   return {manager,runtime,args,prepared,runId,attemptId,attempt,items,events,trusted,completions,turns,settingsSeen,repairEntered};
 }
+
+for(const initialFailures of [[],[2]])test(`managed incremental delivers one item with real runtime identity and separate repair budget (${initialFailures.length} repairs)`,async t=>{
+  const f=await perItemFixture(t,{itemCount:6,initialFailures,incremental:true,realItemValidator:true,inheritedIndices:[0]});
+  const inherited=structuredClone(f.attempt.native_item_results[0]);
+  await f.manager.launch(f.runtime,f.runId,f.args,f.prepared);const settled=await f.manager.wait(f.runId,f.attemptId);
+  assert.equal(settled.status,'succeeded',JSON.stringify(settled));
+  assert.deepEqual(f.completions[0].structured_output.results,f.items.map((_,i)=>`done-${i}`));
+  assert.deepEqual(f.attempt.native_item_results[0],inherited);
+  assert.equal(f.turns.get(0),5+initialFailures.length);
+  assert.equal(f.settingsSeen[0].maxTurns,7);
+  assert.equal(f.attempt.native_rejected_turns[0]?.count??0,initialFailures.length);
+  for(let i=1;i<6;i++)assert.equal(typeof f.attempt.native_item_results[i].turn_id,'string');
+  assert.equal(f.trusted[0][0].result_sha256,digest(canonicalJSON(f.items.map((_,i)=>`done-${i}`))));
+  await f.manager.close();
+});
 
 test('managed per-item fan-out journals valid cards and repairs only two failed cards in the same session',async t=>{
   const fixture=await perItemFixture(t);
@@ -552,28 +577,39 @@ test('managed per-item retry reuses every inherited success without launching a 
   t.after(async()=>rm(root,{recursive:true,maxRetries:3,retryDelay:100}));
   const provider={id:'retry-provider',kind:'native_agent',enabled:true,capabilities:{read:true,write:true},
     config:{role:'implementer',model:'gpt-test',reasoning_effort:'low',inactivity_timeout_ms:0}};
-  const fanout={input:'items',item_name:'card',result_output:'results',distribution:'one_per_item',scheduling:'parallel',max_concurrency:2,join:'all_required',result_mode:'per_item'};
+  const fanout={input:'items',item_name:'card',result_output:'results',distribution:'one_per_item',scheduling:'parallel',join:'all_required',result_mode:'per_item'};
   const definition={id:'work',type:'agent',executor:{kind:'provider',provider_id:provider.id},subagent_count:'auto',fanout,retry:{max_attempts:3},
+    access:'read_only',input_bindings:{items:'/inputs/items'},
     outputs_schema:{type:'object',properties:{results:{type:'array',items:{type:'string'}}},required:['results'],additionalProperties:false}};
   const accepted=Object.fromEntries(['a','b','c'].map((result,index)=>[index,{agent_id:`prior-${index}`,result}]));
-  const attempt={id:'attempt-retry',status:'running',native_item_results:accepted,inherited_native_item_indices:[0,1,2]};
-  const record={pins:{root:{workflow:{nodes:[definition]},resources:[]}},state:{constraints:{},nodes:{work:{status:'running',attempts:[attempt]}}}};
+  const attempt={id:'attempt-retry',status:'running',lease_hash:digest('lease'),native_item_results:accepted,inherited_native_item_indices:[0,1,2]};
+  const policy={mode:'cooperative',implicit:'deny',ambient_allow:[],shadowed_skill_paths:[]};
+  const final={id:'final',type:'agent',executor:{kind:'main'},access:'read_only',input_bindings:{},outputs_schema:{},retry:{max_attempts:3},approval:{required:false},skill_policy:policy};
+  const record={pins:{root:{workflow:{skill_policy:policy,nodes:[definition,final],edges:[{id:'finish',source:'work',target:'final'}],finalization:{node_id:'final'}},resources:[]}},
+    state:{status:'running',workflow_revision:digest('workflow'),control_hash:digest('control'),cost_ledger:{calls:[]},constraints:{},inputs:{items:['a','b','c']},
+      permissions:{access:'read_only',allowed_paths:[],workspace},edges:{finish:'pending'},approvals:{},
+      nodes:{work:{status:'running',active_attempt_id:attempt.id,attempts:[attempt]},final:{status:'pending',attempts:[],approval_round:0}}}};
   const envelope={run_id:'run-retry',workflow_id:'workflow-retry',node_id:'work',attempt_id:attempt.id,executor:definition.executor,provider,
     access:'read_only',workspace,inputs:{items_json:JSON.stringify(['a','b','c'])},resources:[],effective_allowed_paths:[],skill_policy:{mode:'cooperative'},allowed_skills:[],
     subagents:{configured_count:'auto',resolved_count:3,fanout,items:['a','b','c']}};
-  let receipt,completion,managedResults,usage;
+  let receipt,completion,managedResults,usage,completionError;
   const runtime={workflows:{root:join(root,'workflows')},runs:{root:join(root,'runs'),read:async()=>record,directory:()=>join(root,'runs','run-retry'),saveExecutorResult:async()=>({sha256:'a'.repeat(64)})},
-    execution:async()=>envelope,recordDispatchReceipt:async(_run,args)=>{receipt=args.receipt;},recordManagedNativeResults:async(_run,args)=>{managedResults=args.results;},
-    recordExecutorEvent:async()=>{},recordUsage:async(_run,args)=>{usage=args.usage;},completeNode:async(_run,args)=>{completion=args.completion;return {nodes:{work:{status:'succeeded'}}};}};
+    execution:async()=>envelope,recordDispatchReceipt:async(_run,args)=>{receipt=args.receipt;attempt.dispatch={receipt,request_id:args.request_id};},recordManagedNativeResults:async(_run,args)=>{managedResults=args.results;},
+    recordExecutorEvent:async()=>{},recordUsage:async(_run,args)=>{usage=args.usage;}};
+  runtime.runs.mutate=async(_run,_kind,change)=>({result:await change(record.state,record.pins,{state:record.state,events:[]})});
+  runtime.transition=async(_run,_kind,change)=>{await change(record.state,record.pins);return record;};
+  runtime.recordManagedNativeResults=async(run,args)=>{managedResults=args.results;return WorkflowRuntime.prototype.recordManagedNativeResults.call(runtime,run,args);};
+  runtime.completeNode=async(run,args)=>{completion=args.completion;try{return await WorkflowRuntime.prototype.completeNode.call(runtime,run,args);}catch(error){completionError=error;throw error;}};
   const manager=new ManagedNativeManager({configPath:join(root,'control-plane.json'),env:{},getConfig:async()=>({global:{enabled:true},providers:[provider]}),qualify:async()=>({}),
     sessionFactory:async()=>assert.fail('accepted retry items must not launch a child')});
   t.after(()=>manager.close());
   const args={node_id:'work',attempt_id:attempt.id,lease_token:'lease',control_token:'control'};
   const prepared={envelope,adapter:{model:'gpt-test',effort:'low',executable_sha256:'b'.repeat(64),settings:{authentication:{mode:'environment_api_key'},codex_binary:'unused'}}};
   await manager.launch(runtime,'run-retry',args,prepared);const settled=await manager.wait('run-retry',attempt.id);
-  assert.equal(settled.status,'succeeded');assert.deepEqual(receipt.subagent_dispatch_ids,[]);assert.equal(receipt.subagent_plan.resolved_count,0);
+  assert.equal(settled.status,'succeeded',completionError?.stack??JSON.stringify(settled));assert.deepEqual(receipt.subagent_dispatch_ids,[]);assert.equal(receipt.subagent_plan.resolved_count,0);
   assert.deepEqual(managedResults,[]);assert.deepEqual(usage,{unknown:false,cost_micros:0});assert.deepEqual(completion.structured_output.results,['a','b','c']);
   assert.deepEqual(completion.evidence[0],{kind:'subagent_pool',resolved_count:0,dispatch_ids:[]});
+  assert.equal(record.state.nodes.work.status,'succeeded');assert.equal(record.state.nodes.final.status,'ready');
 });
 
 test('managed per-item exhaustion keeps completed cards and stops after the pinned same-session allowance',async t=>{

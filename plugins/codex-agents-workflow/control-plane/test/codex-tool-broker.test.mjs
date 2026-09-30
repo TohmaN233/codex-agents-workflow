@@ -4,10 +4,11 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, link, symlink } from 'node:fs/
 import { writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { execFile } from 'node:child_process';
 import { tmpdir } from './physical-tempdir.mjs';
 import { tmpdir as osTmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { boundProgramArgv, createCodexToolBroker, executeBoundProgram, qualifiedExecutionBinding } from '../lib/execution/codex-tool-broker.mjs';
+import { boundProgramArgv, createCodexToolBroker, executeBoundProgram, executeNativeProgram, qualifiedExecutionBinding } from '../lib/execution/codex-tool-broker.mjs';
 import { digest } from '../lib/workflow-revisions.mjs';
 
 async function fixture(t) {
@@ -66,6 +67,67 @@ test('revoking a discovered native task program stops the owned process before a
   await assert.rejects(pending, { code: 'CODEX_EXECUTION_CANCELLED' });
   assert.equal((await broker.quiesce()).quiescent, true);
   await assert.rejects(readFile(join(f.root, 'src', 'native-late.txt'), 'utf8'), { code: 'ENOENT' });
+});
+
+async function nativeDescendantFixture(t, { mode, stdio }) {
+  const f = await fixture(t), controller = new AbortController();
+  const ready = join(f.root, 'src', 'descendant.ready'), release = join(f.root, 'src', 'release');
+  const late = join(f.root, 'src', 'descendant-late.txt');
+  const descendant = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},String(process.pid));
+    setInterval(()=>{if(fs.existsSync(${JSON.stringify(release)}))fs.writeFileSync(${JSON.stringify(late)},'late');},10);`;
+  const parent = `const fs=require('node:fs');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],
+    {stdio:${JSON.stringify(stdio)}});const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})&&${mode === 'parent-exit'})process.exit(0);},10);`;
+  let handle, pid;
+  t.after(() => { if (pid) try { process.kill(pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; } });
+  const pending = executeNativeProgram({ kind: 'native', programs: { node: process.execPath }, command_timeout_ms: mode === 'timeout' ? 1000 : 10000 },
+    { program: 'node', args: ['-e', parent], cwd: 'workspace' }, { workspace: f.root },
+    { signal: controller.signal, onHandle: value => { handle = value; } });
+  // Attach the rejection handler before awaiting the readiness marker.
+  const outcome = pending.then(value => ({ value }), error => ({ error }));
+  pid = Number(await waitForFile(ready));
+  if (mode === 'cancel') controller.abort(Object.assign(new Error('fixture cancellation'), { code: 'PROBE_CANCEL' }));
+  const result = await outcome;
+  if (mode === 'parent-exit') { assert.equal(result.error, undefined); assert.equal(result.value.exit_code, 0); }
+  else assert.equal(result.error?.code, mode === 'cancel' ? 'PROBE_CANCEL' : 'CODEX_EXECUTION_TIMEOUT');
+  assert.equal(handle.isQuiescent(), true);
+  const state = await new Promise((resolveState, rejectState) => execFile('/bin/ps', ['-eo', 'pid=,stat='], (error, stdout) => {
+    if (error) rejectState(error); else resolveState(stdout.split('\n').map(line => line.trim().split(/\s+/)).find(parts => Number(parts[0]) === pid)?.[1]);
+  }));
+  assert(!state || state.startsWith('Z'), `descendant ${pid} remains live: ${state}`);
+  await writeFile(release, 'release'); await delay(100);
+  await assert.rejects(readFile(late), { code: 'ENOENT' });
+}
+
+for (const mode of ['cancel', 'timeout', 'parent-exit']) for (const stdio of ['ignore', 'inherit']) {
+  test(`POSIX native ${mode} confirms descendant termination with ${stdio} stdio`, { skip: process.platform === 'win32' },
+    t => nativeDescendantFixture(t, { mode, stdio }));
+}
+
+test('POSIX native failed group stop retains ownership and an exact retry confirms cleanup', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t), controller = new AbortController(), ready = join(f.root, 'src', 'stop.ready');
+  let handle, failStop = true;
+  const pending = executeNativeProgram({ kind: 'native', programs: { node: process.execPath }, command_timeout_ms: 10000 },
+    { program: 'node', args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], cwd: 'workspace' },
+    { workspace: f.root }, { signal: controller.signal, onHandle: value => { handle = value; },
+      processSignaler: (pid, signalName) => { if (failStop) throw Object.assign(new Error('synthetic group signal denied'), { code: 'EPERM' }); return process.kill(pid, signalName); } });
+  const rejected = assert.rejects(pending, error => error.code === 'CODEX_EXECUTION_STOP_UNCONFIRMED'
+    && error.details.cause_code === 'EPERM' && error.errors.some(cause => cause.code === 'PROBE_CANCEL'));
+  t.after(async () => { failStop = false; await handle?.stop(); });
+  await waitForFile(ready); controller.abort(Object.assign(new Error('fixture cancellation'), { code: 'PROBE_CANCEL' }));
+  await rejected; assert.equal(handle.isQuiescent(), false);
+  failStop = false; await handle.stop(); assert.equal(handle.isQuiescent(), true);
+});
+
+test('POSIX native parent closure cannot hide a failed group inspection', { skip: process.platform === 'win32' }, async t => {
+  const f = await fixture(t); let handle, failInspection = true;
+  const pending = executeNativeProgram({ kind: 'native', programs: { node: process.execPath }, command_timeout_ms: 10000 },
+    { program: 'node', args: ['-e', ''], cwd: 'workspace' }, { workspace: f.root },
+    { onHandle: value => { handle = value; }, inspectProcessGroup: async () => {
+      if (failInspection) throw Object.assign(new Error('synthetic ps failure'), { code: 'EACCES' }); return [];
+    } });
+  await assert.rejects(pending, error => error.code === 'CODEX_EXECUTION_STOP_UNCONFIRMED' && error.details.cause_code === 'EACCES');
+  assert.equal(handle.isQuiescent(), false);
+  failInspection = false; await handle.stop(); assert.equal(handle.isQuiescent(), true);
 });
 
 test('native program calls refresh a stale Host binding before effects and surface missing dependencies',async t=>{

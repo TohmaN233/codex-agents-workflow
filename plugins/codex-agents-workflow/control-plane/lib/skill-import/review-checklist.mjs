@@ -30,8 +30,6 @@ export function reviewSchema(version = CONVERSION_CONTRACT.version) { const ids=
     node_ids:strings,edge_ids:strings,source_spans:{type:'array',maxItems:200,items:{type:'object',required:['resource','start_line','end_line'],additionalProperties:false,properties:{resource:{type:'string',minLength:1,maxLength:1024},start_line:{type:'integer',minimum:1},end_line:{type:'integer',minimum:1}}}},
   },
 }}}}; }
-export const REVIEW_SCHEMA = reviewSchema(CONVERSION_CONTRACT.version);
-
 // These checks audit fields that the canonical proposal receives from the
 // Host.  A failed check remains a release blocker, but sending it to the
 // semantic planner cannot repair it and only burns another model attempt.

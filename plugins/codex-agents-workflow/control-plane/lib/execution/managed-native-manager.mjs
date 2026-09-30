@@ -246,7 +246,8 @@ export class ManagedNativeManager {
     };
     const materials=new Map(entry.assignments
       ? await Promise.all(entry.assignments.map(async assignment=>[assignment.index,await materialFor(assignment.index,
-        projectFanoutInputs(envelope.inputs,envelope.subagents.items,assignment.items))]))
+        projectFanoutInputs(envelope.inputs,envelope.subagents.items,
+          definition.fanout?.item_delivery==='incremental'?assignment.items.slice(0,1):assignment.items))]))
       : [[0,await materialFor(0,envelope.inputs)]]);
     const before = await snapshot('before');
     const resources = await resourceItems(runtime, runId, envelope);
@@ -275,7 +276,9 @@ export class ManagedNativeManager {
         binary: adapter.settings.codex_binary, expectedBinaryHash: adapter.settings.binary_sha256, expectedBinaryPath: adapter.qualification?.resolved_path,
         dynamicToolFormat: adapter.qualification?.dynamic_tool_format, authentication: adapter.settings.authentication,
         model: adapter.model, effort: adapter.effort, cwd: envelope.workspace, access: envelope.access, allowedPaths:assignmentWritePaths.get(index), env, toolBroker: broker, authorize: entry.authorize, assertActive: entry.assertActive,
-        maxTurns: definition.fanout?.result_mode==='per_item' ? definition.retry.max_attempts : 1,
+        maxTurns: definition.fanout?.result_mode==='per_item'
+          ? definition.retry.max_attempts+(definition.fanout.item_delivery==='incremental'
+            ? entry.assignments.find(assignment=>assignment.index===index).item_indices.length-1 : 0) : 1,
         skillPolicy: envelope.skill_policy, allowedSkills,
         onSessionOwned: session => { if (!entry.sessions.includes(session)) entry.sessions.push(session); },
         onProfilePrepared: profile => event('profile_owned', { home: profile.home, ...(profile.receipt_home ? {receipt_home:profile.receipt_home} : {}), executable_sha256: profile.binary_sha256 }),
@@ -303,14 +306,16 @@ export class ManagedNativeManager {
           + (perItem?'':` Return one independent result matching the supplied schema as {"result":...}; do not return the aggregate list or Workflow protocol fields.`);
         if(perItem){
           const assigned=assignedFanoutIndices(plan,definition.fanout,assignment.index);
+          const incremental=definition.fanout.item_delivery==='incremental';
           const schema=nativeAgentResultSchema(definition);
-          let targetIndices=assignment.item_indices;
+          let targetIndices=incremental?assignment.item_indices.slice(0,1):assignment.item_indices;
           const delegated=definition.fanout.shared_change_field
             ? ` or {"outcome":"delegated","result":<one semantic item>} when local work is complete and ${definition.fanout.shared_change_field} names downstream shared work`
             : '';
           let nextPrompt=prompt+`\nReturn exactly one entry per supplied item, in supplied order: {"items":[{"outcome":"completed","result":<one semantic item>}${delegated} or {"outcome":"blocked","block_reason":"specific obstacle"}]}. Do not copy positions, IDs, paths, hashes, tokens, receipts, or other Host-owned fields into the result. The Host binds each array entry to its item deterministically by order.\nResult schema:\n${canonicalJSON(schema)}`;
           const turns=[];
-          for(let turnNumber=0;turnNumber<definition.retry.max_attempts;turnNumber++){
+          const maxTurns=definition.retry.max_attempts+(incremental?assignment.item_indices.length-1:0);
+          for(let turnNumber=0;turnNumber<maxTurns;turnNumber++){
             entry.assertActive();
             const expectedInputHash=digest(canonicalJSON([{type:'text',text:nextPrompt}]));
             const result=await (turnNumber===0?session.turn(nextPrompt,{timeout_ms:envelope.provider.config.inactivity_timeout_ms})
@@ -324,7 +329,8 @@ export class ManagedNativeManager {
             const parsed=perItemTurn(result.output);
             let recorded,issues;
             if(parsed.category)issues=[{item_index:null,category:parsed.category,reason:parsed.reason}];
-            else try{recorded=await runtime.recordNativeItemResults(runId,{...args,index:assignment.index,agent_id:dispatch_id,target_indices:targetIndices,result:parsed.value});
+            else try{recorded=await runtime.recordNativeItemResults(runId,{...args,index:assignment.index,agent_id:dispatch_id,
+              turn_id:result.turn_id,target_indices:targetIndices,result:parsed.value});
               issues=recorded.issues;}
             catch(error){if(error.code!=='NATIVE_ITEM_RESULT')throw error;
               issues=[{item_index:null,category:'invalid',reason:error.message}];}
@@ -336,18 +342,23 @@ export class ManagedNativeManager {
               return {dispatch_id,value:recorded.result,result:{...result,usage:combineTurnUsage(turns),
                 delivery_audits:turns.map(turn=>({thread_id:turn.thread_id,turn_id:turn.turn_id,input_sha256:turn.audit.input_sha256}))}};
             }
-            const diagnostic=perItemDiagnostic(issues);
-            const rejection=await runtime.recordNativeRejectedTurn(runId,{...args,index:assignment.index,agent_id:dispatch_id,
-              turn_id:result.turn_id,category:issues.some(item=>item.category==='blocked')?'blocked':'invalid',reason:diagnostic});
-            if(rejection.count>=definition.retry.max_attempts)
-              throw Object.assign(new Error(`Managed native ${dispatch_id} exhausted ${definition.retry.max_attempts} completion turns; unresolved indices ${canonicalJSON(unresolved)}; ${diagnostic}`),
-                {code:'NATIVE_AGENT_REPAIR_EXHAUSTED'});
-            targetIndices=unresolved;
-            const repairItems=unresolved.map(itemIndex=>plan.items[itemIndex]);
+            const repair=issues.length>0;
+            const diagnostic=repair?perItemDiagnostic(issues):null;
+            if(repair){
+              const rejection=await runtime.recordNativeRejectedTurn(runId,{...args,index:assignment.index,agent_id:dispatch_id,
+                turn_id:result.turn_id,category:issues.some(item=>item.category==='blocked')?'blocked':'invalid',reason:diagnostic});
+              if(rejection.count>=definition.retry.max_attempts)
+                throw Object.assign(new Error(`Managed native ${dispatch_id} exhausted ${definition.retry.max_attempts} rejected turns; unresolved indices ${canonicalJSON(unresolved)}; ${diagnostic}`),
+                  {code:'NATIVE_AGENT_REPAIR_EXHAUSTED'});
+            }
+            targetIndices=incremental?unresolved.slice(0,1):unresolved;
+            const repairItems=targetIndices.map(itemIndex=>plan.items[itemIndex]);
             const repairMaterial=await materialFor(assignment.index,
-              {...projectFanoutInputs(envelope.inputs,envelope.subagents.items,repairItems),repair_items:repairItems},
-              join(inputRoot,`partition-${assignment.index}`,`repair-${turnNumber+1}`));
-            nextPrompt=repairMaterial.prompt+`\n\nRepair only the items supplied in repair_items in this existing thread. The Host already retained every accepted sibling result and file. Return exactly one entry per supplied repair item, in supplied order. Resolve these issues in the same order: ${diagnostic}. Return {"items":[...]} with the declared item schema. Do not include positions, IDs, paths, hashes, tokens, receipts, or other Host-owned fields; the Host binds entries by order.`;
+              {...projectFanoutInputs(envelope.inputs,envelope.subagents.items,repairItems),...(repair?{repair_items:repairItems}:{})},
+              join(inputRoot,`partition-${assignment.index}`,`${repair?'repair':'next'}-${turnNumber+1}`));
+            nextPrompt=repairMaterial.prompt+(repair
+              ? `\n\nRepair only the items supplied in repair_items in this existing thread. The Host already retained every accepted sibling result and file. Return exactly one entry per supplied repair item, in supplied order. Resolve these issues in the same order: ${diagnostic}. Return {"items":[...]} with the declared item schema. Do not include positions, IDs, paths, hashes, tokens, receipts, or other Host-owned fields; the Host binds entries by order.`
+              : '\n\nContinue with the next supplied item in this same thread. Accepted items are already retained. Return {"items":[{"outcome":"completed","result":<one semantic item>}]} or one specific blocked outcome with the declared item schema.');
           }
           throw Object.assign(new Error(`Managed native ${dispatch_id} reached its pinned completion-turn limit`),{code:'NATIVE_AGENT_REPAIR_EXHAUSTED'});
         }
@@ -358,7 +369,7 @@ export class ManagedNativeManager {
         value = hostNodeTurnResult(value, semanticSchema); return { dispatch_id, value: value.result, result };
       };
       results = await runAssignedPool(entry.assignments, envelope.subagents.fanout.scheduling==='serial'
-        ? 1 : envelope.subagents.fanout.max_concurrency ?? entry.assignments.length, runAssignment);
+        ? 1 : envelope.subagents.fanout.max_concurrency ?? Math.max(1,entry.assignments.length), runAssignment);
       if(perItem){const fresh=await runtime.runs.read(runId),accepted=fresh.state.nodes[definition.id].attempts.find(item=>item.id===args.attempt_id)?.native_item_results??{};
         output={ [envelope.subagents.fanout.result_output]:Array.from({length:plan.items.length},(_,itemIndex)=>accepted[itemIndex]?.result) };
         requireValue(output[envelope.subagents.fanout.result_output].every(item=>item!==undefined),'NATIVE_ITEM_RESULT','Per-item pool completion requires every inherited or newly accepted item');}

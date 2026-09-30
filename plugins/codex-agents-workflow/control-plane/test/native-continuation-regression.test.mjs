@@ -885,6 +885,104 @@ test('incremental ten-item delivery checkpoints one item per turn in the same ch
   assert.deepEqual(observed.map(item => item.unresolved), [0,1,2,3,4,5,6,7,7,8,9]);
 });
 
+test('uncapped parallel incremental partitions continue their recorded children, join every item and complete downstream', async t => {
+  const jobs=[0,1,2,3],observed=[];
+  let binding;
+  const f=await fixture(t,async ids=>{
+    const state=await f.service.call('get',binding);
+    if(state.nodes.worker.status==='running'){
+      const attempt=state.nodes.worker.attempts[0],agentId=ids[0];
+      const slot=Object.entries(attempt.native_agents??{}).find(([,id])=>id===agentId)?.[0];
+      assert.notEqual(slot,undefined,'Observer must receive a journaled worker Agent');
+      const assigned=jobs.slice(Number(slot)*2,Number(slot)*2+2);
+      const itemIndex=assigned.find(index=>!attempt.native_item_results?.[index]);
+      assert.notEqual(itemIndex,undefined,'Observer must receive a partition with an unresolved item');
+      observed.push({node:'worker',agent_id:agentId,item_index:itemIndex});
+      return {status:'completed',agent_id:agentId,turn_id:`${agentId}-turn-${itemIndex}`,
+        result:{items:[{outcome:'completed',result:[itemIndex]}]}};
+    }
+    assert.equal(state.nodes.integrator.status,'running','Only the released downstream node may be observed after the join');
+    observed.push({node:'integrator',agent_id:ids[0]});
+    return {status:'completed',agent_id:ids[0],turn_id:'downstream-integrator-turn',result:{summary:'all joined items integrated'}};
+  });
+  const workflow=definition('native-per-item-incremental-uncapped','uncapped-three');
+  const worker=workflow.nodes.find(node=>node.id==='worker');
+  worker.fanout.batch_size=2;
+  worker.fanout.result_mode='per_item';
+  worker.fanout.item_delivery='incremental';
+  assert.equal(Object.hasOwn(worker.fanout,'max_concurrency'),false);
+  const integrator={id:'integrator',type:'agent',role:'implementer',executor:{kind:'provider',provider_id:'native-luna'},
+    access:'read_only',approval:{required:false},retry:{max_attempts:2},
+    input_bindings:{results:'/nodes/worker/output/results'},prompt_template:'Integrate the complete joined results.',
+    outputs_schema:{type:'object',properties:{summary:{type:'string'}},required:['summary'],additionalProperties:false}};
+  workflow.nodes.splice(workflow.nodes.indexOf(workflow.nodes.find(node=>node.id==='final')),0,integrator);
+  workflow.edges=[{id:'start-worker',source:'start',target:'worker'},{id:'worker-integrator',source:'worker',target:'integrator'},
+    {id:'integrator-final',source:'integrator',target:'final'},{id:'final-end',source:'final',target:'end'}];
+  workflow.nodes.find(node=>node.id==='final').input_bindings={summary:'/nodes/integrator/output/summary'};
+  const created=await f.service.call('create',{workflow},{human:true});
+  const run=await f.service.call('start',{workflow_id:workflow.id,revision_hash:created.revision_hash,workspace:f.workspace,
+    access:'read_only',main_actor:'root',native_parent_thread_id:PARENT_THREAD_ID,inputs:{jobs}});
+  binding=control(run);
+
+  const handoff=await f.service.call('native_next',binding);
+  assert.equal(handoff.status,'native_handoff');
+  assert.deepEqual(handoff.packets.map(packet=>packet.index),[0,1]);
+  for(const packet of handoff.packets){
+    const bundle=JSON.parse(await readFile(packet.task_bundle_path,'utf8'));
+    const taskInputs=JSON.parse(bundle.task.match(/\nInputs:\n([^\n]+)/)?.[1]??'null');
+    const jobsPath=JSON.parse(taskInputs.jobs.match(/local file at (".*") \(format: json\)\./)?.[1]??'null');
+    assert.deepEqual(JSON.parse(await readFile(jobsPath,'utf8')),[jobs[packet.index*2]],
+      'Initial incremental delivery starts with the first item in each partition');
+    await recordNativeSpawn(f,{...binding,attempt_id:handoff.attempt_id,index:packet.index,
+      agent_id:`uncapped-incremental-child-${packet.index}`});
+  }
+
+  const continuations=[];
+  let next=await f.service.call('native_next',binding);
+  while(next.next_action==='continue_recorded_agent'){
+    continuations.push({index:next.index,item_index:next.item_index,agent_id:next.agent_id,
+      accepted_item_indices:next.accepted_item_indices});
+    const taskPath=JSON.parse(next.followup_config.message.match(/Task bundle: ("[^\n]+")/)[1]);
+    const bundle=JSON.parse(await readFile(taskPath,'utf8'));
+    const taskInputs=JSON.parse(bundle.task.match(/\nInputs:\n([^\n]+)/)?.[1]??'null');
+    const jobsPath=JSON.parse(taskInputs.jobs.match(/local file at (".*") \(format: json\)\./)?.[1]??'null');
+    assert.deepEqual(JSON.parse(await readFile(jobsPath,'utf8')),[next.item_index],
+      'A continuation carries only the next unresolved item, never an accepted item');
+    await f.service.call('native_followed_up',next.next_action_args);
+    next=await f.service.call('native_next',binding);
+  }
+  assert.equal(next.next_action,'workflow_native_next');
+  let state=await f.service.call('get',binding);
+  assert.equal(state.nodes.worker.status,'succeeded');
+  assert.deepEqual(state.nodes.worker.output.results,jobs.map(job=>[job]));
+  assert.equal(state.nodes.integrator.status,'ready','The downstream integrator is released only after the full item join');
+  assert.equal(state.nodes.final.status,'pending');
+  assert.deepEqual(continuations,[
+    {index:0,item_index:1,agent_id:'uncapped-incremental-child-0',accepted_item_indices:[0]},
+    {index:1,item_index:3,agent_id:'uncapped-incremental-child-1',accepted_item_indices:[2]},
+  ]);
+
+  const downstream=await f.service.call('native_next',binding);
+  assert.equal(downstream.status,'native_handoff');
+  assert.equal(downstream.node_id,'integrator');
+  assert.equal(downstream.packets.length,1);
+  await recordNativeSpawn(f,{...binding,attempt_id:downstream.attempt_id,index:downstream.packets[0].index,
+    agent_id:'uncapped-incremental-downstream-integrator'});
+  const completed=await f.service.call('native_next',binding);
+  assert.equal(completed.next_action,'workflow_native_next');
+  state=await f.service.call('get',binding);
+  assert.equal(state.nodes.integrator.status,'succeeded');
+  assert.deepEqual(state.nodes.integrator.output,{summary:'all joined items integrated'});
+  assert.equal(state.nodes.final.status,'ready');
+  assert.deepEqual(observed,[
+    {node:'worker',agent_id:'uncapped-incremental-child-0',item_index:0},
+    {node:'worker',agent_id:'uncapped-incremental-child-0',item_index:1},
+    {node:'worker',agent_id:'uncapped-incremental-child-1',item_index:2},
+    {node:'worker',agent_id:'uncapped-incremental-child-1',item_index:3},
+    {node:'integrator',agent_id:'uncapped-incremental-downstream-integrator'},
+  ]);
+});
+
 test('per-item native results reject copied Host indices and wrong cardinality atomically', async t => {
   const jobs = Array.from({ length: 10 }, (_, index) => index);
   let turn = 0;

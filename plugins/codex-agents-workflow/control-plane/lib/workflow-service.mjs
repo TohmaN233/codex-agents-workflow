@@ -597,7 +597,32 @@ export class WorkflowService {
     }
     return {result:recorded.result};
   }
-  async completeObservedNative(runtime,args,{record,definition,attempt,binding,executor,signal}) {
+  async #incrementalNativeContinuation(runtime,args,{record,definition,attempt,binding,index,agentId,turnId,
+    status='native_item_accepted',maxPromptChars,executor}) {
+    const lease={run_id:args.run_id,node_id:definition.id,attempt_id:attempt.id,lease_token:binding.lease_token};
+    const assigned=assignedFanoutIndices(resolvedSubagentPlan(definition,record.state),definition.fanout,index);
+    const acceptedIndices=assigned.filter(itemIndex=>Boolean(attempt.native_item_results?.[itemIndex]));
+    const unresolvedIndices=assigned.filter(itemIndex=>!attempt.native_item_results?.[itemIndex]);
+    const nextItem=unresolvedIndices[0];
+    requireValue(Number.isSafeInteger(nextItem),'NATIVE_AGENT_FOLLOWUP','Incremental native continuation needs one unresolved item');
+    const nextPrepared=await executor.prepare(args.run_id,{...lease,control_token:args.control_token});
+    requireValue(digest(canonicalJSON(nextPrepared))===attempt.dispatch.envelope_hash,
+      'NATIVE_AGENT_HANDOFF_CHANGED','The incremental native handoff no longer matches its pinned dispatch intent');
+    const nextPacket=await materializedNativeAgentHandoff(record,definition,lease,{...nextPrepared,
+      handoff_required:true,compiled_prompt:nextPrepared.prompt,request_id:attempt.dispatch.request_id},
+      maxPromptChars,index,{resourceRoot:join(runtime.runs.directory(args.run_id),'objects')});
+    requireValue(nextPacket.packets.length===1&&nextPacket.packets[0].index===index,
+      'NATIVE_AGENT_FOLLOWUP','Incremental native continuation must materialize exactly one recorded Agent packet');
+    const packet=nextPacket.packets[0];
+    await runtime.recordExecutorEvent(args.run_id,{...lease,control_token:args.control_token,
+      event:{kind:'native_agent_followup_intent',metadata:{index,agent_id:agentId,item_index:nextItem,
+        task_bundle_sha256:packet.task_bundle_sha256,followup_kind:'incremental',rejection_count:0}}});
+    return {status,run_id:args.run_id,node_id:definition.id,attempt_id:attempt.id,index,item_index:nextItem,agent_id:agentId,
+      ...(turnId?{turn_id:turnId}:{}),accepted_item_indices:acceptedIndices,unresolved_item_indices:unresolvedIndices,
+      next_action:'continue_recorded_agent',followup_config:{target:agentId,message:packet.prompt},
+      next_action_args:{run_id:args.run_id,control_token:args.control_token}};
+  }
+  async completeObservedNative(runtime,args,{record,definition,attempt,binding,executor,signal,maxPromptChars}) {
     requireValue(this.nativeAgentObserver,'NATIVE_AGENT_OBSERVER_REQUIRED','Native Agent execution requires the Host lifecycle observer');
     const activeSlots=activeNativeAssignmentSlots(record,definition,attempt);
     const agentIds=activeSlots.map(index=>attempt.native_agents?.[index]);
@@ -623,6 +648,12 @@ export class WorkflowService {
           const accepted=await this.recordObservedNativeItems(runtime,args,{definition,attempt,binding,index,observed,executor});
           if(accepted.rejection)return accepted.rejection;
           if(accepted.retry)continue;
+          if(accepted.continuation){
+            const fresh=await runtime.runs.read(args.run_id);
+            const currentAttempt=fresh.state.nodes[definition.id].attempts.find(item=>item.id===attempt.id);
+            return this.#incrementalNativeContinuation(runtime,args,{record:fresh,definition,attempt:currentAttempt,binding,
+              index,agentId:observed.agent_id,turnId:observed.turn_id,maxPromptChars,executor});
+          }
           await runtime.recordNativeParallelResult(args.run_id,{...binding,control_token:args.control_token,
             index,agent_id:observed.agent_id,result:accepted.result});
           completed.set(observed.agent_id,{agent_id:observed.agent_id,result:accepted.result});pending.delete(observed.agent_id);
@@ -669,7 +700,7 @@ export class WorkflowService {
     return {run_id:args.run_id,node_id:binding.node_id,status:state.status,
       ...(state.status==='running'?nativeContinuation(args.run_id,args.control_token):{next_action:null})};
   }
-  async #sealNativeDispatch(runtime,args,{executor,signal}){
+  async #sealNativeDispatch(runtime,args,{executor,signal,maxPromptChars}){
     const {record,definition,attempt,binding}=await nativeAttemptBinding(runtime,args);
     const activeSlots=activeNativeAssignmentSlots(record,definition,attempt),count=activeSlots.length;
     const agentIds=activeSlots.map(index=>attempt.native_agents?.[index]);
@@ -684,7 +715,7 @@ export class WorkflowService {
     await runtime.recordDispatchReceipt(args.run_id,{...binding,request_id:attempt.dispatch.request_id,receipt});
     const fresh=await runtime.runs.read(args.run_id);
     const current=fresh.state.nodes[definition.id].attempts.find(item=>item.id===attempt.id);
-    return this.completeObservedNative(runtime,args,{record:fresh,definition,attempt:current,binding,executor,signal});
+    return this.completeObservedNative(runtime,args,{record:fresh,definition,attempt:current,binding,executor,signal,maxPromptChars});
   }
   async ensureAuthoringWorkflows(store,config,routingRules=null){
     routingRules??=await loadRoutingSettings(dirname(this.configPath),config.providers);
@@ -1377,7 +1408,8 @@ export class WorkflowService {
           const lease = { run_id: args.run_id, node_id: active.id, attempt_id: attempt.id,
             lease_token: leaseToken(args.control_token, args.run_id, active.id, attempt.id, attempt.lease_generation ?? 0) };
           if (attempt.dispatch.receipt) {
-            return this.completeObservedNative(runtime,args,{record:existing,definition:active,attempt,binding:lease,executor,signal});
+            return this.completeObservedNative(runtime,args,{record:existing,definition:active,attempt,binding:lease,executor,signal,
+              maxPromptChars:config.global.max_prompt_chars});
           }
           const prepared = await executor.prepare(args.run_id, { ...lease, control_token: args.control_token });
           requireValue(digest(canonicalJSON(prepared)) === attempt.dispatch.envelope_hash,
@@ -1388,32 +1420,13 @@ export class WorkflowService {
           const completedSerial=attempt.native_serial_results?.length??0;
           const nextIndex = activeSlots[completedSerial];
           const count = activeSlots.length;
-          const seal=()=>this.#sealNativeDispatch(runtime,{...args,attempt_id:attempt.id},{executor,signal});
+          const seal=()=>this.#sealNativeDispatch(runtime,{...args,attempt_id:attempt.id},{executor,signal,
+            maxPromptChars:config.global.max_prompt_chars});
           if (serial && completedSerial === count) return seal();
           const parallelResults=attempt.native_parallel_results??{};
-          const incrementalContinuation=async(record,currentAttempt,index,agentId,turnId,status='native_item_accepted')=>{
-            const assigned=assignedFanoutIndices(resolvedSubagentPlan(active,record.state),active.fanout,index);
-            const acceptedIndices=assigned.filter(itemIndex=>Boolean(currentAttempt.native_item_results?.[itemIndex]));
-            const unresolvedIndices=assigned.filter(itemIndex=>!currentAttempt.native_item_results?.[itemIndex]);
-            const nextItem=unresolvedIndices[0];
-            requireValue(Number.isSafeInteger(nextItem),'NATIVE_AGENT_FOLLOWUP','Incremental native continuation needs one unresolved item');
-            const nextPrepared=await executor.prepare(args.run_id,{...lease,control_token:args.control_token});
-            requireValue(digest(canonicalJSON(nextPrepared))===currentAttempt.dispatch.envelope_hash,
-              'NATIVE_AGENT_HANDOFF_CHANGED','The incremental native handoff no longer matches its pinned dispatch intent');
-            const nextPacket=await materializedNativeAgentHandoff(record,active,lease,{...nextPrepared,
-              handoff_required:true,compiled_prompt:nextPrepared.prompt,request_id:currentAttempt.dispatch.request_id},
-              config.global.max_prompt_chars,index,{resourceRoot:join(runtime.runs.directory(args.run_id),'objects')});
-            requireValue(nextPacket.packets.length===1&&nextPacket.packets[0].index===index,
-              'NATIVE_AGENT_FOLLOWUP','Incremental native continuation must materialize exactly one recorded Agent packet');
-            const packet=nextPacket.packets[0];
-            await runtime.recordExecutorEvent(args.run_id,{...lease,control_token:args.control_token,
-              event:{kind:'native_agent_followup_intent',metadata:{index,agent_id:agentId,item_index:nextItem,
-                task_bundle_sha256:packet.task_bundle_sha256,followup_kind:'incremental',rejection_count:0}}});
-            return {status,run_id:args.run_id,node_id:active.id,attempt_id:attempt.id,index,item_index:nextItem,agent_id:agentId,
-              ...(turnId?{turn_id:turnId}:{}),accepted_item_indices:acceptedIndices,unresolved_item_indices:unresolvedIndices,
-              next_action:'continue_recorded_agent',followup_config:{target:agentId,message:packet.prompt},
-              next_action_args:{run_id:args.run_id,control_token:args.control_token}};
-          };
+          const incrementalContinuation=(record,currentAttempt,index,agentId,turnId,status='native_item_accepted')=>
+            this.#incrementalNativeContinuation(runtime,args,{record,definition:active,attempt:currentAttempt,binding:lease,
+              index,agentId,turnId,status,maxPromptChars:config.global.max_prompt_chars,executor});
           if(active.fanout?.item_delivery==='incremental'){
             const plan=resolvedSubagentPlan(active,existing.state);
             for(const [slot,agentId] of Object.entries(attempt.native_agents??{})){
@@ -1515,7 +1528,8 @@ export class WorkflowService {
         const claimed = await runtime.runs.read(args.run_id);
         const claimedAttempt=claimed.state.nodes[definition.id].attempts.find(item=>item.id===lease.attempt_id);
         const activeSlots=activeNativeAssignmentSlots(claimed,definition,claimedAttempt);
-        if(!activeSlots.length)return this.#sealNativeDispatch(runtime,{...args,attempt_id:lease.attempt_id},{executor,signal});
+        if(!activeSlots.length)return this.#sealNativeDispatch(runtime,{...args,attempt_id:lease.attempt_id},{executor,signal,
+          maxPromptChars:config.global.max_prompt_chars});
         const initialIndices=definition.fanout?.scheduling === 'serial' ? activeSlots[0] : definition.fanout?.max_concurrency
           ? activeSlots.slice(0,definition.fanout.max_concurrency)
           : definition.fanout?.result_mode==='per_item'?activeSlots:null;

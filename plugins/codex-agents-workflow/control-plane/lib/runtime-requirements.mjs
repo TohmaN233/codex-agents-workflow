@@ -68,8 +68,6 @@ export function runtimeRequirementKey(requirement){
   return `${normalized.name}:${createHash('sha256').update(JSON.stringify(normalized)).digest('hex')}`;
 }
 
-export const executableRequirementNames=executables=>normalizeExecutableRequirements(executables).map(item=>item.name);
-
 export function versionSatisfies(actual,constraint,name='executable'){
   const parts=versionParts(actual,name),normalized=normalizeVersion(constraint,name);
   if(!normalized)return true;

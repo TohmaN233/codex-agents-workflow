@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { lstat, readFile, readdir, open, rename, unlink, realpath, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, relative, sep, win32 } from 'node:path';
@@ -56,7 +56,28 @@ function nativeExecutionBinding(environment) {
   'CODEX_EXECUTION_BINDING', 'Discovered task programs must have absolute resolved paths');
   return { kind: 'native', programs: Object.fromEntries(environment.tools.map(item => [item.name, item.path])), command_timeout_ms: 300000 };
 }
-export async function executeNativeProgram(binding, request, roots, { signal, onHandle, env = process.env, processLauncher = spawn } = {}) {
+async function liveNativeProcessGroup(pid) {
+  const listing = await new Promise((resolveListing, rejectListing) => {
+    execFile('/bin/ps', ['-eo', 'pid=,pgid=,stat='], { timeout: 3000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
+      if (error) rejectListing(error); else resolveListing(stdout);
+    });
+  });
+  const members = [];
+  for (const line of listing.split('\n').filter(value => value.trim())) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)$/);
+    requireValue(match, 'CODEX_EXECUTION_STOP_UNCONFIRMED', 'Cannot parse native process-group ownership');
+    // Zombies have exited and cannot produce effects. Some hosts do not reap
+    // orphaned zombies promptly, so kill(0) alone cannot confirm effect quiescence.
+    if (Number(match[2]) === pid && !match[3].startsWith('Z')) members.push(Number(match[1]));
+  }
+  return members;
+}
+// Launcher, signaler and inspector are trusted lifecycle-test seams, never
+// Workflow inputs. POSIX tasks own a distinct process group without a sandbox.
+export async function executeNativeProgram(binding, request, roots, {
+  signal, onHandle, env = process.env, processLauncher = spawn,
+  processSignaler = process.kill.bind(process), inspectProcessGroup = liveNativeProcessGroup,
+} = {}) {
   requireValue(binding?.kind === 'native' && Object.hasOwn(binding.programs, request.program)
     && Array.isArray(request.args) && request.args.length <= 256
     && request.args.every(value => typeof value === 'string' && value.length <= 8192 && !value.includes('\0'))
@@ -69,48 +90,85 @@ export async function executeNativeProgram(binding, request, roots, { signal, on
   const args = request.args.map(value => value.replaceAll('@WORKSPACE@', roots.workspace)
     .replaceAll('@TASK_ROOT@', roots.task_root ?? ''));
   const cwd = request.cwd === 'workspace' ? roots.workspace : roots.task_root;
-  const child = processLauncher(program, args, { cwd, env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  let closed = false, stopReason = null, timer, abort, bytes = 0;
+  const posix = process.platform !== 'win32';
+  const child = processLauncher(program, args, { cwd, env, shell: false, windowsHide: true, detached: posix, stdio: ['ignore', 'pipe', 'pipe'] });
+  let closed = false, exited = false, quiescent = false, stopReason = null, timer, abort, bytes = 0, stopPromise = null, settled = false;
+  let exitCode = null, exitSignal = null;
   const stdout = [], stderr = [];
   let resolveClose, rejectClose;
   const done = new Promise((resolveDone, rejectDone) => { resolveClose = resolveDone; rejectClose = rejectDone; });
-  const stop = async reason => {
-    if (closed) return;
-    stopReason ??= reason ?? executionError('CODEX_EXECUTION_CANCELLED', 'Native task program was stopped');
-    if (process.platform === 'win32' && Number.isInteger(child.pid)) {
+  let closeObserved;
+  const closeSeen = new Promise(resolveSeen => { closeObserved = resolveSeen; });
+  const settle = (callback, value) => {
+    if (settled) return;
+    settled = true; clearTimeout(timer); if (signal && abort) signal.removeEventListener('abort', abort);
+    callback(value);
+  };
+  const confirmStop = async () => {
+    const deadline = Date.now() + 5000;
+    if (posix && Number.isInteger(child.pid)) {
+      try { processSignaler(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      while ((await inspectProcessGroup(child.pid)).length) {
+        requireValue(Date.now() < deadline, 'CODEX_EXECUTION_STOP_UNCONFIRMED', 'Native task process group still has live members after stop');
+        await wait(10);
+      }
+    } else if (!posix && !exited && !closed && Number.isInteger(child.pid)) {
       const helper = spawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'],
         { shell: false, windowsHide: true, stdio: 'ignore' });
-      await new Promise(resolveStop => { helper.once('error', resolveStop); helper.once('close', resolveStop); });
+      const code = await new Promise((resolveStop, rejectStop) => { helper.once('error', rejectStop); helper.once('close', resolveStop); });
+      requireValue(code === 0, 'CODEX_EXECUTION_STOP_UNCONFIRMED', 'Windows native task tree stop failed');
     }
-    if (!closed) child.kill('SIGKILL');
+    if (!posix && !closed && !exited) child.kill('SIGKILL');
     let stopTimer;
-    try { await Promise.race([done.then(() => undefined, () => undefined), new Promise((_, reject) => {
+    try { await Promise.race([closeSeen, new Promise((_, reject) => {
       stopTimer = setTimeout(() => reject(executionError('CODEX_EXECUTION_STOP_UNCONFIRMED', 'Native task program did not close after stop')), 5000);
     })]); }
     finally { clearTimeout(stopTimer); }
+    quiescent = true;
   };
-  const handle = { done, stop, isQuiescent: () => closed };
+  const finish = reason => {
+    if (reason) stopReason ??= reason;
+    if (quiescent) return Promise.resolve();
+    if (!stopPromise) stopPromise = confirmStop().then(() => {
+      if (stopReason) settle(rejectClose, stopReason);
+      else settle(resolveClose, { exit_code: exitCode, signal: exitSignal,
+        stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'),
+        output: Buffer.concat([...stdout, ...stderr]).toString('utf8') });
+    }).catch(cause => {
+      const error = Object.assign(new AggregateError([...(stopReason ? [stopReason] : []), cause],
+        'Native task stopped without confirmed process-group quiescence'), { code: 'CODEX_EXECUTION_STOP_UNCONFIRMED',
+        details: { pid: child.pid ?? null, process_group: posix ? child.pid ?? null : null, cause_code: cause.code ?? null } });
+      settle(rejectClose, error); throw error;
+    }).finally(() => { stopPromise = null; });
+    return stopPromise;
+  };
+  const stop = reason => finish(reason ?? executionError('CODEX_EXECUTION_CANCELLED', 'Native task program was stopped'));
+  const requestStop = reason => { void stop(reason).catch(error => settle(rejectClose, error)); };
+  const handle = { done, stop, isQuiescent: () => quiescent };
   onHandle?.(handle);
   const collect = target => chunk => {
     bytes += chunk.length;
-    if (bytes > 1024 * 1024) { void stop(executionError('CODEX_EXECUTION_OUTPUT', 'Native task program output exceeded 1 MiB')).catch(rejectClose); return; }
+    if (bytes > 1024 * 1024) { requestStop(executionError('CODEX_EXECUTION_OUTPUT', 'Native task program output exceeded 1 MiB')); return; }
     target.push(chunk);
   };
   child.stdout.on('data', collect(stdout)); child.stderr.on('data', collect(stderr));
   child.once('error', cause => { stopReason ??= Object.assign(new Error(cause.message, {cause}), {
     code: 'CODEX_EXECUTION_LAUNCH', details: {dependency:request.program,cause_code:cause.code,child_started:Number.isInteger(child.pid)},
   }); });
-  child.once('close', (code, exitSignal) => {
-    closed = true; clearTimeout(timer); if (signal && abort) signal.removeEventListener('abort', abort);
-    if (stopReason) rejectClose(stopReason);
-    else resolveClose({ exit_code: Number.isInteger(code) ? code : null, signal: exitSignal ?? null,
-      stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'),
-      output: Buffer.concat([...stdout, ...stderr]).toString('utf8') });
+  child.once('exit', (code, signalName) => {
+    exited = true; exitCode = Number.isInteger(code) ? code : null; exitSignal = signalName ?? null;
+    // Descendants may retain the pipes or use independent stdio. Parent exit
+    // initiates group cleanup; neither exit nor pipe closure releases ownership.
+    void finish().catch(error => settle(rejectClose, error));
   });
-  abort = () => { void stop(signal?.reason ?? executionError('CODEX_EXECUTION_CANCELLED', 'Native task program was cancelled')).catch(rejectClose); };
+  child.once('close', (code, signalName) => {
+    closed = true; exitCode = Number.isInteger(code) ? code : exitCode; exitSignal = signalName ?? exitSignal;
+    closeObserved(); void finish().catch(error => settle(rejectClose, error));
+  });
+  abort = () => requestStop(signal?.reason ?? executionError('CODEX_EXECUTION_CANCELLED', 'Native task program was cancelled'));
   if (signal) signal.addEventListener('abort', abort, { once: true });
   if (signal?.aborted) abort();
-  timer = setTimeout(() => { void stop(executionError('CODEX_EXECUTION_TIMEOUT', 'Native task program exceeded its Host deadline')).catch(rejectClose); }, binding.command_timeout_ms);
+  timer = setTimeout(() => requestStop(executionError('CODEX_EXECUTION_TIMEOUT', 'Native task program exceeded its Host deadline')), binding.command_timeout_ms);
   return done;
 }
 function mountParents(paths) {

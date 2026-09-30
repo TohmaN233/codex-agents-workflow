@@ -47,6 +47,7 @@
 - Parallel bounded-write children must have disjoint Host-derived write paths. Shared changes go to one downstream integration owner.
 - With `result_mode: per_item`, the Agent returns semantic entries in supplied order. The Host binds them to original items and journals each accepted entry.
 - A failed item never replays accepted siblings. Same-child repair receives only unresolved items. An outer retry inherits accepted item results.
+- Incremental delivery uses the exact completed turn and only the next unresolved item, on both native paths. Successful item advancement does not consume the failed-turn retry allowance. An empty inherited pool still validates the full join and releases the successor without a child invocation.
 - Assignment indices stay tied to the original partition after inherited partitions are removed. Child input and write scope contain only unresolved items; result joins and evidence hashes contain the complete original partition, including inherited results.
 - A malformed or blocked child result consumes only that child or node's declared retry allowance. Exhaustion fails visibly.
 - Agent finals are small semantic results. Files and detailed evidence remain local; a child reports completion and concise evidence rather than returning file contents.
@@ -72,6 +73,7 @@
 - Preserve user files and concurrent edits. Do not write outside the exact Run scope.
 - Required outputs and source-location evidence are validated before downstream release.
 - Command output is captured by the Host without silent truncation. A limit or failed termination is an explicit tool failure.
+- Native task execution owns the normal task process tree through completion or cancellation. POSIX groups are stopped and inspected before quiescence is reported; a direct parent's close is insufficient while live descendants remain. Unconfirmed termination retains ownership and prevents competing execution.
 
 ## Release validation
 
