@@ -123,8 +123,24 @@ const specs = [
 ];
 export const WORKFLOW_TOOL_OPERATIONS = new Set(specs.map(([name]) => name));
 export const HOST_ONLY_WORKFLOW_OPERATIONS = new Set(hostOnlySpecs.map(([name]) => name));
+// MCP annotations describe effects; they do not grant authority or add gates.
+// Keep every operation classified so additions cannot inherit misleading hints.
+const effectGroups = [
+  [true, false, false, 'routing_defaults role_templates role_template route authoring_workflows import_review prepare_expansion list read revisions read_resource runs get wait run_definition node_details next events review_integration child_control'],
+  [true, false, true, 'capabilities skill_inventory verify_relocation source_status validate strict_status'],
+  [false, false, false, 'build_workflow inline_skill create publish claim_node complete_node fail_node dispatch_receipt record_usage prepare_integration'],
+  [false, true, false, 'delete write_resource save recover_control recover_claim reattach_handoff recover_strict_result reattach_subworkflow pause resume approve'],
+  [false, false, true, 'import_skill export_workflow_package prepare_environment reattach_connector reconcile_connector collect_connector collect_subworkflow collect_strict'],
+  [false, true, true, 'start_role_connector install_workflow_package start control_connector native_next native_spawned_batch native_followed_up drive retry_node cancel dispatch integrate_parallel cleanup_parallel cleanup_strict_orphans'],
+];
+const effects = new Map(effectGroups.flatMap(([readOnlyHint, destructiveHint, openWorldHint, names]) =>
+  names.split(' ').map(name => [name, { readOnlyHint, destructiveHint, openWorldHint }])));
 export function workflowToolDefinitions() {
-  return specs.map(([name, description, required, optional]) => ({ name: 'workflow_' + name, description,
-    inputSchema: { type: 'object', properties: Object.fromEntries([...required, ...optional].map(key => [key, properties[key]])), required, additionalProperties: false },
-  }));
+  return specs.map(([name, description, required, optional]) => {
+    const annotations = effects.get(name);
+    if (!annotations) throw new Error('MCP_TOOL_EFFECTS_MISSING: ' + name);
+    return { name: 'workflow_' + name, description, annotations: { ...annotations },
+      inputSchema: { type: 'object', properties: Object.fromEntries([...required, ...optional].map(key => [key, properties[key]])), required, additionalProperties: false },
+    };
+  });
 }

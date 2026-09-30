@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { WorkflowService } from './lib/workflow-service.mjs';
@@ -14,15 +14,13 @@ import { closeHostMainManagers } from './lib/execution/host-main-manager.mjs';
 import { fenceAllAttemptAdmissions, closeAttemptAdmissions } from './lib/execution/attempt-admission.mjs';
 import { workflowToolDefinitions, WORKFLOW_TOOL_OPERATIONS, HOST_ONLY_WORKFLOW_OPERATIONS } from './lib/workflow-tools.mjs';
 import { validateData } from './lib/workflow-data-schema.mjs';
-import { localCodexCatalog } from './lib/execution/local-codex-catalog.mjs';
+import { WorkbenchApi, workbenchStorage, workbenchErrorPayload as errorToolPayload, MAX_WORKBENCH_BODY, MAX_PACKAGE_BODY } from './lib/workbench-api.mjs';
+import { appIcons, appToolDefinitions, appResourceDefinitions, readAppResource, readMentionResource, callAppTool } from './lib/mcp-app.mjs';
 
 import {
   appendAuditEvent,
-  configRevision,
   loadConfig,
   resolveConfigPath,
-  saveConfig,
-  validateConfig,
 } from './lib/config.mjs';
 import {
   controlConnectorTask,
@@ -39,7 +37,9 @@ const DEFAULT_CONFIG_PATH = join(CONTROL_DIR, 'default-config.json');
 const WEB_DIR = join(CONTROL_DIR, 'web');
 const SERVER_VERSION = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8')).version;
 const DEFAULT_CONSOLE_PORT = 58712;
-const MAX_HTTP_BODY = 8 * 1024 * 1024;
+const MAX_HTTP_BODY = MAX_WORKBENCH_BODY;
+const MODERN_PROTOCOL_VERSION = '2026-07-28';
+const SUPPORTED_PROTOCOL_VERSIONS = new Set([MODERN_PROTOCOL_VERSION, '2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
 
 let consoleState = null;
 let activeStdioLifecycle = null;
@@ -57,31 +57,11 @@ const STDIO_CONTROL_OPERATIONS = new Set([
   'control_connector', 'reconcile_connector', 'strict_status',
 ]);
 
-function samePath(left, right) {
-  const resolvedLeft = resolve(left);
-  const resolvedRight = resolve(right);
-  return process.platform === 'win32'
-    ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
-    : resolvedLeft === resolvedRight;
-}
-
 function textToolResult(value, isError = false) {
   const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   return {
     content: [{ type: 'text', text }],
     ...(isError ? { isError: true } : {}),
-  };
-}
-
-function errorToolPayload(error) {
-  return {
-    error: error instanceof Error ? error.message : String(error),
-    ...(typeof error?.code === 'string' ? { code: error.code } : {}),
-    ...(error?.retryable === true ? { retryable: true } : {}),
-    ...(error?.actionRequired ? { action_required: error.actionRequired } : {}),
-    ...(error?.details && typeof error.details === 'object' ? { details: error.details } : {}),
-    ...(error?.validation && typeof error.validation === 'object' ? { validation: error.validation } : {}),
-    ...(error?.committed === true ? { committed: true, sequence: error.sequence } : {}),
   };
 }
 
@@ -190,19 +170,16 @@ export async function startConsole({
     return { ...consoleState, browser: opened };
   }
   const configPath = requestedConfigPath || resolveConfigPath(env);
-  const globalConfigPath = resolveConfigPath({ ...env, CODEX_WORKFLOW_CONFIG: '', SOL_CONTROL_CONFIG: '' });
-  const usesOverride = Boolean(env.CODEX_WORKFLOW_CONFIG || env.SOL_CONTROL_CONFIG)
-    || Boolean(requestedConfigPath && !samePath(configPath, globalConfigPath));
-  const storage = {
-    scope: usesOverride ? 'override' : 'global',
-    config_path: configPath,
-  };
+  const storage = workbenchStorage(configPath, env);
+  const api = new WorkbenchApi({ configPath, defaultConfigPath, env });
   await loadConfig({ configPath, defaultConfigPath });
   const token = randomBytes(32).toString('base64url');
   const staticFiles = {
     '/': ['index.html', 'text/html; charset=utf-8'],
     '/index.html': ['index.html', 'text/html; charset=utf-8'],
     '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
+    '/app-client.js': ['app-client.js', 'text/javascript; charset=utf-8'],
+    '/settings-view-state.js': ['settings-view-state.js', 'text/javascript; charset=utf-8'],
     '/i18n.js': ['i18n.js', 'text/javascript; charset=utf-8'],
     '/styles.css': ['styles.css', 'text/css; charset=utf-8'],
     '/workflows': ['workflows.html', 'text/html; charset=utf-8'],
@@ -234,81 +211,10 @@ export async function startConsole({
         jsonResponse(res, 401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer' });
         return;
       }
-      if (url.pathname.startsWith('/api/workflow/') && req.method === 'POST') {
-        const operation = url.pathname.slice('/api/workflow/'.length);
-        const service = new WorkflowService({ configPath, defaultConfigPath, env });
-        const body = await readJsonBody(req, operation === 'install_workflow_package' ? 72 * 1024 * 1024 : MAX_HTTP_BODY);
-        if (operation === 'current_main_pending') {
-          jsonResponse(res, 200, await service.call('main_status', {run_id:String(body.run_id || '')}, {human:true}));
-        } else if (operation === 'current_main_accept') {
-          jsonResponse(res, 200, await service.call('accept_main', {run_id:String(body.run_id || ''),control_token:String(body.control_token || ''),accepted:body.accepted}, {human:true}));
-        } else if (operation === 'current_main_approve') {
-          const run_id=String(body.run_id || ''),control_token=String(body.control_token || ''),owner=String(body.owner || 'human-console');
-          await service.call('approve',{run_id,control_token,approval_id:String(body.approval_id || ''),decision:body.decision},{human:true});
-          jsonResponse(res, 200, await service.call('continue_main',{run_id,control_token,owner},{human:true}));
-        } else if (operation === 'current_main_cancel') {
-          jsonResponse(res, 200, await service.call('cancel',{run_id:String(body.run_id || ''),control_token:String(body.control_token || '')},{human:true}));
-        } else jsonResponse(res, 200, await service.call(operation, body, { human: true }));
-        return;
-      }
-      if (url.pathname === '/api/config' && req.method === 'GET') {
-        const config = await loadConfig({ configPath, defaultConfigPath });
-        jsonResponse(res, 200, { config, revision: configRevision(config), storage });
-        return;
-      }
-      if (url.pathname === '/api/config' && req.method === 'PUT') {
-        const body = await readJsonBody(req);
-        const saved = await saveConfig(body.config, {
-          configPath,
-          expectedRevision: String(body.expected_revision || ''),
-        });
-        await appendAuditEvent(configPath, {
-          event: 'console-save',
-          outcome: 'ok',
-        }, { effectCommitted: true });
-        jsonResponse(res, 200, saved);
-        return;
-      }
-      if (url.pathname === '/api/models' && req.method === 'GET') {
-        const config = await loadConfig({ configPath, defaultConfigPath });
-        const catalog = await localCodexCatalog({ env, extra: [config.strict_executor?.codex_binary].filter(Boolean) });
-        jsonResponse(res, 200, { models: catalog.models, source: catalog.source });
-        return;
-      }
-      if (url.pathname === '/api/provider-secrets' && req.method === 'GET') {
-        const config = await loadConfig({ configPath, defaultConfigPath });
-        const providers = config.providers.filter(provider => provider.kind === 'openai_compatible').map(provider => ({
-          provider_id: provider.id,
-          api_key_env: provider.config.api_key_env,
-          required: provider.config.auth_type !== 'none',
-          ready: provider.config.auth_type === 'none' || Boolean(env[provider.config.api_key_env]),
-        }));
-        jsonResponse(res, 200, { providers });
-        return;
-      }
-      if (url.pathname === '/api/provider-secret' && req.method === 'PUT') {
-        const body = await readJsonBody(req);
-        const config = await loadConfig({ configPath, defaultConfigPath });
-        const provider = config.providers.find(item => item.id === body.provider_id);
-        if (!provider || provider.kind !== 'openai_compatible') throw Object.assign(new Error('Select a saved OpenAI-compatible Provider'), { code: 'PROVIDER_SECRET_TARGET' });
-        if (provider.config.auth_type === 'none') throw Object.assign(new Error('This Provider does not use an API key'), { code: 'PROVIDER_SECRET_NOT_REQUIRED' });
-        if (body.clear === true) delete env[provider.config.api_key_env];
-        else {
-          if (typeof body.api_key !== 'string' || !body.api_key || body.api_key.length > 4096 || /[\r\n\0]/.test(body.api_key)) {
-            throw Object.assign(new Error('API key must contain 1–4096 characters without line breaks'), { code: 'PROVIDER_SECRET_VALUE' });
-          }
-          env[provider.config.api_key_env] = body.api_key;
-        }
-        await appendAuditEvent(configPath, { event: 'provider-secret-session-update', outcome: 'ok', provider_id: provider.id, cleared: body.clear === true }, { effectCommitted: true });
-        jsonResponse(res, 200, { provider_id: provider.id, api_key_env: provider.config.api_key_env, ready: body.clear !== true });
-        return;
-      }
-      if (url.pathname === '/api/defaults' && req.method === 'GET') {
-        const defaults = validateConfig(JSON.parse(await readFile(defaultConfigPath, 'utf8')));
-        jsonResponse(res, 200, { config: defaults, revision: configRevision(defaults) });
-        return;
-      }
-      jsonResponse(res, 404, { error: 'not found' });
+      const body = ['POST', 'PUT', 'PATCH'].includes(req.method)
+        ? await readJsonBody(req, url.pathname === '/api/workflow/install_workflow_package' ? MAX_PACKAGE_BODY : MAX_HTTP_BODY) : {};
+      const response = await api.request({ path: url.pathname, method: req.method, body });
+      jsonResponse(res, response.status, response.body);
     } catch (error) {
       const status = /changed since/.test(error.message) ? 409 : 400;
       jsonResponse(res, status, errorToolPayload(error));
@@ -351,13 +257,16 @@ export function buildToolDefinitions() {
   };
   return [
     ...workflowToolDefinitions(),
+    ...appToolDefinitions(),
     {
       name: 'codex_agents_workflow_status',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'Read sanitized control-plane metadata only: enabled Providers, Task Type ids, routes, ordered Stage bindings, capabilities, and approval flags. Prompt templates, provider endpoints, credential variable names, and console tokens are never returned.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
       name: 'codex_agents_workflow_console',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'Open the human-owned loopback configuration console in the default browser. The normal result does not reveal the console token or prompt library to the model. Use reveal_url only after an explicit user request for the manual URL.',
       inputSchema: {
         type: 'object',
@@ -370,6 +279,7 @@ export function buildToolDefinitions() {
     },
     {
       name: 'codex_agents_workflow_resolve',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'After the primary agent selects exactly one enabled Task Type, compile only its ordered Stages and return each user-pinned Provider adapter contract. The control plane must not substitute or fall back to another Provider. Native/MCP/web-review Providers are executed by Codex through their returned contracts; this tool does not invoke them.',
       inputSchema: {
         type: 'object',
@@ -380,6 +290,7 @@ export function buildToolDefinitions() {
     },
     {
       name: 'codex_agents_workflow_connector_probe',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       description: 'Probe one enabled built-in connector without sending a task. A successful probe means the local binary/configuration is available; it does not claim a live model session.',
       inputSchema: {
         type: 'object',
@@ -393,6 +304,7 @@ export function buildToolDefinitions() {
     },
     {
       name: 'codex_agents_workflow_connector_start',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       description: 'Compile and internally deliver exactly one Stage from a selected Task Type to its pinned built-in connector. Bounded-write Stages require non-empty workspace-relative allowed_paths; extra confirmation is required only when the Provider or Stage approval gate is enabled.',
       inputSchema: {
         type: 'object',
@@ -408,6 +320,7 @@ export function buildToolDefinitions() {
     },
     {
       name: 'codex_agents_workflow_connector_status',
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       description: 'Read one exact connector task by task_id, optionally waiting up to 25 seconds for a state change. Never infer identity from the visible UI or latest session.',
       inputSchema: {
         type: 'object',
@@ -421,6 +334,7 @@ export function buildToolDefinitions() {
     },
     {
       name: 'codex_agents_workflow_connector_control',
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       description: 'Control one exact connector task. Reconcile reattaches only persisted identities; Grok cancel requires exact session_id/run_id and Cursor cancel requires exact agent_id; abandon is explicitly risk-acknowledged.',
       inputSchema: {
         type: 'object',
@@ -444,6 +358,7 @@ export function buildToolDefinitions() {
     },
     {
       name: 'codex_agents_workflow_invoke',
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       description: 'Resolve and directly call one enabled OpenAI-compatible advisory Provider pinned to a read-only Stage. Direct API invocation must be enabled in the console, credentials must exist only in the configured environment variable, and approval gates still apply. This tool never grants file or host tools to the external model.',
       inputSchema: {
         type: 'object',
@@ -458,7 +373,25 @@ export function buildToolDefinitions() {
   ];
 }
 
-export async function handleRpc(request, {
+function serverIdentity() {
+  return { name: 'codex-agents-workflow', title: 'Codex Agents Workflow', version: SERVER_VERSION, icons: appIcons() };
+}
+
+export async function handleRpc(request, options = {}) {
+  const response = await handleRpcRequest(request, options);
+  // node-v0.1.0/docs/spec.md discovery example uses the modern MCP result
+  // envelope and reserved identity metadata. Keep the legacy initialize
+  // handshake separate; new-era requests negotiate via per-request metadata.
+  const modern = request?.method === 'server/discover'
+    || (request?.method !== 'initialize' && request?.params?._meta?.['io.modelcontextprotocol/protocolVersion'] === MODERN_PROTOCOL_VERSION);
+  if (modern && response?.result) {
+    return { ...response, result: { ...response.result, resultType: 'complete',
+      _meta: { ...response.result._meta, 'io.modelcontextprotocol/serverInfo': serverIdentity() } } };
+  }
+  return response;
+}
+
+async function handleRpcRequest(request, {
   configPath = resolveConfigPath(),
   defaultConfigPath = DEFAULT_CONFIG_PATH,
   env = process.env,
@@ -473,27 +406,43 @@ export async function handleRpc(request, {
       jsonrpc: '2.0',
       id,
       result: {
-        protocolVersion: '2026-07-28',
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'codex-agents-workflow', version: SERVER_VERSION },
+        supportedVersions: [MODERN_PROTOCOL_VERSION],
+        capabilities: { tools: { listChanged: false }, resources: { subscribe: false, listChanged: false } },
       },
     };
   }
   if (method === 'initialize') {
     const requestedVersion = String(request?.params?.protocolVersion || '');
-    const legacyVersions = new Set(['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']);
     return {
       jsonrpc: '2.0',
       id,
       result: {
-        protocolVersion: legacyVersions.has(requestedVersion) ? requestedVersion : '2025-11-25',
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: 'codex-agents-workflow', version: SERVER_VERSION },
+        protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.has(requestedVersion) ? requestedVersion : '2025-11-25',
+        capabilities: { tools: { listChanged: false }, resources: { subscribe: false, listChanged: false } },
+        serverInfo: serverIdentity(),
       },
     };
   }
   if (method === 'notifications/initialized') return null;
   if (method === 'ping') return { jsonrpc: '2.0', id, result: {} };
+  if (method === 'resources/list') {
+    return { jsonrpc: '2.0', id, result: { resources: appResourceDefinitions() } };
+  }
+  if (method === 'resources/templates/list') return { jsonrpc: '2.0', id, result: { resourceTemplates: [] } };
+  if (method === 'resources/read') {
+    try {
+      const uri = String(request?.params?.uri || '');
+      let result = await readAppResource(uri);
+      if (!result) {
+        const api = new WorkbenchApi({ configPath, defaultConfigPath, env, fetchImpl, capabilities: serviceCapabilities });
+        result = await readMentionResource(uri, api.service);
+      }
+      if (!result) throw Object.assign(new Error('Resource not found'), { code: 'RESOURCE_NOT_FOUND' });
+      return { jsonrpc: '2.0', id, result };
+    } catch (error) {
+      return { jsonrpc: '2.0', id, error: { code: -32602, message: error.message, data: errorToolPayload(error) } };
+    }
+  }
   if (method === 'tools/list') {
     return { jsonrpc: '2.0', id, result: { tools: buildToolDefinitions() } };
   }
@@ -503,6 +452,13 @@ export async function handleRpc(request, {
     const suppliedArgs = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
     const args=suppliedArgs;
     try {
+      if (['codex_agents_workflow_app', 'codex_agents_workflow_settings', 'codex_agents_workflow_app_request', 'search_mentions'].includes(name)) {
+        // The host honors ui.visibility:['app'] for the human App transport.
+        // No caller-supplied origin field can attest human authority. The
+        // direct workflow_* model gate below stays unchanged.
+        const api = new WorkbenchApi({ configPath, defaultConfigPath, env, fetchImpl, capabilities: serviceCapabilities });
+        return { jsonrpc: '2.0', id, result: await callAppTool(name, suppliedArgs, api) };
+      }
       if (name.startsWith('workflow_') && HOST_ONLY_WORKFLOW_OPERATIONS.has(name.slice('workflow_'.length))) {
         throw Object.assign(new Error('Host-only Workflow operations are unavailable through the model MCP boundary'), { code: 'HOST_OPERATION_REQUIRED' });
       }
@@ -606,6 +562,13 @@ function isStdioControlRequest(request) {
   if (method !== 'tools/call') return true;
   const name = String(request?.params?.name || '');
   if (STDIO_CONTROL_TOOLS.has(name)) return true;
+  if (name === 'codex_agents_workflow_app_request') {
+    const args = request?.params?.arguments;
+    if (args?.method !== 'POST' || typeof args.path !== 'string' || !args.path.startsWith('/api/workflow/')) return false;
+    const operation = args.path.slice('/api/workflow/'.length);
+    return STDIO_CONTROL_OPERATIONS.has(operation)
+      || ['current_main_pending', 'current_main_accept', 'current_main_approve', 'current_main_cancel'].includes(operation);
+  }
   return name.startsWith('workflow_') && STDIO_CONTROL_OPERATIONS.has(name.slice('workflow_'.length));
 }
 
@@ -640,6 +603,15 @@ export function createStdioRequestScheduler({
     active[lane] += 1;
     const task = Promise.resolve()
       .then(() => handle(request))
+      .catch((error) => {
+        onUnexpectedError(error, request);
+        if (request?.id === undefined || request?.id === null) return undefined;
+        return { jsonrpc: '2.0', id: request.id, error: {
+          code: -32603,
+          message: `Internal error handling ${String(request?.method || '(unknown method)')}: ${error instanceof Error ? error.message : String(error)}`,
+          data: { code: 'INTERNAL_SERVER_ERROR', ...errorToolPayload(error), method: String(request?.method || '') },
+        } };
+      })
       .then((response) => response ? write(response) : undefined)
       .catch((error) => {
         onUnexpectedError(error, request);
@@ -742,8 +714,8 @@ async function main() {
       finally{if(requestAborts.get(request.id)===abort)requestAborts.delete(request.id);}
     },
     write: writeResponse,
-    onUnexpectedError: (error) => {
-      process.stderr.write(`codex-agents-workflow request failed: ${error.stack || error.message}\n`);
+    onUnexpectedError: (error, request) => {
+      process.stderr.write(`codex-agents-workflow request failed (id=${String(request?.id ?? 'notification')}, method=${String(request?.method || '')}): ${error?.stack || error?.message || String(error)}\n`);
       failures.push(error);
     },
   });

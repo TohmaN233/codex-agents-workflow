@@ -9,6 +9,10 @@
 
 ## Current execution architecture
 
+- The Workbench is an MCP App with OpenAI global/thread and settings entrypoints. Its UI uses the official MCP Apps bridge; the loopback console remains an explicit standalone entry. Both transports call one shared Workbench API and the existing Workflow service.
+- UI resources are self-contained and declare fullscreen display. Configuration, prompt bodies and startup data go in UI-only result metadata, never the model-visible opener result. Host-owned references supply compact selected Workflow/Role context.
+- Enable optional Extensions through negotiated host capabilities, not OS or Codex version checks. A bridge error is visible and must not silently switch to a tokenized localhost connection. UI tool visibility and existing controller boundaries remain distinct from model-facing execution tools.
+- Browser SDKs are pinned build dependencies and bundled with their licenses. The installed Node 20+ Host needs no SDK dependency installation.
 - `workflow_start` launches one Host-owned Run. Deterministic nodes and logical Main nodes run under the detached Host owner.
 - Cooperative Provider nodes use real native Codex subagents. The controller performs only the returned spawn or follow-up action; the Host owns Run IDs, node IDs, leases, task names, Agent paths, hashes, item positions, receipts, and completion.
 - The public native continuation surface is exactly `workflow_native_next`, `workflow_native_spawned_batch`, and `workflow_native_followed_up`. The latter two take no arguments.

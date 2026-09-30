@@ -115,6 +115,8 @@ Threads are useful when a later stage truly needs the same conversation's intern
 
 The workbench separates Roles from Workflows. A Role is a directly assignable single-agent behavior profile. A Workflow is a task graph with dependencies, fanout, tools, and human gates. Models, permissions, resources, versions, Run records, and install packages remain inspectable in one place.
 
+The workbench integrates through MCP Apps and OpenAI Extensions, with sidebar and conversation entrypoints plus a separate Provider settings view. Hosts supporting composer mentions can search and reference Workflows or Roles. Full configuration travels in UI-only metadata; the conversation receives compact information. Execution stays with the local Host, and UI capabilities are negotiated rather than tied to an OS or Codex version. [Official extension specification](https://github.com/openai/mcp-extensions/blob/node-v0.1.0/docs/spec.md).
+
 ![Current Workflow canvas and property inspector](docs/assets/tutorial/workbench-editor.png)
 
 A fresh installation contains two foundational Workflows:
@@ -128,6 +130,8 @@ Math, Zenonzard, and video-use do not populate the default library. They live in
 
 You need a plugin-capable Codex installation, Node.js 20+, and Git.
 
+Contributors rebuilding the browser UI need Node.js 22+ for the pinned Extensions SDK. Run `npm ci` and `npm run check:web` in `plugins/codex-agents-workflow/control-plane`. The installed Host remains dependency-free on Node.js 20+; its packaged UI already includes the browser SDKs and their licenses.
+
 The workbench supports Windows, macOS, and Linux. Executors check the capabilities exposed by your local Codex installation rather than a fixed release or platform hash. If an upgrade removes a registered path, the Host rediscovers and verifies the local installation. Optional Workflow dependencies are checked separately and do not block unrelated workflows.
 
 ```sh
@@ -137,13 +141,13 @@ codex plugin marketplace add .
 codex plugin add codex-agents-workflow@codex-agents-workflow
 ```
 
-Start a new Codex task after installation and say:
+After installation, open the plugin's sidebar entry in a Codex host supporting MCP Apps, or say in your current task:
 
 ```text
 Use $codex-agents-workflow:workflow-control-plane and open the workbench.
 ```
 
-Or start the local console manually:
+For a standalone browser interface, start the local console manually:
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd

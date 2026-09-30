@@ -22,6 +22,13 @@ test('loopback console requires token and revision-checks saves', async (t) => {
   assert.equal(unauthorized.status, 401);
 
   const appSource = await (await fetch(`${base}/app.js`)).text();
+  for (const moduleName of ['app-client.js', 'settings-view-state.js']) {
+    assert.ok(appSource.includes(`'./${moduleName}'`), `${moduleName} is imported by settings`);
+    const moduleResponse = await fetch(`${base}/${moduleName}`);
+    assert.equal(moduleResponse.status, 200, moduleName);
+    assert.match(moduleResponse.headers.get('content-type'), /javascript/);
+    assert.equal(await moduleResponse.text(), await readFile(new URL(`../web/${moduleName}`, import.meta.url), 'utf8'));
+  }
   const localeModule = await fetch(`${base}/i18n.js`);
   assert.equal(localeModule.status, 200);
   assert.match(localeModule.headers.get('content-type'), /javascript/);

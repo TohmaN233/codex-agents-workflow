@@ -32,29 +32,28 @@ test('workflow-control-plane reserves Runs for concrete execution intent', async
   assert.ok(skill.length<6000,'the always-available routing Skill must stay compact');
 });
 
-test('plugin defaults do not turn planning or audit prompts into Runs', async () => {
+test('plugin starters describe user tasks while routing policy stays in the Skill', async () => {
   const manifest = JSON.parse(await readFile(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
   const pluginPrompt = manifest.interface.defaultPrompt[0];
   const prompt = manifest.interface.defaultPrompt.join(' ');
   const skillUi = await readFile(join(pluginRoot, 'skills', 'control-plane', 'agents', 'openai.yaml'), 'utf8');
   const skillPrompt = skillUi.match(/^\s*default_prompt:\s*"([^"]+)"\s*$/m)?.[1];
 
-  assert.match(prompt, /only for matched execution/i);
-  assert.match(prompt, /never planning, comparison, audit, or experiments/i);
+  assert.match(pluginPrompt, /open.*workbench/i);
+  assert.match(prompt, /Skill.*Workflow/);
+  assert.match(prompt, /review.*Role/i);
+  assert.doesNotMatch(prompt, /only for matched execution|never planning/i);
   assert.ok(manifest.interface.defaultPrompt.every((value) => value.length <= 128));
-  assert.equal(
-    skillPrompt,
-    pluginPrompt.replace('$codex-agents-workflow:workflow-control-plane', '$workflow-control-plane'),
-    'the skill UI prompt must remain the namespaced plugin prompt with only its skill identifier shortened',
-  );
+  assert.match(skillPrompt, /\$workflow-control-plane/);
+  assert.match(skillPrompt, /open.*workbench/i);
   assert.ok(skillPrompt.length <= 128);
 });
 
 test('plugin startup enables automatic Workbench Roles without fixed duplicate Agents', async () => {
   const manifest = JSON.parse(await readFile(join(pluginRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
   const skill = await readFile(join(pluginRoot, 'skills', 'orchestration', 'SKILL.md'), 'utf8');
-  const prompts = manifest.interface.defaultPrompt.join(' ');
-  assert.match(prompts, /orchestration automatically[\s\S]*enabled Workbench Role/i);
+  assert.equal(manifest.skills, './skills/');
+  assert.match(skill, /description:.*Automatically use enabled Workbench Roles/i);
   assert.match(skill, /user does not need to ask\s+for a Role or name one/i);
   assert.match(skill, /workflow_role_templates/);
   assert.match(skill, /workflow_role_template/);

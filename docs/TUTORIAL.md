@@ -6,13 +6,15 @@ This guide matches the current release workbench. It starts from the two default
 
 ## 1. Install and open the workbench
 
-Follow the [README quick start](../README.en.md#quick-start), then create a new Codex task. Ask Codex:
+Follow the [README quick start](../README.en.md#quick-start). Hosts supporting MCP Apps expose a sidebar entry for the workbench. You can also ask in your current Codex task:
 
 ```text
 Use $codex-agents-workflow:workflow-control-plane and open the workbench.
 ```
 
-You can also launch it from the clone:
+The workbench and Provider settings are MCP App views; opening them does not start a Workflow. When the composer supports mentions, search and reference a Workflow or Role. A reference supplies compact context, not permission to execute. The UI bridge calls the existing Host, and full configuration stays out of the model-visible opener result. Optional features depend on the host's negotiated capabilities.
+
+For a standalone browser page, you can also launch it from the clone:
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd

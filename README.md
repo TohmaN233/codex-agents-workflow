@@ -122,6 +122,8 @@ Thread 适合后续阶段确实需要同一会话内部状态的流程，例如�
 
 工作台把 Role 与 Workflow 分开：Role 是可直接分配的单 Agent 行为配置；Workflow 是包含依赖、并行、工具和确认点的任务图。模型、权限、资源、版本、运行记录和安装包都能在同一处检查。
 
+工作台通过 MCP Apps 和 OpenAI Extensions 接入宿主：可从侧栏或当前对话打开，Provider 设置也有独立入口。支持 composer mentions 的客户端可搜索并引用 Workflow 或 Role。完整配置通过 UI 专用数据传递，聊天只收到简要信息；执行仍由本地 Host 管理。界面功能按宿主能力启用，不绑定操作系统或 Codex 版本。[官方扩展规范](https://github.com/openai/mcp-extensions/blob/node-v0.1.0/docs/spec.md)
+
 ![新版 Workflow 画布与属性面板](docs/assets/tutorial/workbench-editor.png)
 
 安装只提供两个基础 Workflow：
@@ -135,6 +137,8 @@ Thread 适合后续阶段确实需要同一会话内部状态的流程，例如�
 
 需要支持插件的 Codex、Node.js 20+ 与 Git。
 
+开发者重新构建浏览器界面时，需要 Node.js 22+，在 `plugins/codex-agents-workflow/control-plane` 执行 `npm ci` 和 `npm run check:web`。已安装的 Host 仍支持 Node.js 20+，无需安装 SDK 依赖；界面包已包含浏览器 SDK 及其许可证。
+
 工作台支持 Windows、macOS 和 Linux。执行器根据本机 Codex 提供的实际协议能力检查兼容性，不锁定某个 Codex 版本或平台哈希。Codex 升级导致旧路径失效时，Host 会重新发现并验证本机安装。特定 Workflow 的可选依赖单独检查，不阻塞其他流程。
 
 ```sh
@@ -144,13 +148,13 @@ codex plugin marketplace add .
 codex plugin add codex-agents-workflow@codex-agents-workflow
 ```
 
-安装后新建一个 Codex task，然后直接说：
+安装后在支持 MCP Apps 的 Codex 中，从插件侧栏入口打开工作台，或在当前 task 直接说：
 
 ```text
 使用 $codex-agents-workflow:workflow-control-plane，打开工作台。
 ```
 
-也可以手动启动本地控制台：
+需要独立浏览器界面时，也可以手动启动本地控制台：
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd

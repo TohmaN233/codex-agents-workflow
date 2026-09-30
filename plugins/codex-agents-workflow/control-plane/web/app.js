@@ -1,13 +1,15 @@
-import { getLocale, setLocale, subscribeLocale, t } from '/i18n.js';
+import { getLocale, setLocale, subscribeLocale, t } from './i18n.js';
+import { isMcpAppContext, isMcpAppResource, requestMcpApp, setAppView, token } from './app-client.js';
+import { createSettingsViewState } from './settings-view-state.js';
+import { confirmWorkbench } from './app-client.js';
 
-const fragment = new URLSearchParams(location.hash.slice(1));
-const token = fragment.get('token') || '';
-history.replaceState(null, '', location.pathname);
-document.querySelector('#workflow-workspace').href = '/workflows#token=' + encodeURIComponent(token);
+let settingsRoot = document;
+const mountedRoots = new WeakSet();
+const settingsViewState = createSettingsViewState();
 
-const state = { config: null, bundledDefaults: null, revision: '', storage: null, dirty: false, modelCatalog: [], modelCatalogError: '', providerSecrets: {}, providerSecretsError: '' };
-const $ = (selector, root = document) => root.querySelector(selector);
-const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const state = { config: null, savedConfig: null, bundledDefaults: null, revision: '', storage: null, dirty: false, modelCatalog: [], modelCatalogError: '', providerSecrets: {}, providerSecretsError: '' };
+const $ = (selector, root = settingsRoot) => root.querySelector(selector);
+const $$ = (selector, root = settingsRoot) => [...root.querySelectorAll(selector)];
 const copy = (zh, en = zh) => ({ zh, en });
 const asCopy = (value) => (value && typeof value === 'object' && 'zh' in value && 'en' in value)
   ? value
@@ -105,6 +107,12 @@ function toast(message, error = false) {
 }
 
 async function api(path, options = {}) {
+  if (isMcpAppContext) {
+    const method = options.method || (options.body === undefined ? 'GET' : 'POST');
+    let body;
+    if (options.body !== undefined) body = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
+    return requestMcpApp({ path, method, ...(body === undefined ? {} : { body }) });
+  }
   if (!token) throw new Error(t('此页面没有控制台凭据。请从 Codex Agents Workflow 重新打开控制台。', 'Console token is missing. Reopen the console from Codex Agents Workflow.'));
   const response = await fetch(path, {
     ...options,
@@ -296,6 +304,7 @@ function providerCard(provider, index) {
   const apiAuth = selectInput(['bearer', 'x-api-key', 'none'], provider.config?.auth_type || 'bearer', 'provider-api-auth');
   const apiKeyEnv = textInput(provider.config?.api_key_env || '', 'provider-api-key-env');
   const apiKey = passwordInput('provider-api-key');
+  apiKey.addEventListener('input', markDirty);
   apiKey.placeholder = t('粘贴 API key；保存后从输入框清除', 'Paste API key; cleared from this field after save');
   const apiKeyStatus = document.createElement('p');
   apiKeyStatus.className = 'hint provider-secret-status';
@@ -840,6 +849,7 @@ async function load(path = '/api/config') {
   ]);
   if (defaultsPayload) state.bundledDefaults = defaultsPayload.config;
   state.config = payload.config;
+  state.savedConfig = structuredClone(payload.config);
   const [models, secrets] = await Promise.allSettled([
     api('/api/models'),
     api('/api/provider-secrets'),
@@ -893,6 +903,7 @@ async function save() {
     body: JSON.stringify({ config: collect(), expected_revision: state.revision }),
   });
   state.config = payload.config;
+  state.savedConfig = structuredClone(payload.config);
   state.revision = payload.revision;
   for (const secret of pendingSecrets) {
     const result = await api('/api/provider-secret', { method: 'PUT', body: JSON.stringify(secret) });
@@ -902,13 +913,14 @@ async function save() {
   toast(copy('配置已保存。新的解析会立即使用它。', 'Configuration saved. New resolutions will use it immediately.'));
 }
 
+function attachSettingsEvents() {
 $('#save').addEventListener('click', () => save().catch((error) => { setBadge(copy('错误', 'Error'), 'error'); toast(error.message, true); }));
-$('#reload').addEventListener('click', () => {
-  if (state.dirty && !confirm(t('放弃未保存的更改并重新加载？', 'Discard unsaved changes and reload?'))) return;
+$('#reload').addEventListener('click', async () => {
+  if (state.dirty && !await confirmWorkbench(t('放弃未保存的更改并重新加载？', 'Discard unsaved changes and reload?'))) return;
   load().catch((error) => { setBadge(copy('错误', 'Error'), 'error'); toast(error.message, true); });
 });
-$('#load-defaults').addEventListener('click', () => {
-  if (!confirm(t('将内置默认配置载入编辑器？它们尚未保存。', 'Load bundled defaults into the editor? They are not saved yet.'))) return;
+$('#load-defaults').addEventListener('click', async () => {
+  if (!await confirmWorkbench(t('将内置默认配置载入编辑器？它们尚未保存。', 'Load bundled defaults into the editor? They are not saved yet.'))) return;
   api('/api/defaults').then((payload) => {
     state.bundledDefaults = payload.config;
     state.config = payload.config;
@@ -1024,11 +1036,7 @@ for (const selector of ['#global-enabled', '#allow-direct-api', '#console-title'
   $(selector).addEventListener('change', markDirty);
   $(selector).addEventListener('input', markDirty);
 }
-window.addEventListener('beforeunload', (event) => {
-  if (!state.dirty) return;
-  event.preventDefault();
-  event.returnValue = '';
-});
+}
 
 function applyLocale() {
   applyStaticTranslations();
@@ -1040,13 +1048,43 @@ function applyLocale() {
   if (pageTitle?.dataset.i18nZh) document.title = t(pageTitle.dataset.i18nZh, pageTitle.dataset.i18nEn);
 }
 
-const localeSelector = $('#locale-selector');
-localeSelector.value = getLocale();
-localeSelector.addEventListener('change', () => setLocale(localeSelector.value));
-subscribeLocale(applyLocale);
-applyLocale();
+export function hasUnsavedSettings() { return state.dirty; }
 
-load().catch((error) => {
-  setBadge(copy('不可用', 'Unavailable'), 'error');
-  toast(error.message, true);
-});
+/** @param {Document | HTMLElement} root */
+export function mountSettings(root = document) {
+  if (mountedRoots.has(root)) {
+    settingsViewState.reloadOnReturn(root, () => load().catch((error) => {
+      setBadge(copy('不可用', 'Unavailable'), 'error');
+      toast(error.message, true);
+    }));
+    return;
+  }
+  settingsRoot = root;
+  const workflowLink = $('#workflow-workspace');
+  if (!workflowLink) throw new Error('The Provider settings view is missing its Workflow workspace link.');
+  workflowLink.href = isMcpAppContext ? '#workflows' : '/workflows#token=' + encodeURIComponent(token);
+  if (isMcpAppResource) workflowLink.addEventListener('click', async (event) => {
+    event.preventDefault();
+    if (!await settingsViewState.canLeave(settingsRoot, state.dirty, () => confirmWorkbench(t('放弃未保存的更改并返回工作流工作区？', 'Discard unsaved Provider changes and return to the Workflow workspace?')), () => { state.config = structuredClone(state.savedConfig ?? state.config); render(); })) return;
+    setAppView('workflows');
+  });
+  attachSettingsEvents();
+  const localeSelector = $('#locale-selector');
+  localeSelector.value = getLocale();
+  localeSelector.addEventListener('change', () => setLocale(localeSelector.value));
+  subscribeLocale(applyLocale);
+  applyLocale();
+  window.addEventListener('beforeunload', (event) => {
+    if (!state.dirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+  mountedRoots.add(root);
+  load().catch((error) => {
+    setBadge(copy('不可用', 'Unavailable'), 'error');
+    toast(error.message, true);
+  });
+}
+
+const initialView = document.querySelector('meta[name="codex-agents-workflow-view"]')?.content;
+if (!isMcpAppResource || initialView === 'settings') mountSettings(document.getElementById('settings-shell') ?? document);

@@ -6,13 +6,15 @@
 
 ## 1. 安装并打开工作台
 
-先按 [README 的快速开始](../README.md#快速开始)安装插件，然后新建一个 Codex task。直接告诉 Codex：
+先按 [README 的快速开始](../README.md#快速开始)安装插件。支持 MCP Apps 的宿主会显示工作台的侧栏入口；也可以在当前 Codex task 直接告诉 Codex：
 
 ```text
 使用 $codex-agents-workflow:workflow-control-plane，打开工作台。
 ```
 
-也可以从克隆仓库启动：
+工作台和 Provider 设置是 MCP App 页面，打开页面不会启动 Workflow。输入框支持 mentions 时，可以搜索 Workflow 或 Role 并引用它；引用只提供简要上下文，不授权执行。页面通过宿主通信桥访问现有 Host，完整配置不会进入聊天的打开结果。不同宿主支持的可选能力不同，以实际协商结果为准。
+
+需要独立浏览器页面时，也可以从克隆仓库启动：
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd

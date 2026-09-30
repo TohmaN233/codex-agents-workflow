@@ -45,12 +45,15 @@ for required in \
   "$control/connectors/task-store.mjs" \
   "$control/lib/config.mjs" "$control/lib/control.mjs" \
   "$control/lib/providers.mjs" "$control/lib/templates.mjs" \
+  "$control/lib/workbench-api.mjs" "$control/lib/mcp-app.mjs" \
+  "$plugin_dir/assets/icon.svg" "$plugin_dir/assets/sidebar-icon.svg" \
   "$control/test/connector-integration.test.mjs" \
   "$control/test/open-console.test.mjs" \
   "$control/test/run-tests.mjs" \
   "$control/test/fixtures/fake-cursor.mjs" \
   "$control/test/fixtures/fake-grok.mjs" \
   "$control/web/index.html" "$control/web/app.js" "$control/web/styles.css" \
+  "$control/web/app-client.js" "$control/web/workflows-app.html" "$control/web/settings-app.html" \
   "$plugin_dir/scripts/open-control-console.cmd" \
   "$plugin_dir/scripts/open-control-console.sh"; do
   test -f "$required" || fail "required control-plane file missing: $required"

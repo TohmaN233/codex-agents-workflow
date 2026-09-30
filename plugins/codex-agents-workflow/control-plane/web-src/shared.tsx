@@ -1,15 +1,17 @@
 import { createContext, useContext, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { displayDetails } from './display-data.mjs';
 import { getLocale, subscribeLocale, t as translate } from '../web/i18n.js';
+import { downloadMcpAppFile, hasInvalidMcpAppMarker, isMcpAppContext, isMcpAppResource, requestMcpApp, token } from './mcp-app-client';
+export { token };
 export type Json = Record<string, any>; // Open versioned IR: unknown fields must round-trip.
 export function useLocale() {
   const locale = useSyncExternalStore(subscribeLocale, getLocale, getLocale);
   return (zh: string, en: string) => locale === 'zh-CN' ? zh : en;
 }
-const fragment = new URLSearchParams(location.hash.slice(1));
-export const token = fragment.get('token') ?? '';
-history.replaceState(null, '', location.pathname);
 export async function request(path: string, data?: unknown, method = 'POST'): Promise<any> {
+  if (isMcpAppContext || hasInvalidMcpAppMarker) {
+    return requestMcpApp({ path, method: data === undefined ? 'GET' : method, ...(data === undefined ? {} : { body: data }) });
+  }
   if (!token) throw new Error(translate('此页面没有控制台凭据。请从 Codex 重新打开控制台。', 'This console page has no credentials. Reopen it from Codex.'));
   const response = await fetch(path, { method: data === undefined ? 'GET' : method,
     headers: { authorization: `Bearer ${token}`, ...(data === undefined ? {} : { 'content-type': 'application/json' }) },
@@ -21,8 +23,11 @@ export async function request(path: string, data?: unknown, method = 'POST'): Pr
 export const api = (operation: string, args: Json = {}) => request('/api/workflow/' + operation, args);
 export const uid = (prefix: string) => prefix + '-' + crypto.randomUUID().slice(0, 8);
 export const pretty = (value: unknown) => JSON.stringify(value, null, 2);
-export function download(name: string, value: unknown) {
-  const url = URL.createObjectURL(new Blob([pretty(value)], { type: 'application/json' }));
+export async function download(name: string, value: unknown) {
+  const content = pretty(value);
+  if (hasInvalidMcpAppMarker) throw new Error('Cannot export from an unsupported MCP App resource.');
+  if (isMcpAppResource && await downloadMcpAppFile(name, content)) return;
+  const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); URL.revokeObjectURL(url);
 }
 export const InvalidContext = createContext<(id: string, invalid: boolean) => void>(() => {});

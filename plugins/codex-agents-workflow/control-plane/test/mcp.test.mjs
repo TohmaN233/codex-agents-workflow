@@ -137,15 +137,16 @@ test('stdio MCP lists control tools and returns sanitized status', async (t) => 
   });
   const client = makeClient(child);
   const discovered = await client.request({ jsonrpc: '2.0', id: 1, method: 'server/discover', params: {} });
-  assert.equal(discovered.result.protocolVersion, '2026-07-28');
-  assert.equal(discovered.result.serverInfo.name, 'codex-agents-workflow');
+  assert.deepEqual(discovered.result.supportedVersions, ['2026-07-28']);
+  assert.equal(discovered.result.resultType, 'complete');
+  assert.equal(discovered.result._meta['io.modelcontextprotocol/serverInfo'].name, 'codex-agents-workflow');
 
   const initialized = await client.request({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
   assert.equal(initialized.result.protocolVersion, '2025-11-25');
 
   const listed = await client.request({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
   const names = listed.result.tools.map((tool) => tool.name);
-  assert.deepEqual(names.filter(name => name.startsWith('codex_agents_workflow_')), ['codex_agents_workflow_status', 'codex_agents_workflow_console', 'codex_agents_workflow_resolve', 'codex_agents_workflow_connector_probe', 'codex_agents_workflow_connector_start', 'codex_agents_workflow_connector_status', 'codex_agents_workflow_connector_control', 'codex_agents_workflow_invoke']);
+  assert.deepEqual(names.filter(name => name.startsWith('codex_agents_workflow_')), ['codex_agents_workflow_app', 'codex_agents_workflow_settings', 'codex_agents_workflow_app_request', 'codex_agents_workflow_status', 'codex_agents_workflow_console', 'codex_agents_workflow_resolve', 'codex_agents_workflow_connector_probe', 'codex_agents_workflow_connector_start', 'codex_agents_workflow_connector_status', 'codex_agents_workflow_connector_control', 'codex_agents_workflow_invoke']);
   assert.equal(names.some(name => name.startsWith('sol_')), false);
   for (const name of ['workflow_start', 'workflow_claim_node', 'workflow_complete_node', 'workflow_resume', 'workflow_dispatch']) assert(names.includes(name));
   const consoleTool = listed.result.tools.find((tool) => tool.name === 'codex_agents_workflow_console');
@@ -243,5 +244,38 @@ test('stdio scheduler shutdown waits for asynchronous response write completion'
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(drained, false);
   release(); await shutdown;
+  assert.equal(drained, true);
+});
+
+test('stdio scheduler replies to unexpected handler failures and only logs notification failures', async () => {
+  const writes = [];
+  const traces = [];
+  let releaseWrite;
+  const pendingWrite = new Promise(resolve => { releaseWrite = resolve; });
+  const failure = Object.assign(new Error('ENOENT: required assets/sidebar-icon.svg is missing'), { code: 'ENOENT' });
+  const scheduler = createStdioRequestScheduler({
+    handle: async () => { throw failure; },
+    write: response => { writes.push(response); return pendingWrite; },
+    onUnexpectedError: (error, request) => traces.push({ error, id: request.id, method: request.method }),
+  });
+  scheduler.submit({ jsonrpc: '2.0', id: 0, method: 'initialize', params: {} });
+  scheduler.submit({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].jsonrpc, '2.0');
+  assert.equal(writes[0].id, 0);
+  assert.equal(writes[0].error.code, -32603);
+  assert.match(writes[0].error.message, /initialize.*ENOENT.*sidebar-icon\.svg/);
+  assert.equal(writes[0].error.data.code, 'ENOENT');
+  assert.equal(writes[0].error.data.method, 'initialize');
+  assert.deepEqual(traces, [
+    { error: failure, id: 0, method: 'initialize' },
+    { error: failure, id: undefined, method: 'notifications/initialized' },
+  ]);
+  let drained = false;
+  const shutdown = scheduler.shutdown().then(() => { drained = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(drained, false, 'Failure response delivery remains part of the stdio drain');
+  releaseWrite(); await shutdown;
   assert.equal(drained, true);
 });

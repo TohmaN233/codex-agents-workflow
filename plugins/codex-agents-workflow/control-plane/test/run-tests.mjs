@@ -38,6 +38,8 @@ const names = [
   'task-inputs.test.mjs',
   'console.test.mjs',
   'mcp.test.mjs',
+  'mcp-app.test.mjs',
+  'mcp-app-bootstrap.test.mjs',
   'workflow-wait.test.mjs',
   'conversation-control-recovery.test.mjs',
   'mcp-startup.test.mjs',

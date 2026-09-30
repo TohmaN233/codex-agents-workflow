@@ -5,8 +5,8 @@ description: "Keep the host Workflow plane available, route concrete execution t
 
 # Workflow control plane
 
-The plugin host is the persistent control plane; a turn with no matching Workflow
-does not shut it down. A Workflow is an end-to-end graph for a task intent. A Role
+The plugin host is the persistent control plane, available without a matching
+Workflow. A Workflow is an end-to-end graph for a task intent. A Role
 assigns one helper during ordinary work and is handled by the orchestration skill;
 it does not start a Workflow Run or enter a running Workflow node.
 
@@ -88,7 +88,8 @@ instructions or conversion history. Necessary scripts and references are
 Workflow-owned assets. If a Run requests a source Skill path, report a defective
 package rather than loading it.
 
-If Workflow tools are unavailable, read [connection diagnosis](references/connection.md).
-Open the editor only when the user asks, via `codex_agents_workflow_console`.
-Report the observed error; never invent a receipt or fallback substitute for a
-failed Run.
+Unavailable tools: read [connection diagnosis](references/connection.md).
+Open requested UI with `codex_agents_workflow_app` or `codex_agents_workflow_settings`;
+views create no Run/thread. Use `codex_agents_workflow_console` for standalone
+requests or unsupported App hosts. Report App errors; no silent console fallback.
+App transport/bootstrap stay out of model/node context. Never invent Run receipts.
