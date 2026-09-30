@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,rm,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,rm,realpath,chmod} from 'node:fs/promises';
 import {join} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './physical-tempdir.mjs';
 import {discoverRuntimeEnvironment} from '../lib/runtime-environment.mjs';
 
 test('dependency discovery searches host installations and supplied directories without installing',async()=>{
@@ -12,6 +12,7 @@ test('dependency discovery searches host installations and supplied directories 
   await mkdir(bin,{recursive:true});await mkdir(custom);
   const suffix=process.platform==='win32'?'.exe':'';
   await writeFile(join(bin,'python'+suffix),'fixture');await writeFile(join(custom,'media-tool'+suffix),'fixture');
+  if(process.platform!=='win32')await Promise.all([chmod(join(bin,'python'+suffix),0o755),chmod(join(custom,'media-tool'+suffix),0o755)]);
   const env={USERPROFILE:home,HOME:home,PATH:''};
   const missing=await discoverRuntimeEnvironment({executables:['python','media-tool']},{env});
   assert.equal(missing.status,'installation_approval_required');assert.deepEqual(missing.missing,['media-tool']);

@@ -58,14 +58,16 @@ async function exclusive(path, bytes) {
   try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
 }
 
-export async function buildCodexProfile({ parent, binary, expectedBinaryHash, model, effort, modelMetadata, endpoint, owner = {} }) {
+export async function buildCodexProfile({ parent, binary, expectedBinaryHash, model, effort, modelMetadata, endpoint, owner = {}, processIdentityImpl = processIdentity }) {
   requireValue(isAbsolute(binary) && /^[a-f0-9]{64}$/.test(expectedBinaryHash), 'CODEX_BINARY', 'Strict execution requires an absolute, hash-pinned Codex binary');
   await noSymlinks(binary); const info = await lstat(binary);
   requireValue(info.isFile() && info.size <= 512 * 1024 * 1024 && digest(await readFile(binary)) === expectedBinaryHash, 'CODEX_BINARY_CHANGED', 'Codex binary differs from its qualified executable');
   requireValue(typeof model === 'string' && model.length > 0 && typeof effort === 'string', 'CODEX_MODEL', 'Strict execution needs a pinned model and effort');
   if (modelMetadata) requireValue(modelMetadata.slug === model && modelMetadata.supported_reasoning_levels?.some(item => item.effort === effort), 'CODEX_MODEL', 'Pinned model/effort must match observed model metadata');
   if (endpoint) { const url = new URL(endpoint); requireValue(url.hostname === '127.0.0.1' && url.protocol === 'http:', 'CODEX_PROBE_ENDPOINT', 'Qualification provider must be loopback HTTP'); }
-  const parentIdentity = await processIdentity(process.pid);
+  // Trusted in-process test hook, matching the session's child/cleanup hooks.
+  // Production callers always use the operating system ownership inspector.
+  const parentIdentity = await processIdentityImpl(process.pid);
   await ensureDirectory(parent); const actualParent = await realpath(parent);
   const home = await mkdtemp(join(actualParent, 'strict-node-')); const token = randomUUID();
   const profile = { parent: actualParent, home, owner_token: token, model, effort, endpoint, binary: resolve(binary) };

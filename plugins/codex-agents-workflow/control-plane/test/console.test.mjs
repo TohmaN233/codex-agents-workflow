@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -12,7 +12,8 @@ test('loopback console requires token and revision-checks saves', async (t) => {
   const state = await startConsole({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, open: false });
   t.after(stopConsole);
   const base = `http://127.0.0.1:${state.port}`;
-  assert.equal(SERVER_VERSION, '1.0.0');
+  const release=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8'));
+  assert.equal(SERVER_VERSION, release.version);
   assert.deepEqual(await (await fetch(`${base}/health`)).json(), {
     status: 'ok', version: SERVER_VERSION,
   });

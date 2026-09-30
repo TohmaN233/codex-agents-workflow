@@ -1,3 +1,4 @@
+import { deferred } from './fixtures/deferred.mjs';
 import test from 'node:test';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
@@ -414,7 +415,7 @@ test('legacy native rejection snapshots recover every exact turn from their jour
 });
 
 test('concurrent native drive calls cannot duplicate the observer or release the same successor twice',async t=>{
-  const entered=Promise.withResolvers(),release=Promise.withResolvers();let observations=0;
+  const entered=deferred(),release=deferred();let observations=0;
   const observer=async ids=>{observations++;entered.resolve();await release.promise;
     return {status:'completed',agent_id:ids[0],turn_id:'turn-1',result:{design:'ready'}};};
   const f=await fixture(t,{capabilities:{nativeAgentObserver:observer}});await f.migrate();
@@ -431,7 +432,7 @@ test('concurrent native drive calls cannot duplicate the observer or release the
 });
 
 test('native wait ownership permits another Run and releases after an observer failure',async t=>{
-  const entered=Promise.withResolvers(),release=Promise.withResolvers();let fail=true;
+  const entered=deferred(),release=deferred();let fail=true;
   const observer=async ids=>{
     if(ids[0]==='slow-child'&&fail){entered.resolve();await release.promise;throw new Error('observer transport exited');}
     return {status:'completed',agent_id:ids[0],turn_id:'turn-complete',result:{design:'ready'}};
@@ -453,7 +454,7 @@ test('native wait ownership permits another Run and releases after an observer f
 });
 
 test('pausing a Run fences an in-flight native observation and releases its wait owner',async t=>{
-  const entered=Promise.withResolvers(),release=Promise.withResolvers();
+  const entered=deferred(),release=deferred();
   const f=await fixture(t,{capabilities:{nativeAgentObserver:async ids=>{
     entered.resolve();await release.promise;
     return {status:'completed',agent_id:ids[0],turn_id:'turn-complete',result:{design:'ready'}};
@@ -471,7 +472,7 @@ test('pausing a Run fences an in-flight native observation and releases its wait
 });
 
 test('cancelling a Run fences an in-flight unified native continuation before sealing',async t=>{
-  const entered=Promise.withResolvers(),release=Promise.withResolvers();
+  const entered=deferred(),release=deferred();
   const f=await fixture(t,{capabilities:{nativeAgentObserver:async ids=>{
     entered.resolve();await release.promise;
     return {status:'completed',agent_id:ids[0],turn_id:'turn-after-cancel',result:{design:'late'}};
@@ -552,7 +553,7 @@ test('Host awaits and records a visible native child without Main polling or man
 });
 
 test('model-facing Main start returns its persisted Run while prior Provider work is still pending', async t => {
-  const gate = Promise.withResolvers(); const entered = Promise.withResolvers(); let progress;
+  const gate = deferred(); const entered = deferred(); let progress;
   const hostMainManager = {
     launchRun: ({ drive }) => { progress = drive.advanceToMain(); return { status: 'starting' }; },
     launch: async () => ({ status: 'host-owned' }), stopRun: async () => {}, qualify: async () => ({}),

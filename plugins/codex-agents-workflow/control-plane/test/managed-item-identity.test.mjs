@@ -20,3 +20,21 @@ test('real item and rejection validators accept only the Host-persisted managed 
  const second=await method.call(runtime,'run',{...binding,target_indices:[1],result:{items:[{outcome:'completed',result:'b'}]}});
  assert.deepEqual(second.result,['exact-成功','b']);assert.equal(attempt.native_rejected_turns[0].count,1);
 });
+
+test('filtered managed retry slots never accept a sibling compacted dispatch identity',async()=>{
+ const control='control',lease='lease',attempt={id:'retry',status:'running',lease_hash:digest(lease),
+   dispatch:{receipt:{executor:'codex-app-server-managed-native',subagent_dispatch_ids:['child-1','child-2'],
+     subagent_plan:{assignments:[{assignment_index:1,dispatch_id:'child-1'},{assignment_index:2,dispatch_id:'child-2'}]}}},
+   native_item_results:{0:{agent_id:'prior',result:'a'}},inherited_native_item_indices:[0]};
+ const definition={id:'worker',subagent_count:'auto',fanout:{input:'jobs',distribution:'one_per_item',scheduling:'parallel',result_mode:'per_item',result_output:'results'},
+   input_bindings:{jobs:'/inputs/jobs'},outputs_schema:{properties:{results:{items:{type:'string'}}}}};
+ const state={control_hash:digest(control),inputs:{jobs:['a','b','c']},nodes:{worker:{status:'running',active_attempt_id:'retry',attempts:[attempt]}}};
+ const pins={root:{workflow:{nodes:[definition]}}};
+ const runtime={runs:{mutate:async(_run,_kind,change)=>({result:await change(state,pins,{state,events:[]})})}};
+ const args={node_id:'worker',attempt_id:'retry',control_token:control,lease_token:lease,index:1,
+   target_indices:[1],result:{items:[{outcome:'completed',result:'b'}]}};
+ await assert.rejects(WorkflowRuntime.prototype.recordNativeItemResults.call(runtime,'run',{...args,agent_id:'child-2'}),{code:'NATIVE_ITEM_RESULT'});
+ await assert.rejects(WorkflowRuntime.prototype.recordNativeRejectedTurn.call(runtime,'run',{...args,agent_id:'child-2',turn_id:'foreign',category:'blocked',reason:'wrong slot'}),{code:'NATIVE_AGENT_REJECTION'});
+ const accepted=await WorkflowRuntime.prototype.recordNativeItemResults.call(runtime,'run',{...args,agent_id:'child-1'});
+ assert.deepEqual(accepted.result,['b']);
+});

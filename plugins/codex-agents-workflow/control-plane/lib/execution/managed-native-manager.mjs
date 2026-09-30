@@ -212,9 +212,9 @@ export class ManagedNativeManager {
     const definition = record.pins.root.workflow.nodes.find(node => node.id === args.node_id);
     requireValue(definition, 'NODE_MISSING', 'Managed native node is absent from the pinned Workflow');
     const event = (kind, metadata) => runtime.recordExecutorEvent(runId, { ...args, event: { kind, metadata } });
-    const assignmentWritePaths=entry.assignments?.map(assignment=>assignedFanoutWritePaths({workspace:envelope.workspace,
-      nodeAllowedPaths:envelope.effective_allowed_paths,assignedItems:assignment.items,fanout:definition.fanout})) ?? [envelope.effective_allowed_paths];
-    const observedWritePaths=pathBoundaries(assignmentWritePaths.flat());
+    const assignmentWritePaths=new Map(entry.assignments?.map(assignment=>[assignment.index,assignedFanoutWritePaths({workspace:envelope.workspace,
+      nodeAllowedPaths:envelope.effective_allowed_paths,assignedItems:assignment.items,fanout:definition.fanout})]) ?? [[0,envelope.effective_allowed_paths]]);
+    const observedWritePaths=pathBoundaries([...assignmentWritePaths.values()].flat());
     const snapshot = (phase = 'completion') => snapshotWorkspace(envelope.workspace, {access: envelope.access, allowedPaths: observedWritePaths,
       requiredPaths: (definition.required_artifacts ?? []).map(item => item.path), codePrefix: 'MANAGED_NATIVE',
       onUnreadable: metadata => event('workspace_unreadable_authorized_path', {...metadata, phase})});
@@ -245,17 +245,17 @@ export class ManagedNativeManager {
         manifest_sha256:digest(canonicalJSON(material.manifest))});
       return material;
     };
-    const materials=entry.assignments
-      ? await Promise.all(entry.assignments.map(assignment=>materialFor(assignment.index,
-        projectFanoutInputs(envelope.inputs,envelope.subagents.items,assignment.items))))
-      : [await materialFor(0,envelope.inputs)];
+    const materials=new Map(entry.assignments
+      ? await Promise.all(entry.assignments.map(async assignment=>[assignment.index,await materialFor(assignment.index,
+        projectFanoutInputs(envelope.inputs,envelope.subagents.items,assignment.items))]))
+      : [[0,await materialFor(0,envelope.inputs)]]);
     const before = await snapshot('before');
     const resources = await resourceItems(runtime, runId, envelope);
     const allowedSkills = await loadNodeSkillSnapshots(runtime, runId, envelope);
     const inputRoots = typeof envelope.inputs.task_root === 'string' && isAbsolute(envelope.inputs.task_root) ? [{ name: 'task_root', path: envelope.inputs.task_root }] : [];
     const brokerFor = async index => {
       const broker = await createWorkflowResourceBroker({
-        workspace: envelope.workspace, access: envelope.access, allowedPaths: assignmentWritePaths[index],
+        workspace: envelope.workspace, access: envelope.access, allowedPaths: assignmentWritePaths.get(index),
         deniedPaths: [this.configPath, runtime.workflows.root, runtime.runs.root, join(dirname(this.configPath), 'workflow-expansion-jobs'), this.parent],
         inputRoots, executionBinding: record.state.constraints?.execution_binding, runtimeEnvironment: record.state.runtime_environment ?? record.state.constraints?.runtime_environment,
         prepareRuntimeEnvironment: () => runtime.ensureRuntimeEnvironment(runId, {control_token:args.control_token}),
@@ -264,7 +264,7 @@ export class ManagedNativeManager {
       });
       entry.brokers.push(broker);
       await event('tool_capabilities', { access: envelope.access, tools: broker.tools().map(tool => tool.name).join(','),
-        allowed_paths_count:assignmentWritePaths[index].length,allowed_paths_sha256:digest(canonicalJSON(assignmentWritePaths[index])) });
+        allowed_paths_count:assignmentWritePaths.get(index).length,allowed_paths_sha256:digest(canonicalJSON(assignmentWritePaths.get(index))) });
       return broker;
     };
     if (adapter.settings.authentication.mode === 'host_chatgpt' && this.hostAuthBinary !== adapter.settings.codex_binary) {
@@ -278,7 +278,7 @@ export class ManagedNativeManager {
         parent: this.parent, owner: { run_id: runId, node_id: args.node_id, attempt_id: dispatchId },
         hostAuth: adapter.settings.authentication.mode === 'host_chatgpt' ? this.hostAuth : undefined,
         binary: adapter.settings.codex_binary, expectedBinaryHash: adapter.settings.binary_sha256, authentication: adapter.settings.authentication,
-        model: adapter.model, effort: adapter.effort, cwd: envelope.workspace, access: envelope.access, allowedPaths:assignmentWritePaths[index], env, toolBroker: broker, authorize: entry.authorize, assertActive: entry.assertActive,
+        model: adapter.model, effort: adapter.effort, cwd: envelope.workspace, access: envelope.access, allowedPaths:assignmentWritePaths.get(index), env, toolBroker: broker, authorize: entry.authorize, assertActive: entry.assertActive,
         maxTurns: definition.fanout?.result_mode==='per_item' ? definition.retry.max_attempts : 1,
         skillPolicy: envelope.skill_policy, allowedSkills,
         onSessionOwned: session => { if (!entry.sessions.includes(session)) entry.sessions.push(session); },
@@ -298,16 +298,17 @@ export class ManagedNativeManager {
     if (entry.assignments) {
       const semanticSchema = fanoutResultSchema(definition, envelope.subagents.fanout);
       const perItem=definition.fanout?.result_mode==='per_item';
-      const plan={count:entry.assignments.length,items:envelope.subagents.items,assignments:entry.assignments.map(item=>item.items)};
+      const plan={count:envelope.subagents.resolved_count,items:envelope.subagents.items,
+        assignments:assignFanoutItems(envelope.subagents.items,envelope.subagents.fanout,envelope.subagents.resolved_count)};
       const runAssignment = async assignment => {
         const dispatch_id = entry.dispatchIds.get(assignment.index), session = await sessionFor(assignment.index, dispatch_id);
-        const prompt = materials[assignment.index].prompt
+        const prompt = materials.get(assignment.index).prompt
           + `\n\nHost-assigned parallel sub-Agent identity: ${dispatch_id}. Process only the assigned ${envelope.subagents.fanout.item_name} partition in the declared node inputs. Other runtime items belong to other sub-Agents.`
           + (perItem?'':` Return one independent result matching the supplied schema as {"result":...}; do not return the aggregate list or Workflow protocol fields.`);
         if(perItem){
           const assigned=assignedFanoutIndices(plan,definition.fanout,assignment.index);
           const schema=nativeAgentResultSchema(definition);
-          let targetIndices=assigned;
+          let targetIndices=assignment.item_indices;
           const delegated=definition.fanout.shared_change_field
             ? ` or {"outcome":"delegated","result":<one semantic item>} when local work is complete and ${definition.fanout.shared_change_field} names downstream shared work`
             : '';
@@ -370,7 +371,7 @@ export class ManagedNativeManager {
       await runtime.recordManagedNativeResults(runId,{...args,results:results.map((item,index)=>({dispatch_id:item.dispatch_id,result_index:index,result_sha256:digest(canonicalJSON(item.value)),thread_id:item.result.thread_id,turn_id:item.result.turn_id}))});
     } else {
       const semanticSchema = managedNativeResultSchema(definition), session = await sessionFor(0, `managed-${args.attempt_id}`); entry.session = session;
-      const prompt = materials[0].prompt + '\n\nReturn {"outcome":"completed","result":<your semantic result>,"block_reason":""}. If a required capability or input is missing, return {"outcome":"blocked","result":null,"block_reason":"specific obstacle"}; never hide a blocker inside a success field.';
+      const prompt = materials.get(0).prompt + '\n\nReturn {"outcome":"completed","result":<your semantic result>,"block_reason":""}. If a required capability or input is missing, return {"outcome":"blocked","result":null,"block_reason":"specific obstacle"}; never hide a blocker inside a success field.';
       const result = await session.turn(prompt, { output_schema: hostNodeTurnSchema(semanticSchema), timeout_ms: envelope.provider.config.inactivity_timeout_ms });
       await session.close(); entry.session = null;
       try { output = JSON.parse(result.output); } catch { throw Object.assign(new Error('Managed native result is not JSON'), { code: 'MANAGED_NATIVE_OUTPUT_JSON' }); }

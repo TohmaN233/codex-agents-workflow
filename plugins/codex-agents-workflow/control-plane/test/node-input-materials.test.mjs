@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import filesystem from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from './physical-tempdir.mjs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { canonicalJSON } from '../lib/workflow-revisions.mjs';
@@ -14,6 +16,91 @@ async function fixture(t) {
 }
 
 function sha256(value) { return createHash('sha256').update(value).digest('hex'); }
+
+test('serialized JSON inputs never probe the filesystem even with a workspace', async t => {
+  const root = await fixture(t), workspace = join(root, 'workspace');
+  await mkdir(workspace);
+  const value = JSON.stringify([{ payload: 'JSON_PAYLOAD_' + 'x'.repeat(6000) }]);
+  const original = filesystem.realpath;
+  let probes = 0;
+  filesystem.realpath = async (...args) => {
+    if (String(args[0]).includes('JSON_PAYLOAD_')) {
+      probes++;
+      throw Object.assign(new Error('serialized content is not a filename'), { code: 'ENAMETOOLONG' });
+    }
+    return original(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const envelope = { workspace, access: 'read_only', node_id: 'writer', inputs: { jobs_json: value }, prompt_template: 'Read assigned jobs.' };
+    const result = await materializeNodeInputs({ directory: join(root, 'attempt'), envelope });
+    assert.equal(probes, 0);
+    assert.equal(result.manifest[0].format, 'json');
+    assert.deepEqual(JSON.parse(await readFile(result.manifest[0].path, 'utf8')), JSON.parse(value));
+    const native = await materializeNativeTaskBundle({ directory: join(root, 'native'), envelope });
+    assert.equal(probes, 0);
+    assert.equal(native.bound_input_count, 1);
+  } finally {
+    filesystem.realpath = original;
+    syncBuiltinESMExports();
+  }
+});
+
+test('filesystem lookup failures for real input addresses remain visible', async t => {
+  const root = await fixture(t), path = join(root, 'source.md');
+  await writeFile(path, 'source');
+  const original = filesystem.realpath;
+  filesystem.realpath = async (...args) => {
+    if (args[0] === path) throw Object.assign(new Error('address access denied'), { code: 'EACCES' });
+    return original(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(materializeNodeInputs({ directory: join(root, 'attempt'),
+      envelope: { workspace: root, inputs: { source_path: path } } }), { code: 'EACCES' });
+  } finally {
+    filesystem.realpath = original;
+    syncBuiltinESMExports();
+  }
+});
+
+test('plain semantic inputs that cannot be filesystem names become sidecars with a workspace', async t => {
+  const root = await fixture(t), value = 'PLAIN_SEMANTIC_BODY_' + 'x'.repeat(6000);
+  const original = filesystem.realpath, originalLstat = filesystem.lstat;
+  let probes = 0;
+  filesystem.realpath = async (...args) => {
+    if (String(args[0]).includes('PLAIN_SEMANTIC_BODY_')) {
+      probes++;
+      throw Object.assign(new Error('value exceeds the filesystem name limit'), { code: 'ENAMETOOLONG' });
+    }
+    return original(...args);
+  };
+  filesystem.lstat = async (...args) => {
+    if (String(args[0]).includes('PLAIN_SEMANTIC_BODY_'))
+      throw Object.assign(new Error('verified filename exceeds the filesystem name limit'), { code: 'ENAMETOOLONG' });
+    return originalLstat(...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const envelope = { workspace: root, access: 'read_only', node_id: 'writer', inputs: { context: value, verification: value },
+      prompt_template: '{{context}}\n{{verification}}' };
+    const result = await materializeNodeInputs({ directory: join(root, 'attempt'), envelope });
+    assert.equal(probes, 2);
+    assert.equal(result.manifest.length, 2);
+    for (const item of result.manifest) assert.equal(await readFile(item.path, 'utf8'), value);
+    assert.equal(result.prompt.includes('PLAIN_SEMANTIC_BODY_'), false);
+    const native = await materializeNativeTaskBundle({ directory: join(root, 'native'), envelope });
+    assert.equal(native.bound_input_count, 2);
+    assert.equal(probes, 4);
+    await assert.rejects(materializeNativeTaskBundle({ directory: join(root, 'verified'),
+      envelope: { ...envelope, inputs: { packet_path: value, packet_sha256: sha256(value) } } }),
+    { code: 'ENAMETOOLONG' }, 'An explicit verified file address must fail rather than become semantic content');
+  } finally {
+    filesystem.realpath = original;
+    filesystem.lstat = originalLstat;
+    syncBuiltinESMExports();
+  }
+});
 
 test('materializes projected inputs as exact sidecars and compiles only local references', async t => {
   const root = await fixture(t);
@@ -91,6 +178,7 @@ test('long context and verification stay in sidecars without prompt field cutoff
   const context = 'LONG_CONTEXT_🧪'.repeat(9000);
   const verification = 'LONG_VERIFY_雪'.repeat(5000);
   const envelope = {
+    workspace: root,
     workflow_id: 'opaque-workflow',
     node_id: 'opaque-node',
     prompt_template: 'Task={{task}}\nContext={{context}}\nVerification={{verification}}\nPreserve output schema.',

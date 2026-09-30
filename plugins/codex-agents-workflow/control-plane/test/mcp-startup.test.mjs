@@ -16,7 +16,6 @@ async function fixture(t,{aliasHome=false}={}) {
  const excluded=new Set(['node_modules','test','web-src','workflow-runs']);
  await mkdir(join(cached,'.codex-plugin'),{recursive:true});
  await cp(join(root,'.codex-plugin','plugin.json'),join(cached,'.codex-plugin','plugin.json'));
- await cp(join(root,'agents'),join(cached,'agents'),{recursive:true});
  await cp(join(root,'control-plane'),join(cached,'control-plane'),{recursive:true,filter:source=>!source.split(/[\\/]/).some(part=>excluded.has(part))});
  if(aliasHome){const alias=join(rootDir,'home-alias');await symlink(home,alias,process.platform==='win32'?'junction':'dir');home=alias;}
  const cwd=join(rootDir,'cwd');

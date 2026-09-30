@@ -95,7 +95,8 @@ export async function waitForNativeSessionEvent({home=process.env.CODEX_HOME||jo
   if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
   const timer=setTimeout(()=>controller.abort(identityError('NATIVE_AGENT_WAIT_TIMEOUT',
     `Native Agent produced no lifecycle event within ${timeoutMs} ms`)),timeoutMs);
-  timer.unref?.();
+  // This pending Host call owns the deadline even when a nonpersistent watcher
+  // is the process's only other handle. Release it only when the wait settles.
   try{
     const events=watchImpl(resolve(home,'sessions'),{recursive:true,persistent:false,signal:controller.signal});
     for await(const event of events){

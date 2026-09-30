@@ -37,7 +37,7 @@ import {
 const CONTROL_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = join(CONTROL_DIR, 'default-config.json');
 const WEB_DIR = join(CONTROL_DIR, 'web');
-const SERVER_VERSION = '1.0.0';
+const SERVER_VERSION = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8')).version;
 const DEFAULT_CONSOLE_PORT = 58712;
 const MAX_HTTP_BODY = 8 * 1024 * 1024;
 

@@ -20,10 +20,14 @@ async function fixture(t) {
 }
 const output = result => JSON.parse(result.contentItems[0].text);
 const delay=milliseconds=>new Promise(resolveDelay=>setTimeout(resolveDelay,milliseconds));
-const executionBinding=()=>qualifiedExecutionBinding({kind:'wsl',launcher:'C:\\Windows\\System32\\wsl.exe',distribution:'Ubuntu',sandbox:'/usr/bin/bwrap',programs:{python:'/usr/bin/python3'},runtime_roots:['/lib','/lib64','/usr'],command_timeout_ms:300000});
+const executionBinding=()=>qualifiedExecutionBinding({kind:'wsl',launcher:'C:\\Windows\\System32\\wsl.exe',distribution:process.env.WORKFLOW_TEST_WSL_DISTRIBUTION??'Ubuntu',sandbox:'/usr/bin/bwrap',programs:{python:'/usr/bin/python3'},runtime_roots:['/lib','/lib64','/usr'],command_timeout_ms:300000});
 async function waitForFile(path){for(let attempt=0;attempt<1000;attempt++){try{return await readFile(path,'utf8');}catch(error){if(error.code!=='ENOENT')throw error;}await delay(10);}throw new Error(`Timed out waiting for ${path}`);}
 
 test('a Run execution binding grants program tools only to bounded-write nodes',async t=>{
+  if(process.platform!=='win32'){
+    assert.throws(executionBinding,{code:'CODEX_EXECUTION_BINDING'},'a Windows WSL launcher is not a host executable on this platform');
+    return;
+  }
   const f=await fixture(t),taskRoot=await mkdtemp(join(tmpdir(),'codex-task-root-'));
   t.after(()=>rm(taskRoot,{recursive:true,maxRetries:3,retryDelay:100}));
   const readOnly=await createCodexToolBroker({...f.options,access:'read_only',allowedPaths:[],executionBinding:executionBinding()});

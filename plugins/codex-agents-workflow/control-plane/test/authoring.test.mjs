@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { compileWorkflowBrief } from '../lib/skill-import/workflow-authoring.mjs';
 import { compileCoarseSkill } from '../lib/skill-import/coarse-compiler.mjs';
@@ -1298,7 +1298,8 @@ test('semantic fan-out requires an explicit write owner for declared shared chan
 test('build and skill2workflow fold only a guarded linear Main terminal into Host finalization',()=>{
   const source='# Workflow\n\n## Process\n\nImplement the change, verify its evidence, and document the checked result.';
   const skillText='---\nname: fold-fixture\ndescription: Fold fixture\n---\n'+source;
-  const snapshot={metadata:{name:'fold-fixture',description:'Fold fixture'},source_path:'C:/fixture/SKILL.md',source_hash:digest(Buffer.from(skillText)),root:'C:/fixture',instructions_start_line:5,
+  const skillRoot=resolve(tmpdir(),'fold-fixture');
+  const snapshot={metadata:{name:'fold-fixture',description:'Fold fixture'},source_path:join(skillRoot,'SKILL.md'),source_hash:digest(Buffer.from(skillText)),root:skillRoot,instructions_start_line:5,
     files:{'source/SKILL.md':Buffer.from(skillText)},inventory:[],problems:[],metadata_files:{}};
   const builds=[compileWorkflowBrief({workflow_id:'fold-build',name:'Fold build',brief:source,provider_id:'native-luna'}),compileCoarseSkill(snapshot,{id:'fold-skill',providerId:'native-luna'})];
   for(const build of builds){

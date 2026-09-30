@@ -1,25 +1,24 @@
 import { createReadStream } from 'node:fs';
-import { lstat, realpath } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import { noSymlinks, requireValue } from '../workflow-paths.mjs';
+import { requireValue } from '../workflow-paths.mjs';
 import { withNativeAgentObserver } from './native-agent-observer.mjs';
+import { canonicalSessionPath } from './local-session-path.mjs';
 
 const modelId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(value);
 const effortId = value => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,31}$/.test(value);
-const localPath = value => process.platform === 'win32' && value.startsWith('\\\\?\\') ? value.slice(4) : value;
-const samePath = (left, right) => process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 
 // Read only host metadata from the exact caller's journal. Prompts and outputs
 // never enter a model context, and no model name is stored in the Workflow.
 export async function readMainTurnContext(thread, home) {
   requireValue(typeof thread?.id === 'string' && typeof thread.path === 'string', 'MAIN_MODEL_SESSION', 'Main model inheritance requires the exact caller thread and rollout path');
-  const path = localPath(thread.path), root = resolve(home, 'sessions');
-  const rel = relative(root, resolve(path));
-  requireValue(isAbsolute(path) && rel && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel), 'MAIN_MODEL_SESSION_PATH', 'Caller rollout must be inside the selected Codex home sessions directory');
-  await noSymlinks(path);
-  requireValue(samePath(localPath(await realpath(path)), resolve(path)), 'MAIN_MODEL_SESSION_PATH', 'Caller rollout must resolve to its exact local file');
+  requireValue(isAbsolute(thread.path), 'MAIN_MODEL_SESSION_PATH', 'Caller rollout must be an absolute local file');
+  // Reject links in the supplied paths, then compare physical identities so
+  // Windows short names, casing and extended spellings remain valid.
+  const { root, path } = await canonicalSessionPath(thread.path, home), rel = relative(root, path);
+  requireValue(rel && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel), 'MAIN_MODEL_SESSION_PATH', 'Caller rollout must be inside the selected Codex home sessions directory');
   const stat = await lstat(path);
   requireValue(stat.isFile() && stat.nlink === 1, 'MAIN_MODEL_SESSION_PATH', 'Caller rollout must be a regular file');
   let matched = false, selection;

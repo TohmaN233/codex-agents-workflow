@@ -8,6 +8,8 @@ import { createDraft } from '../lib/workflow-schema.mjs';
 import { WorkflowService } from '../lib/workflow-service.mjs';
 import { retainOwnedAuthority } from '../lib/execution/owned-workflow-authority.mjs';
 import { leaseToken } from '../lib/workflow-execution-envelope.mjs';
+import { deferred } from './fixtures/deferred.mjs';
+import { canonicalJSON, digest } from '../lib/workflow-revisions.mjs';
 
 const PARENT_THREAD_ID = '00000000-0000-7000-8000-000000000001';
 const MODEL_REQUEST = Object.freeze({ model: true, modelThreadId: PARENT_THREAD_ID });
@@ -553,22 +555,78 @@ test('explicit per-item retry inherits accepted siblings and resets the fresh Ag
   assert.deepEqual(attempt.inherited_native_item_indices,[0,1,2,3,4,5,6,8,9]);
 });
 
-test('explicit per-item retry omits a fully inherited partition from the native spawn window',async t=>{
+for (const scheduling of ['serial', 'parallel', 'capped_parallel']) {
+  test(`explicit per-item retry closes the ${scheduling} join with inherited siblings and exact evidence`, async t => {
+    const jobs=Array.from({length:10},(_,index)=>index);let turns=0;
+    const f=await fixture(t,async ids=>({status:'completed',agent_id:ids[0],turn_id:`turn-${++turns}`,
+      result:{items:ids[0]==='retry-child'?[{outcome:'completed',result:[7]}]
+        :(turns===1?jobs:[7]).map(job=>job===7?{outcome:'blocked',block_reason:'only item 7 needs work'}
+          :{outcome:'completed',result:[job]})}}));
+    const workflow=definition(`retry-join-${scheduling}`,'capped-one'),worker=workflow.nodes.find(node=>node.id==='worker');
+    worker.fanout.result_mode='per_item';worker.retry.max_attempts=2;
+    if(scheduling==='serial'){worker.fanout.scheduling='serial';delete worker.fanout.max_concurrency;}
+    if(scheduling==='parallel')delete worker.fanout.max_concurrency;
+    const {binding}=await startRun(f,workflow,{jobs});
+    const first=await f.service.call('native_next',binding);
+    await recordNativeSpawn(f,{...binding,attempt_id:first.attempt_id,index:0,agent_id:'failed-child'});
+    const repair=await f.service.call('native_next',binding);
+    await f.service.call('native_followed_up',repair.next_action_args);
+    assert.equal((await f.service.call('native_next',binding)).status,'native_agent_repair_exhausted');
+    const failed=await f.service.call('get',binding),previous=failed.nodes.worker.attempts.at(-1);
+    const accepted=structuredClone(previous.native_item_results);
+    await f.service.call('retry_node',{...binding,node_id:'worker',reconciliation:{attempt_id:previous.id,
+      dispatch_request_id:previous.dispatch.request_id,outcome:'explicit_retry',evidence:[{kind:'fresh_attempt'}]}});
+    const retry=await f.service.call('native_next',binding);
+    const bundle=JSON.parse(await readFile(retry.packets[0].task_bundle_path,'utf8'));
+    assert.equal(bundle.result_schema.properties.items.minItems,1);
+    await recordNativeSpawn(f,{...binding,attempt_id:retry.attempt_id,index:0,agent_id:'retry-child'});
+    await f.service.call('native_next',binding);
+    const state=await f.service.call('get',binding),attempt=state.nodes.worker.attempts.at(-1);
+    assert.equal(state.nodes.worker.status,'succeeded');
+    assert.deepEqual(state.nodes.worker.output.results,jobs.map(job=>[job]));
+    for(const [index,result]of Object.entries(accepted))assert.deepEqual(attempt.native_item_results[index],result);
+    assert.equal(attempt.managed_native_results.length,1);
+    assert.equal(attempt.managed_native_results[0].result_sha256,digest(canonicalJSON(jobs.map(job=>[job]))));
+    assert.equal(state.nodes.final.status,'ready','Only the verified complete join releases its successor');
+    assert.equal(turns,3,'Accepted siblings require no new observation or model turn');
+    const {runtime}=await f.service.open();
+    const final=await runtime.claimHostMain(binding.run_id,{...binding,node_id:'final',owner:'root',request_id:'claim-final'});
+    const finalArgs={...binding,node_id:'final',attempt_id:final.attempt_id,lease_token:final.lease_token};
+    const request_id=`dispatch-${final.attempt_id}`;
+    await runtime.recordHostMainDispatchIntent(binding.run_id,{...finalArgs,request_id,envelope_hash:digest(canonicalJSON(final))});
+    await runtime.recordHostMainDispatchReceipt(binding.run_id,{...finalArgs,request_id,receipt:{
+      invocation_id:`fixture-${final.attempt_id}`,executor:'codex-app-server-host-main',executable_sha256:'a'.repeat(64),
+      model:'fixture-main',effort:'medium',main_actor:'root',session_id:`logical-main-${binding.run_id}`,call_chain_id:`workflow-run-${binding.run_id}`}});
+    const proposal={status:'succeeded',summary:'Fixture accepts verified results',structured_output:{accepted:true},
+      artifacts:[],evidence:[{kind:'fixture_acceptance'}],changed_paths:[],outside_paths:[]};
+    const saved=await runtime.runs.saveExecutorResult(binding.run_id,final.attempt_id,proposal);
+    await runtime.recordExecutorEvent(binding.run_id,{...finalArgs,event:{kind:'result_proposed',metadata:{...saved,final_acceptance_required:true}}});
+    assert.equal((await runtime.completeHostMainResult(binding.run_id,finalArgs,{accepted:true})).status,'succeeded');
+  });
+}
+
+for(const scheduling of ['serial','parallel','capped_parallel']){
+test(`explicit per-item ${scheduling} retry completes after omitting a fully inherited partition`,async t=>{
   const jobs=Array.from({length:20},(_,index)=>index);let badTurns=0;
   const f=await fixture(t,async ids=>{
     const id=ids[0];
     if(id==='first-good')return {status:'completed',agent_id:id,turn_id:'good',result:{items:jobs.slice(0,10)
       .map(job=>({outcome:'completed',result:[job]}))}};
+    if(id==='retry-child')return {status:'completed',agent_id:id,turn_id:'retry-good',result:{items:jobs.slice(10)
+      .map(job=>({outcome:'completed',result:[job]}))}};
     badTurns++;
     return {status:'completed',agent_id:id,turn_id:`bad-${badTurns}`,result:{items:jobs.slice(10)
       .map(()=>({outcome:'blocked',block_reason:'second partition still needs work'}))}};
   });
-  const workflow=definition('native-per-item-full-partition-retry','capped-two');
+  const workflow=definition(`native-full-partition-${scheduling}-retry`,'capped-two');
   const worker=workflow.nodes.find(node=>node.id==='worker');
   worker.retry.max_attempts=3;worker.fanout.result_mode='per_item';
+  if(scheduling==='serial'){worker.fanout.scheduling='serial';delete worker.fanout.max_concurrency;}
+  if(scheduling==='parallel')delete worker.fanout.max_concurrency;
   const {binding}=await startRun(f,workflow,{jobs});
   const first=await f.service.call('native_next',binding);
   await recordNativeSpawn(f,{...binding,attempt_id:first.attempt_id,index:0,agent_id:'first-good'});
+  if(scheduling==='serial')assert.deepEqual((await f.service.call('native_next',binding)).packets.map(packet=>packet.index),[1]);
   await recordNativeSpawn(f,{...binding,attempt_id:first.attempt_id,index:1,agent_id:'first-bad'});
   const repair1=await f.service.call('native_next',binding);
   assert.equal(repair1.agent_id,'first-bad');
@@ -585,7 +643,16 @@ test('explicit per-item retry omits a fully inherited partition from the native 
   const bundle=JSON.parse(await readFile(retry.packets[0].task_bundle_path,'utf8'));
   assert.equal(bundle.result_schema.properties.items.minItems,10);
   assert.equal(bundle.verified_files.length,0);
+  await recordNativeSpawn(f,{...binding,attempt_id:retry.attempt_id,index:1,agent_id:'retry-child'});
+  await f.service.call('native_next',binding);
+  const state=await f.service.call('get',binding),attempt=state.nodes.worker.attempts.at(-1);
+  assert.equal(state.nodes.worker.status,'succeeded');
+  assert.deepEqual(state.nodes.worker.output.results,jobs.map(job=>[job]));
+  assert.deepEqual(Object.keys(attempt.native_agents),['1']);
+  assert.equal(attempt.managed_native_results.length,1);
+  assert.equal(attempt.managed_native_results[0].result_sha256,digest(canonicalJSON(jobs.slice(10).map(job=>[job]))));
 });
+}
 
 test('parallel siblings each retain their own pinned correction allowance', async t => {
   const jobs = [10, 20, 30], turns = new Map(), repairs = [];
@@ -1019,8 +1086,8 @@ test('a replayed rejected per-item turn does not spend another correction or rep
 });
 
 test('cancellation during Host observation leaves a capped native node cancelled and unsealed', async t => {
-  const entered = Promise.withResolvers();
-  const release = Promise.withResolvers();
+  const entered = deferred();
+  const release = deferred();
   const jobs = Array.from({ length: 10 }, (_, index) => index);
   const f = await fixture(t, async ids => {
     entered.resolve();

@@ -46,6 +46,7 @@
 - Parallel bounded-write children must have disjoint Host-derived write paths. Shared changes go to one downstream integration owner.
 - With `result_mode: per_item`, the Agent returns semantic entries in supplied order. The Host binds them to original items and journals each accepted entry.
 - A failed item never replays accepted siblings. Same-child repair receives only unresolved items. An outer retry inherits accepted item results.
+- Assignment indices stay tied to the original partition after inherited partitions are removed. Child input and write scope contain only unresolved items; result joins and evidence hashes contain the complete original partition, including inherited results.
 - A malformed or blocked child result consumes only that child or node's declared retry allowance. Exhaustion fails visibly.
 - Agent finals are small semantic results. Files and detailed evidence remain local; a child reports completion and concise evidence rather than returning file contents.
 
@@ -73,4 +74,5 @@
 
 - Find path, hash, dependency, schema, Provider, prompt, permission, and handoff defects mechanically before starting a Workflow Run.
 - Run the complete control-plane test manifest and the installer/packaging verification after runtime changes.
+- Tests support the declared Node minimum and use portable local fixtures. Real integration dependencies are provisioned explicitly by CI; release versions come from matching package and plugin metadata.
 - A Workflow Run starts only from a Ready, launchable, hash-consistent package with all runtime dependencies resolved.

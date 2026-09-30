@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile, readFile, chmod, stat } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, chmod, stat } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join, resolve } from 'node:path';
 import { buildCodexProfile, cleanupCodexProfile, isolatedEnvironment, pinObservedModel, profileSettings } from '../lib/execution/codex-profile-builder.mjs';
@@ -8,6 +10,7 @@ import { createSkillPolicy, skillPathKey } from '../lib/execution/codex-skill-po
 import { createCodexSession as createCodexSessionImpl, createStrictSession } from '../lib/execution/codex-session.mjs';
 import { createManagedNativeSession as createManagedNativeSessionImpl } from '../lib/execution/managed-native-session.mjs';
 import { digest } from '../lib/workflow-revisions.mjs';
+import { processIdentity } from '../lib/execution/codex-process-ownership.mjs';
 
 const testMetadata=async({model})=>({slug:model,tool_mode:'code_mode_only',base_instructions:'Unchanged normal instructions',input_modalities:['text','image'],supports_parallel_tool_calls:true});
 const createCodexSession=options=>createCodexSessionImpl({...options,modelMetadataReader:testMetadata});
@@ -259,17 +262,58 @@ test('isolated Workflow profile keeps host dynamic-tool transport enabled withou
 async function fixture(t, { profile = true, modelMetadata = true } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'strict-execution-')); const binary = join(root, 'fixture-binary'); await writeFile(binary, 'Synthetic never-executed binary');
   t.after(async () => { assert(resolve(root).startsWith(resolve(tmpdir()))); await rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 }); });
-  const options = { parent: root, binary, expectedBinaryHash: digest(await readFile(binary)), model: 'synthetic-model', effort: 'low', ...(modelMetadata ? { modelMetadata: { slug: 'synthetic-model', supported_reasoning_levels: [{ effort: 'low' }] } } : {}) };
+  const options = { parent: root, binary, expectedBinaryHash: digest(await readFile(binary)), model: 'synthetic-model', effort: 'low',
+    processIdentityImpl: async pid => ({ pid, executable: process.execPath, started: 'deterministic-fixture-parent' }),
+    ...(modelMetadata ? { modelMetadata: { slug: 'synthetic-model', supported_reasoning_levels: [{ effort: 'low' }] } } : {}) };
   if (!profile) {
     const home = join(root, 'catalog-fixture'); await mkdir(join(home, 'skills'), { recursive: true });
     return { root, options, profile: { home } };
   }
-  if (!['win32', 'linux'].includes(process.platform)) {
-    await assert.rejects(buildCodexProfile(options), { code: 'PROCESS_IDENTITY_UNSUPPORTED' });
-    return null; // The unsupported platform's refusal was actually asserted.
-  }
   return { root, options, profile: await buildCodexProfile(options) };
 }
+
+test('Strict profile records deterministic parent evidence and refuses unavailable ownership before creating a profile', async t => {
+  const f = await fixture(t);
+  const owner = JSON.parse(await readFile(join(f.profile.home, 'owner.json'), 'utf8'));
+  assert.deepEqual(owner.parent_identity, await f.options.processIdentityImpl(process.pid));
+  await cleanupCodexProfile(f.profile);
+  let observedPid;
+  await assert.rejects(buildCodexProfile({ ...f.options, processIdentityImpl: async pid => {
+    observedPid = pid;
+    throw Object.assign(new Error('unqualified platform'), { code: 'PROCESS_IDENTITY_UNSUPPORTED' });
+  } }), { code: 'PROCESS_IDENTITY_UNSUPPORTED' });
+  assert.equal(observedPid, process.pid);
+  assert.deepEqual(await readdir(f.root), ['fixture-binary']);
+});
+
+test('real platform process ownership returns stable OS evidence or explicitly refuses unsupported inspection', async () => {
+  if (!['win32', 'linux'].includes(process.platform)) {
+    await assert.rejects(processIdentity(process.pid), { code: 'PROCESS_IDENTITY_UNSUPPORTED' });
+    return;
+  }
+  const first = await processIdentity(process.pid), second = await processIdentity(process.pid);
+  assert.deepEqual(first, second);
+  assert.equal(first.pid, process.pid);
+  assert.equal(first.executable, resolve(process.execPath));
+  assert(first.started.length > 0);
+});
+
+test('unqualified platform ownership inspection refuses profile creation before effects', async t => {
+  const f = await fixture(t, { profile: false });
+  // Exercise the production refusal branch even on a qualified test host.
+  const script = `Object.defineProperty(process, 'platform', { value: 'darwin' });
+    const assert = (await import('node:assert/strict')).default;
+    const { processIdentity } = await import(process.argv[1]);
+    const { buildCodexProfile } = await import(process.argv[2]);
+    const options = JSON.parse(process.argv[3]);
+    await assert.rejects(processIdentity(process.pid), { code: 'PROCESS_IDENTITY_UNSUPPORTED' });
+    await assert.rejects(buildCodexProfile(options), { code: 'PROCESS_IDENTITY_UNSUPPORTED' });`;
+  await promisify(execFile)(process.execPath, ['--input-type=module', '--eval', script,
+    new URL('../lib/execution/codex-process-ownership.mjs', import.meta.url).href,
+    new URL('../lib/execution/codex-profile-builder.mjs', import.meta.url).href,
+    JSON.stringify(f.options)], { windowsHide: true, timeout: 10000 });
+  assert.deepEqual((await readdir(f.root)).sort(), ['catalog-fixture', 'fixture-binary']);
+});
 const strict = { mode: 'strict', implicit: 'deny', shadowed_skill_paths: [], ambient_allow: [] };
 const skillText = '---\nname: allowed\ndescription: Synthetic fixture\n---\nALLOWED_SENTINEL';
 function metadataClient(cwd, skills) {
@@ -279,8 +323,8 @@ function metadataClient(cwd, skills) {
   } };
 }
 
-test('Strict profile fails closed on unsupported ownership or changed binary and strips inherited overrides', async t => {
-  const f = await fixture(t); if (!f) return; const env = isolatedEnvironment({ PATH: 'fixture-path', USERPROFILE: 'fixture-user', CODEX_HOME: 'shared', CODEX_CONFIG: 'untrusted', OPENAI_API_KEY: 'sensitive', SOL_CONTROL_DISABLED: '1' }, f.profile.home);
+test('Strict profile rejects changed binary and owner token and strips inherited overrides', async t => {
+  const f = await fixture(t); const env = isolatedEnvironment({ PATH: 'fixture-path', USERPROFILE: 'fixture-user', CODEX_HOME: 'shared', CODEX_CONFIG: 'untrusted', OPENAI_API_KEY: 'sensitive', SOL_CONTROL_DISABLED: '1' }, f.profile.home);
   assert.equal(env.CODEX_HOME, f.profile.home); assert.equal(env.CODEX_CONFIG, undefined); assert.equal(env.OPENAI_API_KEY, undefined); assert.equal(env.PATH, 'fixture-path');
   await writeFile(f.options.binary, 'Changed binary'); await assert.rejects(buildCodexProfile(f.options), { code: 'CODEX_BINARY_CHANGED' });
   await assert.rejects(cleanupCodexProfile({ ...f.profile, owner_token: 'wrong' }), { code: 'PROFILE_OWNER' });
@@ -288,7 +332,7 @@ test('Strict profile fails closed on unsupported ownership or changed binary and
 });
 
 test('isolated profile pins only the authenticated observed model window',async t=>{
-  const f=await fixture(t,{modelMetadata:false});if(!f)return;
+  const f=await fixture(t,{modelMetadata:false});
   await writeFile(join(f.profile.home,'models_cache.json'),JSON.stringify({models:[
     {slug:'synthetic-model',context_window:272000,max_context_window:872000,base_instructions:'private cache text'},
     {slug:'other-model',context_window:42000},
@@ -304,7 +348,7 @@ test('isolated profile pins only the authenticated observed model window',async 
 const observedFixtureModel={model:'synthetic-model',displayName:'Synthetic',description:'Fixture model',defaultReasoningEffort:'low',inputModalities:['text'],supportedReasoningEfforts:[{reasoningEffort:'low',description:'Fixture effort'}]};
 
 test('isolated catalog treats nullable maximum as absent without inventing a window',async t=>{
-  const f=await fixture(t,{modelMetadata:false});if(!f)return;
+  const f=await fixture(t,{modelMetadata:false});
   await writeFile(join(f.profile.home,'models_cache.json'),JSON.stringify({models:[{slug:'synthetic-model',context_window:272000,max_context_window:null}]}));
   await pinObservedModel(f.profile,observedFixtureModel);
   const pinned=JSON.parse(await readFile(join(f.profile.home,'models.json'),'utf8')).models[0];
@@ -321,7 +365,7 @@ for(const [name,models] of [
   ['invalid window', [{slug:'synthetic-model',context_window:'272000'}]],
   ['invalid maximum', [{slug:'synthetic-model',context_window:272000,max_context_window:32000}]],
 ]) test(`isolated catalog rejects ${name}`,async t=>{
-  const f=await fixture(t,{modelMetadata:false});if(!f)return;
+  const f=await fixture(t,{modelMetadata:false});
   await writeFile(join(f.profile.home,'models_cache.json'),JSON.stringify({models}));
   await assert.rejects(pinObservedModel(f.profile,observedFixtureModel),{code:'CODEX_MODEL_CONTEXT'});
   await cleanupCodexProfile(f.profile);

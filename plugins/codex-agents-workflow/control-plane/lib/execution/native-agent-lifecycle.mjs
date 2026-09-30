@@ -1,7 +1,7 @@
-import {lstat,open,realpath} from 'node:fs/promises';
+import {lstat,open} from 'node:fs/promises';
 import {homedir} from 'node:os';
-import {isAbsolute,join,relative,resolve,sep} from 'node:path';
-import {noSymlinks} from '../workflow-paths.mjs';
+import {isAbsolute,join,relative,sep} from 'node:path';
+import {canonicalSessionPath} from './local-session-path.mjs';
 
 const fail=(code,message)=>{throw Object.assign(new Error(message),{code});};
 const samePath=(a,b)=>process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
@@ -16,26 +16,29 @@ const nonLifecycleRecords=new Set(['response_item','turn_context','compacted','w
 export function createNativeLifecycleReader({home=process.env.CODEX_HOME||join(homedir(),'.codex'),maxLineBytes=4*1024*1024,maxPartialReads=7}={}) {
   if(!isAbsolute(home)||!Number.isSafeInteger(maxLineBytes)||maxLineBytes<256||!Number.isSafeInteger(maxPartialReads)||maxPartialReads<1)
     fail('NATIVE_AGENT_LIFECYCLE_CONFIG','Invalid native lifecycle reader bounds or Codex home');
-  const root=resolve(home,'sessions'),states=new Map();
+  const states=new Map();
   return async function readLifecycle({thread,agentId,parentThreadId}) {
     const path=thread?.path;
-    if(typeof path!=='string'||!isAbsolute(path)||!inside(root,resolve(path)))
+    if(typeof path!=='string'||!isAbsolute(path))
       fail('NATIVE_AGENT_LIFECYCLE_PATH','Native thread/read must provide its exact rollout path inside the configured Codex home sessions directory');
     const expectedPath=agentId?.startsWith('/')?agentId:thread.source?.subAgent?.thread_spawn?.agent_path;
     if(!expectedPath||!parentThreadId)
       fail('NATIVE_AGENT_LIFECYCLE_IDENTITY','Native lifecycle observation requires the exact parent UUID and canonical Agent path');
     let state=states.get(thread.id);
-    if(state&&(!samePath(state.path,resolve(path))||state.parent!==parentThreadId||state.agentPath!==expectedPath))
-      fail('NATIVE_AGENT_LIFECYCLE_IDENTITY','Native rollout binding changed during the pending observation');
-    if(!state){
-      state={path:resolve(path),parent:parentThreadId,agentPath:expectedPath,offset:0,pending:Buffer.alloc(0),skipping:false,
-        checked:false,partialReads:0,initialReads:0,turns:new Map(),latest:null,key:null};
-      states.set(thread.id,state);
-    }
     let file;
     try {
-      await noSymlinks(state.path);
-      if(!samePath(await realpath(state.path),state.path))fail('NATIVE_AGENT_LIFECYCLE_PATH','Native rollout path resolved through an alias');
+      // Validate the original spelling for links before canonicalization. The
+      // same non-link Windows file can have short, extended and cased names.
+      const {root:canonicalRoot,path:canonicalPath}=await canonicalSessionPath(path,home);
+      if(!inside(canonicalRoot,canonicalPath))
+        fail('NATIVE_AGENT_LIFECYCLE_PATH','Native thread/read must provide its exact rollout path inside the configured Codex home sessions directory');
+      if(state&&(!samePath(state.path,canonicalPath)||state.parent!==parentThreadId||state.agentPath!==expectedPath))
+        fail('NATIVE_AGENT_LIFECYCLE_IDENTITY','Native rollout binding changed during the pending observation');
+      if(!state){
+        state={path:canonicalPath,parent:parentThreadId,agentPath:expectedPath,offset:0,pending:Buffer.alloc(0),skipping:false,
+          checked:false,partialReads:0,initialReads:0,turns:new Map(),latest:null,key:null};
+        states.set(thread.id,state);
+      }
       const listed=await lstat(state.path);
       if(!listed.isFile()||listed.nlink!==1)fail('NATIVE_AGENT_LIFECYCLE_PATH','Native rollout must be a regular unlinked file');
       file=await open(state.path,'r');

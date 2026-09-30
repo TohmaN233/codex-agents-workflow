@@ -128,36 +128,6 @@ export function createMainAgentPacket({ definition, dispatched, resources, final
   };
 }
 
-export function hostCompletionArgs(binding, semanticOutput, {
-  accepted,
-  summary,
-  artifacts = [],
-  evidence,
-  changed_paths = [],
-  outside_paths = [],
-  request_prefix,
-} = {}) {
-  requireValue(binding?.protocol === 'host-main-v1', 'MAIN_HOST_BINDING', 'Host completion requires the exact host-owned main binding');
-  requireValue(semanticOutput && typeof semanticOutput === 'object' && !Array.isArray(semanticOutput), 'MAIN_OUTPUT_REQUIRED', 'Main semantic output must be an object');
-  if (binding.final_acceptance) requireValue(typeof accepted === 'boolean', 'FINAL_ACCEPTANCE_REQUIRED', 'The host acceptance form requires a boolean choice');
-  return {
-    run_id: binding.run_id,
-    control_token: binding.control_token,
-    node_id: binding.node_id,
-    attempt_id: binding.attempt_id,
-    lease_token: binding.lease_token,
-    owner: binding.owner,
-    output: structuredClone(semanticOutput),
-    ...(typeof accepted === 'boolean' ? { accepted } : {}),
-    ...(typeof summary === 'string' && summary.length ? { summary } : {}),
-    artifacts: structuredClone(artifacts),
-    evidence: structuredClone(evidence ?? [{ kind: 'host_semantic_submission', node_id: binding.node_id }]),
-    changed_paths: structuredClone(changed_paths),
-    outside_paths: structuredClone(outside_paths),
-    ...(request_prefix ? { request_prefix } : {}),
-  };
-}
-
 export function hostCompletionEnvelope(definition, args, finalAcceptance) {
   const completion = hostResultProposalEnvelope(definition, args, { finalAcceptance });
   if (finalAcceptance) {

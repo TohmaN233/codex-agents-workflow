@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,rm,chmod} from 'node:fs/promises';
 import {join,dirname} from 'node:path';
-import {tmpdir} from 'node:os';
+import {tmpdir} from './physical-tempdir.mjs';
 import {execFileSync} from 'node:child_process';
 import {normalizeRuntimeRequirements,normalizeExecutableRequirements} from '../lib/runtime-requirements.mjs';
 import {prepareRuntimeEnvironment,verifyRuntimeEnvironment,readHostRuntimeRegistry,updateRuntimeCandidate,registryPathForConfig} from '../lib/runtime-environment.mjs';

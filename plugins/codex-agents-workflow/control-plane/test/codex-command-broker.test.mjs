@@ -1,3 +1,4 @@
+import { deferred } from './fixtures/deferred.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -99,7 +100,7 @@ test('model can recover from an exhausted command session without losing its Age
 test('Ctrl-C is delivered through the Host runner control file without an unsupported terminate RPC',async t=>{
   const root=await mkdtemp(join(tmpdir(),'command-broker-runner-stop-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
-  const completion=Promise.withResolvers(),execStarted=Promise.withResolvers(),spoolRoot=join(root,'spool');let spec;
+  const completion=deferred(),execStarted=deferred(),spoolRoot=join(root,'spool');let spec;
   const client={initialized(){},async call(method,params){
     if(method==='initialize')return {};
     if(method==='command/exec'){spec=JSON.parse(await readFile(params.command.at(-1),'utf8'));execStarted.resolve();return completion.promise;}
@@ -122,7 +123,7 @@ test('Ctrl-C is delivered through the Host runner control file without an unsupp
 test('repeated Ctrl-C does not enqueue duplicate stop controls',async t=>{
   const root=await mkdtemp(join(tmpdir(),'command-broker-runner-stop-once-'));
   t.after(()=>rm(root,{recursive:true,force:true}));
-  const completion=Promise.withResolvers(),execStarted=Promise.withResolvers(),spoolRoot=join(root,'spool');let spec;
+  const completion=deferred(),execStarted=deferred(),spoolRoot=join(root,'spool');let spec;
   const client={initialized(){},async call(method,params){
     if(method==='initialize')return {};
     if(method==='command/exec'){spec=JSON.parse(await readFile(params.command.at(-1),'utf8'));execStarted.resolve();return completion.promise;}

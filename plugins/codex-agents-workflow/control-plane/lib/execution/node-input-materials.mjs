@@ -89,7 +89,10 @@ async function existingLocalAddress(value, workspace) {
   let absolute;
   try { absolute = await realpath(candidate); }
   catch (error) {
-    if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null;
+    // This is optional address discovery for an arbitrary semantic value.
+    // The filesystem can attest that no such name is representable; preserve
+    // that value as content. Access, I/O and explicit verified-path errors fail.
+    if (['ENOENT', 'ENOTDIR', 'ENAMETOOLONG'].includes(error.code)) return null;
     throw error;
   }
   const info = await stat(absolute);
@@ -219,7 +222,9 @@ async function materializationPlan(inputs, directory, workspace) {
   const localAddresses = {};
   for (const [name, value] of Object.entries(inputs ?? {}).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) {
     if (name === 'task') continue;
-    const address = await existingLocalAddress(value, workspace);
+    // *_json is a serialized input binding, never a local address. Decide its
+    // representation before filesystem lookup; large JSON is not a pathname.
+    const address = name.endsWith('_json') ? null : await existingLocalAddress(value, workspace);
     if (address) {
       localAddresses[name] = address;
       continue;

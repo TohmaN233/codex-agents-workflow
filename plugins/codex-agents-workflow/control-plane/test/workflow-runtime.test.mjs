@@ -38,6 +38,83 @@ async function fixture(t, workflow = definition(), options = {}) {
 }
 const payload = (output = {}, extra = {}) => ({ status: 'succeeded', summary: 'Verified by synthetic executor', structured_output: output, artifacts: [], evidence: [{ check: 'fake executor', passed: true }], changed_paths: [], outside_paths: [], ...extra });
 
+async function hostReceiptFixture(t) {
+  const output = { ok: true }, contract = {
+    id: 'receipt-tool', identity: { name: 'receipt-tool', version: '1', sha256: 'a'.repeat(64) }, argv: ['receipt-tool'],
+    input_schema: { type: 'object', additionalProperties: false },
+    output_schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false },
+    env_allow: [], permissions: { network: false, read_paths: [], write_paths: [] },
+    output_cap_bytes: 1024, deadline_ms: 1000, idempotency: { mode: 'safe' },
+  };
+  const workflow = definition(); workflow.host_tools = [contract];
+  workflow.nodes[1] = { id: 'work', type: 'tool', executor: { kind: 'tool', tool: contract.id },
+    access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: {}, outputs_schema: contract.output_schema };
+  const f = await fixture(t, workflow, { context: { host_tools: [contract.id] },
+    environmentResolver: async () => ({ status: 'ready', tools: [], missing: [] }) });
+  const run = await f.start(), lease = await claim(f, run, 'work');
+  const args = { node_id: 'work', attempt_id: lease.attempt_id, lease_token: lease.lease_token, control_token: run.control_token };
+  const intent = (await f.runtime.recordHostToolIntent(run.run_id, { ...args, contract, input: {} })).receipt;
+  const stored = { kind: 'host_tool_output', output }, saved = await f.runtime.runs.saveExecutorResult(run.run_id, lease.attempt_id, stored);
+  const receipt = { run_id: run.run_id, node_id: 'work', attempt_id: lease.attempt_id, tool: contract.id,
+    contract_sha256: intent.contract_sha256, input_sha256: intent.input_sha256,
+    broker: { id: 'qualified-fixture', evidence_sha256: 'b'.repeat(64) },
+    started_at: '2026-09-29T00:00:00.000Z', finished_at: '2026-09-29T00:00:00.010Z', duration_ms: 10,
+    output_sha256: digest(canonicalJSON(output)), output_ref: { ...saved, bytes: Buffer.byteLength(canonicalJSON(stored)) },
+    diagnostics: { message: 'Synthetic qualified receipt', sha256: digest('Synthetic qualified receipt') },
+    status: 'succeeded', exit_code: 0, effects: { observed: true, changed_paths: [], outside_paths: [], artifacts: [] }, reconciliation: null };
+  return { ...f, run, args, receipt };
+}
+
+test('exact Host tool receipt replay is idempotent and a conflicting qualified receipt is rejected', async t => {
+  const f = await hostReceiptFixture(t);
+  await f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt: f.receipt });
+  const before = await f.runtime.runs.read(f.run.run_id);
+  await f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt: structuredClone(f.receipt) });
+  assert.deepEqual(await f.runtime.runs.read(f.run.run_id), before, 'Replay must not add a journal event or change state');
+  await assert.rejects(f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args,
+    receipt: { ...f.receipt, broker: { ...f.receipt.broker, id: 'different-qualified-broker' } } }), { code: 'HOST_TOOL_CONFLICT' });
+  assert.deepEqual(await f.runtime.runs.read(f.run.run_id), before);
+});
+
+test('exact successful Host tool receipt replay detects corrupted stored executor output', async t => {
+  const f = await hostReceiptFixture(t);
+  await f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt: f.receipt });
+  const before = await f.runtime.runs.read(f.run.run_id);
+  await writeFile(join(f.runtime.runs.directory(f.run.run_id), f.receipt.output_ref.artifact),
+    canonicalJSON({ kind: 'host_tool_output', output: { ok: false } }));
+  await assert.rejects(f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args,
+    receipt: { ...f.receipt, broker: { ...f.receipt.broker, id: 'different-qualified-broker' } } }),
+  { code: 'HOST_TOOL_CONFLICT' });
+  await assert.rejects(f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt: structuredClone(f.receipt) }),
+    { code: 'EXECUTOR_RESULT_CORRUPT' });
+  assert.deepEqual(await f.runtime.runs.read(f.run.run_id), before);
+});
+
+test('first Host tool receipt still validates its exact intent and durable output', async t => {
+  const f = await hostReceiptFixture(t), before = await f.runtime.runs.read(f.run.run_id);
+  for (const receipt of [
+    { ...f.receipt, input_sha256: 'e'.repeat(64) },
+    { ...f.receipt, output_ref: { ...f.receipt.output_ref, artifact: 'different.json' } },
+  ]) await assert.rejects(f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt }), { code: 'HOST_TOOL_RECEIPT' });
+  await assert.rejects(f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args,
+    receipt: { ...f.receipt, output_sha256: 'f'.repeat(64) } }), { code: 'HOST_TOOL_OUTPUT_CORRUPT' });
+  assert.deepEqual(await f.runtime.runs.read(f.run.run_id), before);
+  await f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt: f.receipt });
+});
+
+test('cancelled Run persists its exact Host tool termination receipt and replay adds no event', async t => {
+  const f = await hostReceiptFixture(t);
+  await f.runtime.cancel(f.run.run_id, { control_token: f.run.control_token });
+  const receipt = { ...f.receipt, status: 'cancelled', exit_code: null, output_ref: null, output_sha256: null,
+    reconciliation: { termination_confirmed: true, evidence: [{ kind: 'synthetic-termination', sha256: 'c'.repeat(64) }] } };
+  await f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt });
+  const before = await f.runtime.runs.read(f.run.run_id);
+  assert.equal(before.state.status, 'cancelled');
+  assert.deepEqual(before.state.nodes.work.attempts[0].host_tool.receipt, receipt);
+  await f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt: structuredClone(receipt) });
+  assert.deepEqual(await f.runtime.runs.read(f.run.run_id), before);
+});
+
 test('a declared project_root input inherits the exact Run workspace before node binding', async t => {
   const workflow = definition();
   workflow.inputs_schema = { type: 'object', properties: { project_root: { type: 'string' } }, required: ['project_root'], additionalProperties: true };

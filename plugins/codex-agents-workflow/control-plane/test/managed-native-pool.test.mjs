@@ -427,10 +427,10 @@ test('a closed managed-native manager rejects a later dispatch through a retaine
   assert.equal(receipts, 0, 'a closed manager must not register a dispatch receipt');
 });
 
-async function perItemFixture(t,{blockedIndex=null,pauseRepair=false}={}){
+async function perItemFixture(t,{blockedIndex=null,pauseRepair=false,inheritedIndices=[],itemCount=20,initialFailures=[2,7]}={}){
   const root=await mkdtemp(join(tmpdir(),'managed-native-items-')),workspace=join(root,'workspace');await mkdir(workspace);
   t.after(async()=>rm(root,{recursive:true,maxRetries:3,retryDelay:100}));
-  const items=Array.from({length:20},(_,index)=>`card-${index}`),runId='run-items',attemptId='attempt-items';
+  const items=Array.from({length:itemCount},(_,index)=>`card-${index}`),runId='run-items',attemptId='attempt-items';
   const provider={id:'item-provider',kind:'native_agent',enabled:true,capabilities:{read:true,write:true},
     config:{role:'implementer',model:'gpt-test',reasoning_effort:'low',inactivity_timeout_ms:0}};
   const fanout={input:'items',item_name:'card',result_output:'results',distribution:'partition',batch_size:10,
@@ -439,7 +439,8 @@ async function perItemFixture(t,{blockedIndex=null,pauseRepair=false}={}){
     input_bindings:{items:'/inputs/items'},
     outputs_schema:{type:'object',properties:{results:{type:'array',items:{type:'string'}}},required:['results'],additionalProperties:false}};
   const plan=resolvedSubagentPlan(definition,{inputs:{items},nodes:{}});
-  const attempt={id:attemptId,native_item_results:{},native_rejected_turns:{},dispatch:null};
+  const attempt={id:attemptId,native_item_results:Object.fromEntries(inheritedIndices.map(index=>[index,{agent_id:`prior-${index}`,result:`done-${index}`}])),
+    inherited_native_item_indices:inheritedIndices,native_rejected_turns:{},dispatch:null};
   const state={run_id:runId,inputs:{items},constraints:{},nodes:{work:{status:'running',active_attempt_id:attemptId,attempts:[attempt]}}};
   const record={pins:{root:{workflow:{nodes:[definition]},resources:[]}},state};
   const envelope={run_id:runId,workflow_id:'workflow-items',node_id:'work',attempt_id:attemptId,executor:definition.executor,provider,
@@ -452,7 +453,7 @@ async function perItemFixture(t,{blockedIndex=null,pauseRepair=false}={}){
     execution:async()=>envelope,get:async()=>state,recordExecutorEvent:async(_run,args)=>{events.push(args.event);},
     recordDispatchReceipt:async(_run,args)=>{attempt.dispatch={receipt:args.receipt};},
     recordNativeItemResults:async(_run,{index,agent_id,target_indices,result})=>{
-      assert.equal(agent_id,attempt.dispatch.receipt.subagent_dispatch_ids[index]);
+      assert.equal(agent_id,attempt.dispatch.receipt.subagent_plan.assignments.find(item=>item.assignment_index===index).dispatch_id);
       if(!result||Object.keys(result).length!==1||!Array.isArray(result.items))throw Object.assign(new Error('items array required'),{code:'NATIVE_ITEM_RESULT'});
       const assigned=plan.assignments[index].map(value=>items.indexOf(value));const issues=[];
       const expectedTargets=assigned.filter(itemIndex=>!attempt.native_item_results[itemIndex]);assert.deepEqual(target_indices,expectedTargets);
@@ -469,7 +470,7 @@ async function perItemFixture(t,{blockedIndex=null,pauseRepair=false}={}){
         ...(unresolved.length?{}:{result:assigned.map(itemIndex=>attempt.native_item_results[itemIndex].result)})};
     },
     recordNativeRejectedTurn:async(_run,{index,agent_id,turn_id,reason})=>{
-      assert.equal(agent_id,attempt.dispatch.receipt.subagent_dispatch_ids[index]);assert(turn_id);assert(reason);
+      assert.equal(agent_id,attempt.dispatch.receipt.subagent_plan.assignments.find(item=>item.assignment_index===index).dispatch_id);assert(turn_id);assert(reason);
       const count=(attempt.native_rejected_turns[index]?.count??0)+1;attempt.native_rejected_turns[index]={count};return {new:true,count};
     },recordManagedNativeResults:async(_run,args)=>{trusted.push(args.results);},recordUsage:async()=>{},
     completeNode:async(_run,args)=>{completions.push(args.completion);return {nodes:{work:{status:'succeeded'}}};},
@@ -489,7 +490,10 @@ async function perItemFixture(t,{blockedIndex=null,pauseRepair=false}={}){
           assert(refs.repair_items?.path);
           assert.deepEqual(JSON.parse(await readFile(refs.repair_items.path,'utf8')),unresolved.map(itemIndex=>items[itemIndex]));
         }
-        const entries=unresolved.map(itemIndex=>itemIndex===blockedIndex || index===0&&count===1&&[2,7].includes(itemIndex)
+        const refs=JSON.parse(prompt.match(/\nInputs:\n([^\n]+)/)?.[1]??'{}');
+        assert.deepEqual(JSON.parse(await readFile(refs.items_json.path,'utf8')),unresolved.map(itemIndex=>items[itemIndex]));
+        assert.deepEqual(settings.allowedPaths,[]);
+        const entries=unresolved.map(itemIndex=>itemIndex===blockedIndex || index===0&&count===1&&initialFailures.includes(itemIndex)
           ? {outcome:'blocked',block_reason:`card ${itemIndex} needs repair`}
           : {outcome:'completed',result:`done-${itemIndex}`});
         const text=JSON.stringify({outcome:'completed',result:{items:entries},block_reason:''});
@@ -521,6 +525,27 @@ test('managed per-item fan-out journals valid cards and repairs only two failed 
   assert.equal(fixture.events.filter(event=>event.kind==='native_prompt_delivery').length,3);
   await fixture.manager.close();
 });
+
+for(const inheritedIndices of [Array.from({length:10},(_,index)=>index),Array.from({length:10},(_,index)=>index+10),[2,7,11]]){
+  test(`managed per-item retry keeps original assignment identities after inheriting ${inheritedIndices.join(',')}`,async t=>{
+    const fixture=await perItemFixture(t,{inheritedIndices,itemCount:30,initialFailures:[]});
+    const prior=structuredClone(fixture.attempt.native_item_results);
+    await fixture.manager.launch(fixture.runtime,fixture.runId,fixture.args,fixture.prepared);
+    const settled=await fixture.manager.wait(fixture.runId,fixture.attemptId);
+    assert.equal(settled.status,'succeeded',JSON.stringify(settled));
+    const active=[0,1,2].filter(index=>!Array.from({length:10},(_,offset)=>index*10+offset).every(item=>inheritedIndices.includes(item)));
+    assert.deepEqual([...fixture.turns.keys()].sort(),active);
+    assert.deepEqual(fixture.completions[0].structured_output.results,fixture.items.map((_,index)=>`done-${index}`));
+    for(const [index,result]of Object.entries(prior))assert.deepEqual(fixture.attempt.native_item_results[index],result);
+    const trusted=fixture.trusted[0];assert.equal(trusted.length,active.length);
+    for(const [position,index]of active.entries()){
+      assert.equal(trusted[position].dispatch_id,`managed-${fixture.attemptId}-${String(index+1).padStart(3,'0')}`);
+      assert.equal(trusted[position].result_index,position);
+      assert.equal(trusted[position].result_sha256,digest(canonicalJSON(fixture.items.slice(index*10,index*10+10).map((_,offset)=>`done-${index*10+offset}`))));
+    }
+    await fixture.manager.close();
+  });
+}
 
 test('managed per-item retry reuses every inherited success without launching a child',async t=>{
   const root=await mkdtemp(join(tmpdir(),'managed-native-inherited-')),workspace=join(root,'workspace');await mkdir(workspace);

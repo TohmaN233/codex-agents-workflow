@@ -15,6 +15,14 @@ const PACKAGES=[
   'zenonzard-card-implementation.workflow-package.json',
 ];
 
+async function installExamplePackage(service,filename){
+  try{return await service.call('install_workflow_package',{package_path:join(EXAMPLES,filename)});}
+  catch(error){
+    error.message=`${filename}: ${error.code}: ${error.message}; validation=${JSON.stringify(error.validation??null)}`;
+    throw error;
+  }
+}
+
 async function fixture(t){
   const root=await mkdtemp(join(tmpdir(),'workflow-release-defaults-'));
   t.after(async()=>{assert(resolve(root).startsWith(resolve(tmpdir())));await rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100});});
@@ -82,7 +90,7 @@ test('optional example packages install, delete, and reinstall from local files'
     const packagePath=join(EXAMPLES,filename);
     const text=await readFile(packagePath,'utf8');
     assert.doesNotMatch(text,/[A-Za-z]:[\\/](?:Users|Documents)[\\/]/i);
-    const first=await service.call('install_workflow_package',{package_path:packagePath});
+    const first=await installExamplePackage(service,filename);
     const installed=await service.call('read',{workflow_id:first.workflow.id,revision_hash:first.revision_hash});
     assert.equal(installed.validation.valid,true,`${filename} must remain structurally installable`);
     assert.equal(installed.workflow.status,'ready');
@@ -90,7 +98,7 @@ test('optional example packages install, delete, and reinstall from local files'
     await service.call('delete',{workflow_id:first.workflow.id,expected_revision:first.revision_hash});
     assert.equal((await service.call('list')).some(item=>item.id===first.workflow.id),false);
 
-    const second=await service.call('install_workflow_package',{package_path:packagePath});
+    const second=await installExamplePackage(service,filename);
     assert.equal(second.workflow.id,first.workflow.id);
     assert.equal(second.revision_hash,first.revision_hash);
     await service.call('delete',{workflow_id:second.workflow.id,expected_revision:second.revision_hash});

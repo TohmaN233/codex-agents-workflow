@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,appendFile,rm,rename,symlink} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from './physical-tempdir.mjs';
+import {spawnSync} from 'node:child_process';
 import { inspectNativeAgent as inspectImpl, inspectNativeAgents as inspectManyImpl, inspectNativeParent, nativeParentThreadId, waitForNativeSessionEvent } from '../lib/execution/native-agent-observer.mjs';
 import {createNativeLifecycleReader} from '../lib/execution/native-agent-lifecycle.mjs';
 
@@ -102,6 +103,15 @@ test('owner lifecycle reads only appended bytes and holds a partial terminal lin
   assert.equal(partial.status,'pending');assert(partial.retained_bytes>0);
   await appendFile(f.path,end.slice(-4));const done=await reader(args);
   assert.equal(done.status,'interrupted');assert.equal(done.bytes_read,4);assert.equal(done.retained_bytes,0);
+});
+
+test('lifecycle keeps one exact rollout identity across Windows case and extended path spellings',async t=>{
+  const f=await lifecycleFixture(t),reader=createNativeLifecycleReader({home:f.home});
+  const args={thread:f.thread,agentId:agentPath,parentThreadId:parentId};
+  assert.equal((await reader(args)).status,'pending');
+  const path=process.platform==='win32'?'\\\\?\\'+f.path.toUpperCase():f.path;
+  await appendFile(f.path,logRow('event_msg',{type:'task_complete',turn_id:f.turnId}));
+  assert.equal((await reader({...args,thread:{...f.thread,path}})).status,'completed');
 });
 
 test('lifecycle reader rejects missing paths, other sessions, unsupported terminal fields and replaced files',async t=>{
@@ -339,6 +349,20 @@ test('production lifecycle watcher fails visibly on its one-hour bound and calle
   const controller=new AbortController(),pending=waitForNativeSessionEvent({home,timeoutMs:2000,signal:controller.signal});
   controller.abort(Object.assign(new Error('Run cancelled'),{code:'NATIVE_AGENT_WAIT_CANCELLED'}));
   await assert.rejects(pending,{code:'NATIVE_AGENT_WAIT_CANCELLED'});
+});
+
+test('native event wait retains its deadline when no other event-loop handle exists',()=>{
+  const moduleUrl=new URL('../lib/execution/native-agent-observer.mjs',import.meta.url).href;
+  const script=`import {waitForNativeSessionEvent} from ${JSON.stringify(moduleUrl)};
+    const watchImpl=(_path,{signal})=>({async *[Symbol.asyncIterator](){
+      await new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
+    }});
+    try { await waitForNativeSessionEvent({home:process.cwd(),timeoutMs:20,watchImpl});process.exitCode=1; }
+    catch(error) { if(error.code!=='NATIVE_AGENT_WAIT_TIMEOUT')throw error;process.stdout.write(error.code); }`;
+  const result=spawnSync(process.execPath,['--input-type=module','--eval',script],{encoding:'utf8',timeout:5000});
+  assert.ifError(result.error);
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout,'NATIVE_AGENT_WAIT_TIMEOUT','The owning Host wait must remain alive until its explicit deadline');
 });
 
 

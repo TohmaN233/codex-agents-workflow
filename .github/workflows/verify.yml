@@ -65,10 +65,23 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue) -or -not (Get-Command ffprobe -ErrorAction SilentlyContinue)) { choco install ffmpeg --no-progress -y }
+      - name: Provide WSL2 process-isolation integration dependencies on Windows
+        if: runner.os == 'Windows'
+        uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7
+        with:
+          distribution: Ubuntu-22.04
+          wsl-version: '2'
+          additional-packages: bubblewrap python3
+      - name: Verify WSL process-isolation prerequisites
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          wsl -d Ubuntu-22.04 --exec /usr/bin/bwrap --unshare-pid --unshare-user --uid 0 --gid 0 --ro-bind / / --proc /proc --dev /dev -- /usr/bin/python3 -c "import os; print('Isolated process namespace PID:', os.getpid())"
+          if ($LASTEXITCODE -ne 0) { throw 'WSL2 bubblewrap PID/user namespace preflight failed' }
       - name: Run process and protocol connector tests
+        env:
+          WORKFLOW_TEST_WSL_DISTRIBUTION: Ubuntu-22.04
         run: node plugins/codex-agents-workflow/control-plane/test/run-tests.mjs
-      - name: Verify cross-platform native role tools
-        run: node --test plugins/codex-agents-workflow/scripts/test/native-role-tools.test.mjs
 
   full-verify:
     name: full-repository-verify

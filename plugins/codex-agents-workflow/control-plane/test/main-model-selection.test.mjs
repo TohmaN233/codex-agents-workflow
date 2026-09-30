@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import filesystem from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from './physical-tempdir.mjs';
 import { readMainTurnContext, resolveMainModelSelection } from '../lib/execution/main-model-selection.mjs';
@@ -39,6 +41,39 @@ test('authenticated chat model and effort override old experiment settings witho
   await appendFile(f.thread.path, f.line('turn_context', { model: 'changed-chat-model', effort: 'high' }));
   const path = process.platform === 'win32' ? '\\\\?\\' + f.thread.path : f.thread.path;
   assert.deepEqual(await readMainTurnContext({ ...f.thread, path }, f.home), { model: 'changed-chat-model', effort: 'high' });
+});
+
+test('caller inheritance compares physical sessions after checking non-link OS path spellings', async t => {
+  const f = await fixture(t), aliasHome = f.home + '-os-spelling';
+  const originalRealpath = filesystem.realpath, originalLstat = filesystem.lstat;
+  const physical = path => typeof path === 'string' ? path.replace(aliasHome, f.home) : path;
+  filesystem.realpath = (...args) => originalRealpath(physical(args[0]), ...args.slice(1));
+  filesystem.lstat = (...args) => originalLstat(physical(args[0]), ...args.slice(1));
+  syncBuiltinESMExports();
+  try {
+    assert.deepEqual(await readMainTurnContext({ ...f.thread, path: f.thread.path.replace(f.home, aliasHome) }, f.home),
+      { model: 'current-chat-model', effort: 'xhigh' });
+    assert.deepEqual(await readMainTurnContext(f.thread, aliasHome),
+      { model: 'current-chat-model', effort: 'xhigh' });
+  } finally {
+    filesystem.realpath = originalRealpath;
+    filesystem.lstat = originalLstat;
+    syncBuiltinESMExports();
+  }
+});
+
+test('caller path canonicalization still rejects other roots and reparse aliases', async t => {
+  const f = await fixture(t), other = join(f.home, 'outside');
+  await mkdir(other);
+  const outsidePath = join(other, 'caller.jsonl');
+  await writeFile(outsidePath, f.line('session_meta', { id: f.thread.id }) +
+    f.line('turn_context', { model: 'current-chat-model', effort: 'xhigh' }));
+  await assert.rejects(readMainTurnContext({ ...f.thread, path: outsidePath }, f.home),
+    { code: 'MAIN_MODEL_SESSION_PATH' });
+  const alias = join(f.home, 'sessions', 'linked');
+  await symlink(other, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(readMainTurnContext({ ...f.thread, path: join(alias, 'caller.jsonl') }, f.home),
+    { code: 'WORKFLOW_SYMLINK' });
 });
 
 test('standalone console follows current Codex settings with zero model turns', async () => {

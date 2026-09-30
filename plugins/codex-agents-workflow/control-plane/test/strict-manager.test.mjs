@@ -26,7 +26,7 @@ import { leaseToken } from '../lib/workflow-execution-envelope.mjs';
 
 test('Strict wait observes only the exact owned attempt and its settled result',async()=>{
   const manager=new StrictSessionManager({configPath:'C:\\fixture\\strict-wait.json',getConfig:async()=>({})});
-  const gate=Promise.withResolvers();
+  const gate=deferred();
   const entry={runId:'run-exact',args:{node_id:'work',attempt_id:'attempt-exact'},adapter:{final_acceptance_required:false},
     preview:null,status:'running',error:null,job:gate.promise};
   manager.entries.set('run-exact/attempt-exact',entry);

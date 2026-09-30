@@ -35,9 +35,12 @@ const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 const MANAGED_NATIVE_RESULT_IDENTITY = Object.freeze(['dispatch_id','result_index','result_sha256','thread_id','turn_id']);
 function ownsNativeSlot(attempt,index,agentId) {
   const receipt=attempt.dispatch?.receipt;
-  return attempt.native_agents?.[index]===agentId ||
-    receipt?.executor==='codex-app-server-managed-native' && (receipt.subagent_dispatch_ids?.[index]===agentId ||
-      receipt.subagent_plan?.assignments?.some(item=>item.assignment_index===index&&item.dispatch_id===agentId));
+  if(attempt.native_agents?.[index]===agentId)return true;
+  if(receipt?.executor!=='codex-app-server-managed-native')return false;
+  const assignments=receipt.subagent_plan?.assignments;
+  return assignments?.some(item=>Object.hasOwn(item,'assignment_index'))
+    ? assignments.some(item=>item.assignment_index===index&&item.dispatch_id===agentId)
+    : receipt.subagent_dispatch_ids?.[index]===agentId;
 }
 const sameManagedNativeResultIdentity = (observed, trusted) => trusted?.agent_id
   ? observed?.kind === 'native_agent_result' && ['dispatch_id','result_index','result_sha256','agent_id'].every(field => observed?.[field] === trusted?.[field])
@@ -386,10 +389,11 @@ export class WorkflowRuntime {
       if (event.kind === 'native_agent_spawn') {
         const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
         const provider = pins.providers.find(item => item.id === definition?.executor?.provider_id);
-        const count = resolvedSubagentPlan(definition, state)?.count ?? 1;
+        const plan = resolvedSubagentPlan(definition, state);
+        const activeIndices=plan?activeFanoutAssignmentIndices(plan,definition.fanout,attempt.inherited_native_item_indices):[0];
         const { index, agent_id: id } = event.metadata;
         requireValue(provider?.kind === 'native_agent' && attempt.dispatch && !attempt.dispatch.receipt
-          && Number.isInteger(index) && index >= 0 && index < count
+          && Number.isInteger(index) && activeIndices.includes(index)
           && typeof id === 'string' && id.length > 0 && id.length <= 256,
         'NATIVE_AGENT_SPAWN', 'Native spawn must identify a pending exact Provider slot and real Agent ID');
         attempt.native_agents ??= {};
@@ -406,12 +410,14 @@ export class WorkflowRuntime {
         if(definition.fanout?.scheduling==='parallel'&&definition.fanout.max_concurrency&&!attempt.native_agents[index]){
           const spawned=Object.keys(attempt.native_agents).length;
           const completed=Object.keys(attempt.native_parallel_results??{}).length;
-          requireValue(index===spawned&&spawned-completed<definition.fanout.max_concurrency,
+          requireValue(index===activeIndices[spawned]&&spawned-completed<definition.fanout.max_concurrency,
             'NATIVE_AGENT_PARALLEL_LIMIT','Capped parallel fan-out must spawn the next released slot without exceeding its active-Agent limit');
         }
-        if(definition.fanout?.scheduling==='serial')requireValue(index===(attempt.native_serial_results?.length??0)||
-          index<(attempt.native_serial_results?.length??0)&&attempt.native_serial_results[index]?.agent_id===id,
-          'NATIVE_AGENT_SERIAL_ORDER','The previous serial sub-Agent must submit its result before the next may spawn');
+        if(definition.fanout?.scheduling==='serial'){
+          const position=activeIndices.indexOf(index),completed=attempt.native_serial_results?.length??0;
+          requireValue(position===completed||position<completed&&attempt.native_serial_results[position]?.agent_id===id,
+            'NATIVE_AGENT_SERIAL_ORDER','The previous serial sub-Agent must submit its result before the next may spawn');
+        }
         attempt.native_agents[index] = id;
       }
       if(event.kind==='native_agent_followup_intent'){
@@ -491,9 +497,9 @@ export class WorkflowRuntime {
         'NATIVE_AGENT_SERIAL_ORDER','Serial result must match the next spawned Agent and index');
       if(definition.fanout.result_mode==='per_item'){
         const inherited=new Set(attempt.inherited_native_item_indices??[]);
-        const expected=assignedFanoutIndices(plan,definition.fanout,index).filter(itemIndex=>!inherited.has(itemIndex))
-          .map(itemIndex=>attempt.native_item_results?.[itemIndex]);
-        requireValue(expected.every(item=>item?.agent_id===agent_id)&&canonicalJSON(expected.map(item=>item.result))===canonicalJSON(result),
+        const assigned=assignedFanoutIndices(plan,definition.fanout,index);
+        const expected=assigned.map(itemIndex=>attempt.native_item_results?.[itemIndex]);
+        requireValue(expected.every((item,position)=>item&&(inherited.has(assigned[position])||item.agent_id===agent_id))&&canonicalJSON(expected.map(item=>item.result))===canonicalJSON(result),
           'NATIVE_ITEM_RESULT','Agent result must reproduce every journaled assigned item in order');
       }else validateData(result,definition.outputs_schema.properties[definition.fanout.result_output].items);
       attempt.native_serial_results=[...recorded,{agent_id,result:structuredClone(result)}];touch(state);
@@ -545,9 +551,9 @@ export class WorkflowRuntime {
       }
       if(definition.fanout.result_mode==='per_item'){
         const plan=resolvedSubagentPlan(definition,state),inherited=new Set(attempt.inherited_native_item_indices??[]);
-        const expected=assignedFanoutIndices(plan,definition.fanout,index).filter(itemIndex=>!inherited.has(itemIndex))
-          .map(itemIndex=>attempt.native_item_results?.[itemIndex]);
-        requireValue(expected.every(item=>item?.agent_id===agent_id)&&canonicalJSON(expected.map(item=>item.result))===canonicalJSON(result),
+        const assigned=assignedFanoutIndices(plan,definition.fanout,index);
+        const expected=assigned.map(itemIndex=>attempt.native_item_results?.[itemIndex]);
+        requireValue(expected.every((item,position)=>item&&(inherited.has(assigned[position])||item.agent_id===agent_id))&&canonicalJSON(expected.map(item=>item.result))===canonicalJSON(result),
           'NATIVE_ITEM_RESULT','Agent result must reproduce every journaled assigned item in order');
       }else validateData(result,definition.outputs_schema.properties[definition.fanout.result_output].items);
       attempt.native_parallel_results={...recorded,[index]:{agent_id,result:structuredClone(result)}};touch(state);
@@ -1154,15 +1160,19 @@ export class WorkflowRuntime {
       // Run cancellation fences completion but must still durably journal the
       // qualified broker's exact termination receipt for the owned attempt.
       authorize(state, control_token); const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });
-      const host = attempt.host_tool; requireValue(host && host.phase === 'intent', 'HOST_TOOL_INTENT_MISSING', 'Host receipt needs an exact prior intent');
+      const host = attempt.host_tool; requireValue(host, 'HOST_TOOL_INTENT_MISSING', 'Host receipt needs an exact prior intent');
       requireValue(receipt.run_id === runId && receipt.node_id === node_id && receipt.attempt_id === attempt_id && receipt.tool === host.tool && receipt.contract_sha256 === host.contract_sha256 && receipt.input_sha256 === host.input_sha256, 'HOST_TOOL_RECEIPT', 'Host receipt differs from the exact Run/node/attempt/tool/input intent');
       requireValue(Number.isFinite(Date.parse(receipt.started_at)) && Number.isFinite(Date.parse(receipt.finished_at)) && Date.parse(receipt.finished_at) >= Date.parse(receipt.started_at) && receipt.duration_ms >= 0, 'HOST_TOOL_RECEIPT', 'Host receipt timestamps are inconsistent');
+      // Reject conflicting replay before reading its artifact. Exact replay
+      // still verifies durable output integrity before leaving state unchanged.
+      if (host.receipt) requireValue(canonicalJSON(host.receipt) === canonicalJSON(receipt), 'HOST_TOOL_CONFLICT', 'Host tool receipt differs from the prior exact receipt');
+      else requireValue(host.phase === 'intent', 'HOST_TOOL_INTENT_MISSING', 'Host receipt needs an exact prior intent');
       if (receipt.status === 'succeeded') {
         requireValue(receipt.output_ref.artifact === `executor-${attempt_id}-${receipt.output_ref.sha256}.json`, 'HOST_TOOL_RECEIPT', 'Host output reference must use the exact executor-result artifact identity');
         const stored = await this.runs.readExecutorResult(runId, attempt_id, receipt.output_ref.sha256);
         requireValue(stored?.kind === 'host_tool_output' && digest(canonicalJSON(stored.output)) === receipt.output_sha256, 'HOST_TOOL_OUTPUT_CORRUPT', 'Durable host output differs from its receipt digest');
       }
-      if (host.receipt) { requireValue(canonicalJSON(host.receipt) === canonicalJSON(receipt), 'HOST_TOOL_CONFLICT', 'Host tool receipt differs from the prior exact receipt'); return; }
+      if (host.receipt) return;
       host.receipt = structuredClone(receipt); host.phase = 'received'; touch(state);
     });
     return publicRun(result);
