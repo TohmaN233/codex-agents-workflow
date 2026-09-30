@@ -28,6 +28,8 @@ These are two concrete case studies, not a promise that every Workflow saves tok
 
 ### Experiment 1: four simple tasks, with every semantic node running as Main
 
+The tasks and original Skills come from [SkillsBench](https://github.com/benchflow-ai/skillsbench). The [experiment report](docs/EXPERIMENT_RESULTS.md#skill-来源) lists the actual Skill bundles and links to the version used in the experiment.
+
 The Wyckoff-position, earthquake-plate, lake-warming, and video-silence tasks compared:
 
 - `N-main`: Main runs directly, with neither Skill nor Workflow.
@@ -46,7 +48,7 @@ At identical measured quality, `W-main` used **45.5% fewer tokens** than `S-main
 
 ### Experiment 2: a 31-card Zenonzard implementation with multiple agents
 
-Zenonzard was a longer code-production task. The Workflow assigned work across Sol and Luna, then applied a strict card-by-card semantic review.
+This experiment used the card-writing Skill from the author's own [ZZ-Project](https://github.com/TohmaN233/ZZ-Project), a project to revive ZENONZARD. The Workflow assigned work across Sol and Luna, then applied a strict card-by-card semantic review.
 
 | Implementation | Valid-result tokens | API-equivalent cost | Strict semantic pass |
 | --- | ---: | ---: | ---: |

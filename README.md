@@ -27,6 +27,8 @@ Codex Agents Workflow 把这些职责拆开：Workflow 描述语义步骤和依�
 
 ### 实验一：四个简单任务，全部语义节点都使用 Main
 
+四个任务及原始 Skill 资源来自 [SkillsBench](https://github.com/benchflow-ai/skillsbench)，实际 Skill 组合与固定版本的原始链接见[实验报告](docs/EXPERIMENT_RESULTS.md#skill-来源)。
+
 Wyckoff 晶位分析、地震板块计算、湖泊升温归因和视频静音移除分别比较了：
 
 - `N-main`：Main 直接执行，没有 Skill，也没有 Workflow。
@@ -47,7 +49,7 @@ Wyckoff 晶位分析、地震板块计算、湖泊升温归因和视频静音移
 
 ### 实验二：Zenonzard 31 卡，使用多 Agent 完成长流程
 
-Zenonzard 是更接近真实项目的代码实现任务。Workflow 使用 Sol 与 Luna 分工，并对 31 张卡执行逐卡严格语意审查。
+本实验使用作者自行开发、用于复活 ZENONZARD 的 [ZZ-Project](https://github.com/TohmaN233/ZZ-Project) 项目所用的写卡 Skill。Workflow 使用 Sol 与 Luna 分工，并对 31 张卡执行逐卡严格语意审查。
 
 
 | 实现       | 有效结果 Token | API 等价成本    | 严格语意通过            |

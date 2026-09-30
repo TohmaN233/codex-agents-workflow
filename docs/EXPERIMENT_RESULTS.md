@@ -1,5 +1,16 @@
 # No Skill / Skill / Workflow 实验报告
 
+## Skill 来源
+
+四个简单任务及其原始 Skill 资源来自 [SkillsBench](https://github.com/benchflow-ai/skillsbench)。以下链接指向实验使用的固定版本；部分任务使用多个 Skill，按实际组合列出。
+
+| 任务 | 使用的 Skill | 原始参考 |
+| --- | --- | --- |
+| Wyckoff 晶位分析 | `pymatgen`、`sympy` | [晶位分析 Skill 目录](https://github.com/benchflow-ai/skillsbench/tree/b63b7b2850226b6aa4fb5929a8c1ac7bc4d9a6af/tasks/crystallographic-wyckoff-position-analysis/environment/skills) |
+| 地震板块计算 | `geospatial-analysis` | [地理空间分析 SKILL.md](https://github.com/benchflow-ai/skillsbench/blob/b63b7b2850226b6aa4fb5929a8c1ac7bc4d9a6af/tasks/earthquake-plate-calculation/environment/skills/geospatial-analysis/SKILL.md) |
+| 湖泊升温归因 | `trend-analysis`、`pca-decomposition`、`contribution-analysis`、`meteorology-driver-classification` | [湖泊升温归因 Skill 目录](https://github.com/benchflow-ai/skillsbench/tree/b63b7b2850226b6aa4fb5929a8c1ac7bc4d9a6af/tasks/lake-warming-attribution/environment/skills) |
+| 视频静音移除 | `audio-extractor`、`energy-calculator`、`silence-detector`、`pause-detector`、`segment-combiner`、`video-processor`、`report-generator` | [视频静音移除 Skill 目录](https://github.com/benchflow-ai/skillsbench/tree/b63b7b2850226b6aa4fb5929a8c1ac7bc4d9a6af/tasks/video-silence-remover/environment/skills) |
+
 ## 组别定义
 
 | 缩写 | 完整名称 | 实验条件 |
@@ -53,6 +64,8 @@ W-main 相比 S-main 少 **45.5%** token，平均得分和严格通过数相同�
 四个任务中，W-main token 均低于 N-main 和 S-main。W-main 与 S-main 的四项质量结果相同；地震 Workflow 为 8/8，严格通过。视频两者均为 8/9，未严格通过。
 
 ## Zenonzard 31 卡
+
+本实验使用作者自行开发、用于复活 ZENONZARD 的 [ZZ-Project](https://github.com/TohmaN233/ZZ-Project) 项目所用的写卡 Skill，并比较其 Skill 执行与转换后 Workflow 的 31 卡实现。
 
 ### 有效结果 Token 与 API 等价成本
 
