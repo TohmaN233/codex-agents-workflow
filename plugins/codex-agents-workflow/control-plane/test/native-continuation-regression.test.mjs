@@ -315,18 +315,20 @@ test('model-facing capped fan-out releases and journals one complete concurrency
   assert.equal((await f.service.call('get', binding)).nodes.worker.status, 'succeeded');
 });
 
-test('31-item model-facing fan-out refills only the completed slot and never reissues accepted partitions', async t => {
-  const jobs=Array.from({length:31},(_,index)=>index),waiters=[],observerSignals=[];
-  const f=await fixture(t,ids=>new Promise(resolve=>{waiters.push({ids:[...ids],resolve});for(const signal of observerSignals.splice(0))signal();}));
+test('31-item model-facing fan-out refills only the completed slot and never reissues accepted partitions', {timeout:30_000}, async t => {
+  const jobs=Array.from({length:31},(_,index)=>index),waiters=[];
+  const observerEntries=Array.from({length:4},()=>deferred());
+  const f=await fixture(t,ids=>new Promise(resolve=>{
+    const waiter={ids:[...ids],resolve};waiters.push(waiter);
+    assert(waiters.length<=observerEntries.length,'Host must not observe an accepted partition again');
+    observerEntries[waiters.length-1].resolve(waiter);
+  }));
   const {binding}=await startRun(f,definition('native-model-rolling-window','capped-two'),{jobs});
   const agentByIndex=new Map();
-  const waitForObserver=async count=>{
-    if(waiters.length<count)await Promise.race([
-      new Promise(resolve=>observerSignals.push(resolve)),
-      new Promise(resolve=>setTimeout(resolve,1000)),
-    ]);
-    assert.equal(waiters.length>=count,true,'Host observer did not enter the expected mechanical wait');
-  };
+  const waitForObserver=(count,operation)=>Promise.race([
+    observerEntries[count-1].promise,
+    operation.then(()=>{throw new Error('Host operation completed before entering its expected observer wait');}),
+  ]);
   const result=index=>({status:'completed',agent_id:agentByIndex.get(index),turn_id:`turn-child-${index}`,
     result:jobs.slice(index*10,Math.min(jobs.length,(index+1)*10))});
 
@@ -337,18 +339,18 @@ test('31-item model-facing fan-out refills only the completed slot and never rei
   assert.deepEqual((await f.service.call('get',binding)).nodes.worker.attempts[0].native_agents??{},{});
 
   const firstWindow=f.service.call('native_spawned_batch',{}, MODEL_REQUEST);
-  await waitForObserver(1);assert.deepEqual(waiters[0].ids,[agentByIndex.get(0),agentByIndex.get(1)]);waiters[0].resolve(result(0));
+  await waitForObserver(1,firstWindow);assert.deepEqual(waiters[0].ids,[agentByIndex.get(0),agentByIndex.get(1)]);waiters[0].resolve(result(0));
   const refillTwo=await firstWindow;assert.deepEqual(refillTwo.packets.map(packet=>packet.index),[2]);
   agentByIndex.set(2,`/root/${refillTwo.packets[0].spawn_config.task_name}`);
 
   const secondWindow=f.service.call('native_spawned_batch',{}, MODEL_REQUEST);
-  await waitForObserver(2);assert.deepEqual(waiters[1].ids,[agentByIndex.get(1),agentByIndex.get(2)]);waiters[1].resolve(result(1));
+  await waitForObserver(2,secondWindow);assert.deepEqual(waiters[1].ids,[agentByIndex.get(1),agentByIndex.get(2)]);waiters[1].resolve(result(1));
   const refillThree=await secondWindow;assert.deepEqual(refillThree.packets.map(packet=>packet.index),[3]);
   agentByIndex.set(3,`/root/${refillThree.packets[0].spawn_config.task_name}`);
 
   const finalWindow=f.service.call('native_spawned_batch',{}, MODEL_REQUEST);
-  await waitForObserver(3);assert.deepEqual(waiters[2].ids,[agentByIndex.get(2),agentByIndex.get(3)]);waiters[2].resolve(result(2));
-  await waitForObserver(4);assert.deepEqual(waiters[3].ids,[agentByIndex.get(3)]);waiters[3].resolve(result(3));
+  await waitForObserver(3,finalWindow);assert.deepEqual(waiters[2].ids,[agentByIndex.get(2),agentByIndex.get(3)]);waiters[2].resolve(result(2));
+  await waitForObserver(4,finalWindow);assert.deepEqual(waiters[3].ids,[agentByIndex.get(3)]);waiters[3].resolve(result(3));
   const completed=await finalWindow;
   assert.equal(completed.next_action,'workflow_native_next');
   const state=await f.service.call('get',binding);
