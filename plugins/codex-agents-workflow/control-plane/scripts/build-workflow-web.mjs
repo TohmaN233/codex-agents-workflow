@@ -46,9 +46,11 @@ function outputFor(result, suffix) {
 const workflowJs = outputFor(workflowBuild, '/web/workflows.js');
 const workflowCss = outputFor(workflowBuild, '/web/workflows.css');
 const appClientJs = outputFor(appClientBuild, '/web/app-client.js');
-const settingsHtml = await readFile(join(root, 'web', 'index.html'), 'utf8');
-const settingsCss = await readFile(join(root, 'web', 'styles.css'), 'utf8');
-const workflowHtml = await readFile(join(root, 'web', 'workflows.html'), 'utf8');
+// Git checkout line endings vary by platform. Packaged resources must not.
+const readTextSource = async name => (await readFile(join(root, 'web', name), 'utf8')).replace(/\r\n/g, '\n');
+const settingsHtml = await readTextSource('index.html');
+const settingsCss = await readTextSource('styles.css');
+const workflowHtml = await readTextSource('workflows.html');
 const settingsBody = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(settingsHtml)?.[1];
 if (!settingsBody) throw new Error('Settings HTML has no body element.');
 if (!workflowHtml.includes('<div id="workflow-shell"><div id="root"></div></div><div id="settings-shell" hidden></div>')) {
