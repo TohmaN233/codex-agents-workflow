@@ -892,6 +892,8 @@ test('uncapped parallel incremental partitions continue their recorded children,
     const state=await f.service.call('get',binding);
     if(state.nodes.worker.status==='running'){
       const attempt=state.nodes.worker.attempts[0],agentId=ids[0];
+      assert.notEqual(attempt.native_pending_followup?.followup_kind,'incremental',
+        'The Host must resolve a pending incremental continuation before observing the old Agent turn again');
       const slot=Object.entries(attempt.native_agents??{}).find(([,id])=>id===agentId)?.[0];
       assert.notEqual(slot,undefined,'Observer must receive a journaled worker Agent');
       const assigned=jobs.slice(Number(slot)*2,Number(slot)*2+2);
@@ -939,6 +941,27 @@ test('uncapped parallel incremental partitions continue their recorded children,
 
   const continuations=[];
   let next=await f.service.call('native_next',binding);
+  assert.equal(next.next_action,'continue_recorded_agent');
+  const firstContinuation={index:next.index,item_index:next.item_index,agent_id:next.agent_id,
+    accepted_item_indices:next.accepted_item_indices};
+  const recorded=await f.service.call('get',binding);
+  assert.deepEqual(recorded.nodes.worker.attempts[0].native_item_results[0],
+    {agent_id:'uncapped-incremental-child-0',result:[0],turn_id:'uncapped-incremental-child-0-turn-0'});
+  assert.deepEqual(recorded.nodes.worker.attempts[0].native_rejected_turns??{},{});
+  assert.equal(observed.length,1);
+  const repeated=await f.service.call('native_next',binding);
+  assert.equal(repeated.next_action,'continue_recorded_agent');
+  assert.equal(repeated.agent_id,next.agent_id);
+  assert.equal(repeated.item_index,next.item_index);
+  assert.deepEqual(repeated.followup_config,next.followup_config);
+  assert.deepEqual(repeated.accepted_item_indices,next.accepted_item_indices);
+  const stillPending=await f.service.call('get',binding);
+  assert.equal(Object.keys(stillPending.nodes.worker.attempts[0].native_item_results).length,1);
+  assert.deepEqual(stillPending.nodes.worker.attempts[0].native_rejected_turns??{},{});
+  assert.equal(observed.length,1,'Repeating native_next must not re-observe or accept the old turn');
+  continuations.push(firstContinuation);
+  await f.service.call('native_followed_up',next.next_action_args);
+  next=await f.service.call('native_next',binding);
   while(next.next_action==='continue_recorded_agent'){
     continuations.push({index:next.index,item_index:next.item_index,agent_id:next.agent_id,
       accepted_item_indices:next.accepted_item_indices});
