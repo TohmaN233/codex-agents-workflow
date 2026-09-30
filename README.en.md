@@ -170,7 +170,7 @@ Common entry points:
 | --- | --- |
 | Native Codex Providers | Enabled |
 | External Providers | Disabled |
-| Cross-review Role | Disabled; can be enabled independently |
+| Cross-review Role | Uses Grok; Role and Provider are disabled by default and enabled separately |
 | GPT reviewer Role | Disabled; reuses the `chatgpt-web-pro` Provider |
 | Built-in Workflows | Skill to Workflow, Build Workflow |
 | Math / Zenonzard / video-use | Optional installs |

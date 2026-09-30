@@ -79,7 +79,7 @@ Click a Role card in the library to change:
 - read-only or bounded-write access;
 - behavior instructions.
 
-Cross-review and GPT reviewer remain disabled until the user enables them. GPT reviewer also requires its bound `chatgpt-web-pro` Provider to be enabled before a Workflow or direct Role assignment can use it.
+Cross-review binds to `grok-local`; GPT reviewer binds to `chatgpt-web-pro`. Both Roles and their Providers are disabled in release defaults. Enable the Role and its corresponding Provider before using it.
 
 ## 4. Build a Workflow from a brief
 

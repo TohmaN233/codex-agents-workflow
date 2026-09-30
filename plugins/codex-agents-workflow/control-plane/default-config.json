@@ -232,7 +232,7 @@
         {
           "id": "review",
           "role": "reviewer",
-          "provider_id": "native-sol",
+          "provider_id": "grok-local",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nAct as a fresh final reviewer. Remain strictly read-only. Do not edit files, implement fixes, or broaden scope.\n\nSTATED GOAL\n{{task}}\n\nACCUMULATED CHANGE SET OR REVIEW PACKET\n{{context}}\n\nINTERFACES AND CONSTRAINTS\n{{constraints}}\n\nPRIMARY VERIFICATION EVIDENCE\n{{verification}}\n\nREVIEW\nJudge correctness, completeness, regressions, scope discipline, interface preservation, test adequacy, and material risk. Findings must cite precise evidence.\n\nRETURN\nVERDICT: ship | fix-first | rethink\nREASON: decisive evidence-based reason\nBLOCKING FINDINGS: precise locations and required fixes, or none\nNON-BLOCKING RISKS: concise list, or none\nSMALLEST NEXT CHECK: one discriminating validation step\nRESIDUAL RISK: most important remaining risk, or none"

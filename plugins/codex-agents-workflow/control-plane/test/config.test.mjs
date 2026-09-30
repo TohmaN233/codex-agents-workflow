@@ -232,7 +232,7 @@ test('bundled defaults use delegate for light work and full for difficult work',
   ]);
   const review = config.task_types.find((taskType) => taskType.id === 'cross-review');
   assert.deepEqual(review.stages.map((stage) => [stage.id, stage.role, stage.provider_id]), [
-    ['review', 'reviewer', 'native-sol'],
+    ['review', 'reviewer', 'grok-local'],
   ]);
   const analysis = config.task_types.find((taskType) => taskType.id === 'repository-analysis');
   assert.deepEqual(analysis.stages.map((stage) => [stage.role, stage.access]), [
@@ -507,6 +507,7 @@ test('version-4 customized difficult workflow remains unchanged when it is not t
 test('version-4 migration never injects a reviewer binding absent from a customized provider set', async () => {
   const { configPath, config } = await fixture();
   config.version = 4;
+  config.task_types.find(taskType => taskType.id === 'cross-review').stages[0].provider_id = 'native-sol';
   const reviewer = config.providers.find((provider) => provider.id === 'native-sol');
   reviewer.id = 'my-reviewer';
   for (const taskType of config.task_types) {

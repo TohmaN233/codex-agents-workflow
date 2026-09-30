@@ -180,7 +180,7 @@ sh plugins/codex-agents-workflow/scripts/open-control-console.sh
 | ---------------------------- | -------------------------------- |
 | 原生 Codex Provider            | 开启                               |
 | 外部 Provider                  | 关闭                               |
-| Cross-review Role            | 关闭，可单独启用                         |
+| Cross-review Role            | 使用 Grok；Role 与 Provider 默认关闭，可分别启用 |
 | GPT reviewer Role            | 关闭；复用 `chatgpt-web-pro` Provider |
 | 内置 Workflow                  | Skill to Workflow、Build Workflow |
 | Math / Zenonzard / video-use | 可选安装                             |

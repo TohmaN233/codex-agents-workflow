@@ -79,7 +79,7 @@ Main 沿用启动聊天当前使用的模型和思考强度；独立从工作台
 - 只读或受限写入权限；
 - Role 的行为说明。
 
-Cross-review 与 GPT reviewer 默认关闭。GPT reviewer 还要求绑定的 `chatgpt-web-pro` Provider 已启用；两者都满足后，Workflow 或直接 Role 分配才能使用它。
+Cross-review 默认绑定 `grok-local`，GPT reviewer 默认绑定 `chatgpt-web-pro`。这两个 Role 及其 Provider 在发布配置中默认关闭；分别启用 Role 和对应 Provider 后才可调用。
 
 ## 4. 从 brief 创建 Workflow
 

@@ -25,6 +25,7 @@
 ## Models and roles
 
 - Routine bounded implementation uses GPT-6 Luna / max. Complex implementation, repository analysis, and independent review use GPT-6.1 Sol / high. Planning, brainstorming, and focused problem solving use GPT-6 Astra / medium.
+- Optional Cross-review binds to `grok-local`. Its Role and Grok Provider are disabled in release defaults; local user settings remain independent.
 - The built-in native Provider registry has exactly three model connections: `native-luna` (GPT-6 Luna / max), `native-sol` (GPT-6.1 Sol / high), and `native-astra` (GPT-6 Astra / medium). Planning, implementation, solving, and review behavior belongs to editable Roles and Workflow nodes rather than duplicate Providers.
 - Retired purpose-specific Luna, Terra, Astra, and generation-reviewer Provider IDs are accepted only by configuration and stored-Workflow migration boundaries and are immediately canonicalized. Runtime validation rejects them.
 - Workbench Roles are the only plugin Role registry. When no Workflow matches, Main automatically selects an enabled Role, compiles its current Provider adapter, and assigns the helper without requiring the user to name it.
