@@ -685,9 +685,13 @@ export class WorkflowService {
       const index=Number(slot),assigned=assignedFanoutIndices(plan,definition.fanout,index);
       const accepted=assigned.filter(itemIndex=>Boolean(attempt.native_item_results?.[itemIndex]));
       const nextItem=assigned.find(itemIndex=>!attempt.native_item_results?.[itemIndex]);
-      const repaired=Number.isSafeInteger(nextItem)&&Object.values(attempt.native_repair_followups??{})
-        .some(receipt=>receipt.agent_id===agentId&&receipt.item_indices?.includes(nextItem));
-      if(accepted.length&&Number.isSafeInteger(nextItem)&&!attempt.native_followups?.[nextItem]&&!repaired)
+      // Repair receipts snapshot the full unresolved tail; incremental packets deliver only its first item.
+      const rejectionCount=attempt.native_rejected_turns?.[index]?.count;
+      const repairReceipt=Number.isSafeInteger(rejectionCount)
+        ?attempt.native_repair_followups?.[`${index}:${rejectionCount}`]:null;
+      const repairAwaitingObservation=Number.isSafeInteger(nextItem)&&repairReceipt?.agent_id===agentId&&
+        repairReceipt.item_indices?.[0]===nextItem;
+      if(accepted.length&&Number.isSafeInteger(nextItem)&&!attempt.native_followups?.[nextItem]&&!repairAwaitingObservation)
         return this.#incrementalNativeContinuation(runtime,args,{record,definition,attempt,binding,index,agentId,
           turnId:attempt.native_latest_turns?.[index]?.turn_id,status:'native_item_continuation_pending',maxPromptChars,executor});
     }
