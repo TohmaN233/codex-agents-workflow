@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { loadConfig, saveConfig, configRevision, resolveAuditPath } from '../lib/config.mjs';
 import { WorkflowService } from '../lib/workflow-service.mjs';
 import { ConnectorTaskStore } from '../connectors/task-store.mjs';
-import { connectorRegistryFor } from '../connectors/registry.mjs';
+import { ConnectorRegistry, connectorRegistryFor } from '../connectors/registry.mjs';
 import { DEFAULT_CONFIG_PATH, handleRpc, startConsole, stopConsole } from '../server.mjs';
 import { SkillInventory } from '../lib/skill-import/inventory.mjs';
 import { workflowToolDefinitions, HOST_ONLY_WORKFLOW_OPERATIONS } from '../lib/workflow-tools.mjs';
@@ -80,6 +80,85 @@ test('connector Role launch retains write scope/approval and rejects disabled co
   await saveConfig(config,{configPath:f.configPath});
   await assert.rejects(f.service.call('start_role_connector',args),{code:'CONTROL_DISABLED'});
   assert.equal(delivered.length,1);
+});
+
+async function publishedConnectorRole(t, { access = 'bounded_write', approval = false, pathScope, providerApproval = false } = {}) {
+  const delivered = [];
+  const f = await fixture(t, { configure: config => {
+    const provider = config.providers.find(p => p.id === 'grok-local');
+    provider.enabled = true; provider.requires_user_approval = providerApproval;
+  } });
+  const registry = new ConnectorRegistry({ configPath: f.configPath, env: {} });
+  t.mock.method(registry.grok, 'start', async params => {
+    params.assertActive(); delivered.push(params);
+    return { task_id: 'published-role-task', state: 'running' };
+  });
+  f.service.registry = registry;
+  await f.migrate();
+  const draft = await f.service.call('build_workflow', { workflow_id: 'published-connector-policy', name: 'Published connector policy',
+    brief: 'Perform the assigned task within its configured scope.', provider_id: 'grok-local', template_kind: 'role', access });
+  const workflow = structuredClone(draft.workflow), node = workflow.nodes.find(n => n.id === 'role');
+  node.approval.required = approval;
+  if (pathScope !== undefined) node.path_scope = pathScope;
+  const saved = await f.service.call('save', { workflow_id: workflow.id, expected_revision: draft.revision_hash, workflow }, { human: true });
+  const ready = await f.service.call('publish', { workflow_id: workflow.id, expected_revision: saved.revision_hash }, { human: true });
+  assert.equal(ready.workflow.status, 'ready');
+  const args = { workflow_id: ready.workflow.id, revision_hash: ready.revision_hash, task: 'Perform the configured task.', workspace: f.workspace };
+  return { ...f, ready, args, delivered };
+}
+
+test('published connector Role approval and fixed paths reach actual registry admission and durable audit', async t => {
+  const f = await publishedConnectorRole(t, { approval: true, pathScope: ['src/allowed'] });
+  const args = { ...f.args, allowed_paths: ['src/allowed/parser.mjs'] };
+  const profile = await f.service.call('role_template', args);
+  assert.equal(profile.adapter.requires_user_approval, true);
+  assert.deepEqual(profile.path_scope, ['src/allowed']);
+  await assert.rejects(f.service.call('start_role_connector', args), { code: 'APPROVAL_REQUIRED' });
+  assert.equal(f.delivered.length, 0);
+  for (const allowed_paths of [['src/outside-role'], ['src'], ['.'], ['src/allowed', 'src/outside-role']]) {
+    await assert.rejects(f.service.call('start_role_connector', { ...args, user_approved: true, allowed_paths }), { code: 'ROLE_PATH_SCOPE' });
+  }
+  assert.equal(f.delivered.length, 0);
+  await f.service.call('start_role_connector', { ...args, user_approved: true });
+  assert.equal(f.delivered.length, 1);
+  const delivered = f.delivered[0];
+  assert.equal(delivered.provider.id, 'grok-local'); assert.equal(delivered.provider.requires_user_approval, false);
+  assert.equal(delivered.stage.requires_user_approval, true); assert.equal(delivered.stage.read_only, false);
+  assert.deepEqual(delivered.allowedPaths, ['src/allowed/parser.mjs']);
+  await f.service.call('start_role_connector', { ...args, user_approved: true,
+    allowed_paths: [join(f.workspace, 'src', 'allowed', 'parser.mjs')] });
+  assert.equal(f.delivered.length, 2);
+  assert.deepEqual(f.delivered[1].allowedPaths, ['src/allowed/parser.mjs']);
+  assert.equal(delivered.prompt, profile.instructions); assert.equal(delivered.taskTypeId, f.ready.workflow.id);
+  assert.equal(profile.revision_hash, f.ready.revision_hash); assert.equal(profile.provider_id, 'grok-local');
+  const events = (await readFile(resolveAuditPath(f.configPath), 'utf8')).trim().split('\n').map(JSON.parse);
+  const audit = events.find(event => event.event === 'role-connector-start');
+  assert.equal(audit.role_id, f.ready.workflow.id); assert.equal(audit.revision_hash, f.ready.revision_hash);
+  assert.equal(audit.access, 'bounded_write'); assert.equal(audit.provider_id, 'grok-local'); assert.equal(audit.task_id, 'published-role-task');
+  assert.equal((await f.service.call('runs')).length, 0);
+});
+
+test('published connector Roles preserve unconfigured, fixed-scope, read-only and Provider approval behavior', async t => {
+  for (const options of [
+    { access: 'read_only' },
+    { access: 'bounded_write' },
+    { access: 'bounded_write', pathScope: ['src/allowed'] },
+    { access: 'read_only', approval: true },
+    { access: 'bounded_write', providerApproval: true },
+  ]) await t.test(JSON.stringify(options), async child => {
+    const f = await publishedConnectorRole(child, options);
+    const allowed_paths = options.access === 'read_only' ? undefined : [options.pathScope ? 'src/allowed/result.txt' : 'unscoped/result.txt'];
+    const args = { ...f.args, ...(allowed_paths ? { allowed_paths } : {}) };
+    const approvalRequired = options.approval === true || options.providerApproval === true;
+    const profile = await f.service.call('role_template', args);
+    assert.equal(profile.adapter.requires_user_approval, approvalRequired);
+    if (approvalRequired) await assert.rejects(f.service.call('start_role_connector', args), { code: 'APPROVAL_REQUIRED' });
+    await f.service.call('start_role_connector', { ...args, user_approved: approvalRequired });
+    assert.equal(f.delivered.length, 1); assert.equal(f.delivered[0].stage.read_only, options.access === 'read_only');
+    assert.deepEqual(f.delivered[0].allowedPaths, allowed_paths ?? []);
+    const audit = JSON.parse((await readFile(resolveAuditPath(f.configPath), 'utf8')).trim().split('\n').at(-1));
+    assert.equal(audit.role_id, f.ready.workflow.id); assert.equal(audit.revision_hash, f.ready.revision_hash); assert.equal(audit.access, options.access);
+  });
 });
 import { nativeRejectedTurnHistory } from '../lib/workflow-runtime.mjs';
 import { readHostMainWorker, watchHostMainAuthority, writeHostMainWorker } from '../lib/execution/host-main-worker.mjs';

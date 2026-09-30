@@ -47,7 +47,8 @@ import { readEditorResource, writeEditorResource, publishEditorWorkflow, publish
 import { codexQualification, qualifiedStrictSettings } from './execution/strict-config.mjs';
 import { adoptRunTree, conversationControlRecoveryRequest, controllerAttempt, reattachAttempt } from './workflow-recovery.mjs';
 import { childIdentity } from './workflow-subworkflow.mjs';
-import { nodePermissions, leaseToken } from './workflow-execution-envelope.mjs';
+import { nodePermissions, runPermissions, leaseToken } from './workflow-execution-envelope.mjs';
+import { intersectBoundaries } from './workflow-bindings.mjs';
 import { effectiveSkillPolicy } from './workflow-reference-schema.mjs';
 import { nodeWorkspace } from './parallel/workspace.mjs';
 import { skillSourceStatus } from './skill-import/source-status.mjs';
@@ -166,12 +167,28 @@ function roleProviderAvailable(provider,access='read_only'){
 function roleProviderModel(provider){
   return provider?.config?.model??provider?.config?.model_label??null;
 }
-function compiledRoleProvider(provider,access,options={}){
+function roleExecutionPolicy(node){
+  return {access:node.access,approval:{required:node.approval?.required===true||node.requires_user_approval===true},
+    path_scope:structuredClone(node.path_scope??null)};
+}
+function compiledRoleProvider(provider,policy,options={}){
   if(!provider)return {provider_kind:null,adapter:null,agent_type:'default',model:null,reasoning_effort:null};
-  const adapter=buildProviderAdapter(provider,{access,requires_user_approval:false},options);
+  const adapter=buildProviderAdapter(provider,{access:policy.access,requires_user_approval:policy.approval.required},options);
   if(adapter.execution==='builtin_connector')adapter.operations.start='workflow_start_role_connector';
   return {provider_kind:provider.kind,adapter,agent_type:adapter.agent_type??null,
     model:roleProviderModel(provider),reasoning_effort:provider.config?.reasoning_effort??null};
+}
+function roleConnectorPermissions(profile,args){
+  const permissions=runPermissions({workspace:args.workspace,access:profile.access,
+    allowed_paths:profile.access==='read_only'?[]:args.allowed_paths??[]});
+  if(profile.access==='bounded_write'&&Array.isArray(profile.path_scope)){
+    const effective=intersectBoundaries(profile.path_scope,permissions.allowed_paths);
+    const key=path=>process.platform==='win32'?path.toLowerCase():path;
+    requireValue(permissions.allowed_paths.every(path=>effective.some(boundary=>key(boundary)===key(path))),
+      'ROLE_PATH_SCOPE','Caller write boundaries must remain inside the published Role path scope');
+    permissions.allowed_paths=effective;
+  }
+  return permissions;
 }
 async function bundledRoles(defaultConfigPath,providers){
   return (await bundledRoleDefinitions(defaultConfigPath,providers)).filter(entry=>roleProviderSupports(entry.provider,entry.stage.access));
@@ -210,8 +227,9 @@ function storedRoleProfile(pack,providers,args,{id=pack.workflow.id,instructions
   const instructions=pack.workflow.role_prompt_mode==='append_context'
     ?directRolePrompt(instructions_override??node.prompt_template,args)
     :renderTemplate(node.prompt_template,{task:args.task,context:args.context,constraints:args.constraints,verification:args.verification,task_type_id:id,stage_id:node.id,provider_name:provider?.name});
-  return {id,source_workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,template_kind:'role',role:node.role,access:node.access,
-    provider_id:provider?.id??null,...compiledRoleProvider(provider,node.access,providerOptions),instructions};
+  const policy=roleExecutionPolicy(node);
+  return {id,source_workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,template_kind:'role',role:node.role,...policy,
+    provider_id:provider?.id??null,...compiledRoleProvider(provider,policy,providerOptions),instructions};
 }
 async function activeRoleProfiles(defaultConfigPath,providers,store){
   const packs=await store.list(),customizations=builtinRoleCustomizations(packs),profiles=[];
@@ -898,8 +916,9 @@ export class WorkflowService {
           requireValue(profile.adapter?.execution==='builtin_connector','ROLE_CONNECTOR_REQUIRED','Selected Role must use a built-in connector');
           const provider=config.providers.find(item=>item.id===profile.provider_id);
           requireValue(typeof args.workspace==='string'&&isAbsolute(args.workspace),'ROLE_WORKSPACE','Role connector needs an absolute existing Git workspace');
-          const result=await this.registry.start({provider,stage:{id:'role',read_only:profile.access==='read_only',requires_user_approval:false},
-            prompt:profile.instructions,workspace:args.workspace,taskTypeId:profile.id,stageId:'role',allowedPaths:args.allowed_paths,
+          const permissions=roleConnectorPermissions(profile,args);
+          const result=await this.registry.start({provider,stage:{id:'role',read_only:profile.access==='read_only',requires_user_approval:profile.approval.required},
+            prompt:profile.instructions,workspace:permissions.workspace,taskTypeId:profile.id,stageId:'role',allowedPaths:permissions.allowed_paths,
             userApproved:args.user_approved===true,assertActive:()=>{requireValue(!signal?.aborted,'ROLE_START_CANCELLED','Role launch was cancelled');}});
           await appendAuditEvent(this.configPath,{event:'role-connector-start',role_id:profile.id,revision_hash:profile.revision_hash,
             provider_id:profile.provider_id,access:profile.access,task_id:result.task_id,outcome:'ok'},{effectCommitted:true});
@@ -920,8 +939,9 @@ export class WorkflowService {
           requireValue(!args.revision_hash||args.revision_hash===entry.revision_hash,'ROLE_REVISION','Built-in role revision has changed');
           const {item,stage,provider,id,revision_hash}=entry;
           requireValue(roleProviderAvailable(provider,stage.access),'ROLE_PROVIDER_UNAVAILABLE','Pinned Role needs an enabled compatible Provider');
-          return deliver({id,revision_hash,template_kind:'role',role:stage.role,access:stage.access,provider_id:provider.id,
-            ...compiledRoleProvider(provider,stage.access,{env:this.env,allowDirectApi:config.global.allow_direct_api}),
+          const policy=roleExecutionPolicy(stage);
+          return deliver({id,revision_hash,template_kind:'role',role:stage.role,...policy,provider_id:provider.id,
+            ...compiledRoleProvider(provider,policy,{env:this.env,allowDirectApi:config.global.allow_direct_api}),
             instructions:directRolePrompt(item.role_instructions||stage.template,args)});
         }
         const pack=await store.snapshot(args.workflow_id,args.revision_hash);

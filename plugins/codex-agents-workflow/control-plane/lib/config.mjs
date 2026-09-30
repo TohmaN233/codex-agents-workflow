@@ -860,12 +860,19 @@ export function findProvider(config, providerId) {
 }
 
 export async function appendAuditEvent(configPath, event, { effectCommitted = false } = {}) {
+  const revisionHash=event.revision_hash==null?null:text(event.revision_hash,'audit.revision_hash',{required:true,max:64});
+  assert(revisionHash===null||/^[a-f0-9]{64}$/.test(revisionHash),'audit.revision_hash must be a SHA-256 revision');
+  const roleAccess=event.access==null?null:text(event.access,'audit.access',{required:true,max:32});
+  assert(roleAccess===null||STAGE_ACCESS.has(roleAccess),'audit.access must be read_only or bounded_write');
   const safe = {
     at: new Date().toISOString(),
     event: text(event.event, 'audit.event', { required: true, max: 64 }),
     task_type_id: event.task_type_id ? id(event.task_type_id, 'audit.task_type_id') : null,
     stage_id: event.stage_id ? id(event.stage_id, 'audit.stage_id') : null,
     provider_id: event.provider_id ? id(event.provider_id, 'audit.provider_id') : null,
+    role_id: event.role_id ? id(event.role_id, 'audit.role_id') : null,
+    revision_hash: revisionHash,
+    access: roleAccess,
     outcome: text(event.outcome ?? 'ok', 'audit.outcome', { required: true, max: 64 }),
     detail: text(event.detail, 'audit.detail', { max: 1000 }),
     task_id: event.task_id ? id(event.task_id, 'audit.task_id') : null,
