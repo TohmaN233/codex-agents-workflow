@@ -92,4 +92,5 @@ Unavailable tools: read [connection diagnosis](references/connection.md).
 Open requested UI with `codex_agents_workflow_app` or `codex_agents_workflow_settings`;
 views create no Run/thread. Use `codex_agents_workflow_console` for standalone
 requests or unsupported App hosts. Report App errors; no silent console fallback.
-App transport/bootstrap stay out of model/node context. Never invent Run receipts.
+App transport/bootstrap stay out of model/node context. Report the observed error;
+never invent Run receipts or substitute execution.

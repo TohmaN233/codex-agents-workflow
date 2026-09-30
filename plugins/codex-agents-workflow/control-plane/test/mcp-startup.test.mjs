@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {cp,mkdtemp,mkdir,readFile,rm,writeFile,symlink} from 'node:fs/promises';
+import {cp,mkdtemp,mkdir,readFile,rm,writeFile,symlink,rename} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import readline from 'node:readline';
 import {tmpdir} from './physical-tempdir.mjs';
 import {fileURLToPath} from 'node:url';
 import {resolve,dirname,join,toNamespacedPath} from 'node:path';
@@ -25,8 +28,28 @@ async function fixture(t,{aliasHome=false}={}) {
  // that entry-point resolution itself is unsupported under a Windows namespaced cwd.
  const registryCli=join(rootDir,'registry-cli.cjs');
  await writeFile(registryCli,`if(process.argv[2]==='list' && process.argv[3]==='--marketplace' && process.argv[4]==='codex-agents-workflow' && process.argv[5]==='--json'){process.stdout.write(JSON.stringify({installed:[{pluginId:'codex-agents-workflow@codex-agents-workflow',installed:true,enabled:true,version:${JSON.stringify(version)}}]}));process.exit(0);}\n`);
- return {home,cwd,env:{...process.env,CODEX_HOME:home,HOME:home,USERPROFILE:home,CODEX_CLI_PATH:process.execPath,NODE_OPTIONS:`--require ${JSON.stringify(registryCli)}`}};
+ return {home,cwd,cached,env:{...process.env,CODEX_HOME:home,HOME:home,USERPROFILE:home,CODEX_CLI_PATH:process.execPath,NODE_OPTIONS:`--require ${JSON.stringify(registryCli)}`}};
 }
+
+test('bootstrap retains a stable cwd so a live MCP process cannot lock the installed version', {timeout:15000},async t=>{
+ let child,closed;
+ t.after(async()=>{if(child){child.kill();await closed;}});
+ const fx=await fixture(t);
+ await writeFile(join(fx.cached,'control-plane/server.mjs'),`process.stdout.write(JSON.stringify({cwd:process.cwd()})+'\\n');process.stdin.resume();`);
+ const manifest=JSON.parse(await readFile(join(root,'.mcp.json'),'utf8'));
+ child=spawn(process.execPath,manifest.mcpServers['codex-agents-workflow'].args,{cwd:fx.cwd,env:fx.env,stdio:['pipe','pipe','pipe'],windowsHide:true});
+ closed=once(child,'close');
+ const lines=readline.createInterface({input:child.stdout});
+ let stderr='';child.stderr.on('data',chunk=>{stderr+=chunk;});
+ const first=await Promise.race([once(lines,'line').then(([line])=>JSON.parse(line)),closed.then(([code])=>{throw new Error(`Bootstrap exited ${code}: ${stderr}`);})]);
+ assert.equal(first.cwd,fx.cwd);
+ assert.equal(child.exitCode,null);
+ const replacement=fx.cached+'-replacement';
+ await rename(fx.cached,replacement);
+ await rename(replacement,fx.cached);
+ assert.equal(child.exitCode,null);
+ lines.close();
+});
 
 test('packaged MCP initializes and exposes execution tools from ordinary and Windows extended paths',async t=>{
  const fx=await fixture(t);

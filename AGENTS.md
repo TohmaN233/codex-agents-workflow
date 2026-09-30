@@ -71,6 +71,7 @@
 - Actual dependency paths and probe evidence live in the Host registry and Run journal. They are never exported in Workflow packages.
 - Export only current content-addressed package format. Validate graph, resources, dependency manifest, revision hash, and package hash before atomic installation.
 - Local plugin installation overwrites the current plugin-owned files and removes retired role files. Do not create backup plugin versions or automatic rollback copies.
+- MCP bootstrap imports the registered absolute entrypoint while retaining the stable configured working directory. Never hold a replaceable plugin version as a process working directory.
 
 ## Permissions and artifacts
 

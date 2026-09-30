@@ -27,7 +27,9 @@ async function boot() {
     // physical entry for argv so server.mjs recognizes itself as the main module.
     const entry=await fs.realpath(path.join(selected.root,'control-plane/server.mjs'));
     await audit({phase:'resolved',version:selected.version,entry});
-    process.chdir(selected.root);process.argv[1]=entry;
+    // Keep the configured stable cwd. Holding a disposable plugin version as
+    // cwd prevents the installer from replacing that directory on Windows.
+    process.argv[1]=entry;
     await import(pathToFileURL(entry).href);
   } catch(error) {
     await audit({phase:'failed',code:error.code??'WORKFLOW_MCP_BOOT_FAILED',message:error.message});
