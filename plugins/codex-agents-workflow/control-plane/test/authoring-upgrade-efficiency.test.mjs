@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './physical-tempdir.mjs';
 import { createHash } from 'node:crypto';
 import { WorkflowStore } from '../lib/workflow-store.mjs';
 import * as authoring from '../lib/authoring/authoring-workflows.mjs';
@@ -16,10 +16,59 @@ const roles=[{id:'builtin-role-repository-analysis',revision_hash:'a'.repeat(64)
 const routingRules={generation:{planner_provider_id:'planner',review_provider_id:'reviewer',max_rounds:2}};
 const promptBaseIdentity=prompt=>({sha256:createHash('sha256').update(prompt).digest('hex'),length:prompt.length});
 
+test('current bundled authoring Host identities refresh without changing configured prompts or Providers', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'authoring-host-identity-refresh-'));
+  t.after(() => rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 }));
+  const store = await new WorkflowStore(root).initialize();
+  const tools = ['read_workflow_resource', 'authoring-graph-assembly', 'authoring-execution-binding', 'authoring-deterministic-validation'];
+  store.validationContext = { providers, roles, host_tools: tools, tools };
+  const previous = {
+    'authoring-graph-assembly': '36767b11957d25aec4c24172c067378a5747f6a61e81f8d76383e747b46df49c',
+    'authoring-execution-binding': 'cb7042b94a55f68645c3f71be741c67e20deeeb4ed2fa703b334cf112b688af5',
+    'authoring-deterministic-validation': '885511b02f8f1f1108b502c5905b8e3080e570e35e0369a17355f6481c3ec39f',
+  };
+  const originals = [];
+  for (const definition of authoring.AUTHORING_WORKFLOWS) {
+    const workflow = authoring.createStoredAuthoringWorkflow(definition, { planner: providers[0], reviewer: providers[1], maxRounds: 2 });
+    for (const contract of workflow.host_tools) contract.identity.sha256 = previous[contract.identity.name];
+    workflow.nodes.find(node => node.id === 'expand').prompt_template += ' User planner policy.';
+    originals.push(await store.create(workflow, { provenance: { kind: 'bundled_authoring_workflow', authoring_workflow_id: definition.id,
+      builtin_contract: definition.contract, builtin_prompt_bases: { planner: promptBaseIdentity(authoring.AUTHORING_PLANNER_PROMPT_V26), reviewer: promptBaseIdentity(authoring.AUTHORING_REVIEW_PROMPT_V21) } } }));
+  }
+  const refreshed = await authoring.ensureStoredAuthoringWorkflows(store, { providers, routingRules });
+  for (const [index, pack] of refreshed.entries()) {
+    authoring.storedAuthoringBindings(pack.workflow, providers);
+    assert.deepEqual(pack.workflow.nodes, originals[index].workflow.nodes);
+    assert.deepEqual(pack.workflow.authoring, originals[index].workflow.authoring);
+    assert.equal(pack.workflow.revision, originals[index].workflow.revision + 1);
+    assert.deepEqual(await store.snapshot(pack.workflow.id, originals[index].revision_hash), originals[index]);
+  }
+  assert.deepEqual((await authoring.ensureStoredAuthoringWorkflows(store, { providers, routingRules })).map(pack => pack.revision_hash), refreshed.map(pack => pack.revision_hash));
+});
+
 async function seedLegacyReady(store,workflow,options){
   store.validate=validateWorkflowShape;
   try{return await store.create(workflow,options);}finally{delete store.validate;}
 }
+
+test('unknown authoring Host implementation remains visible without blocking other built-ins or rewriting its head', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'authoring-host-identity-blocked-'));
+  t.after(() => rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 }));
+  const store = await new WorkflowStore(root).initialize();
+  const tools = ['read_workflow_resource', 'authoring-graph-assembly', 'authoring-execution-binding', 'authoring-deterministic-validation'];
+  store.validationContext = { providers, roles, host_tools: tools, tools };
+  const definition = authoring.AUTHORING_WORKFLOWS[0];
+  const workflow = authoring.createStoredAuthoringWorkflow(definition, { planner: providers[0], reviewer: providers[1], maxRounds: 2 });
+  workflow.host_tools[0].identity.sha256 = 'f'.repeat(64);
+  const original = await store.create(workflow, { provenance: { kind: 'bundled_authoring_workflow', authoring_workflow_id: definition.id } });
+  const packs = await authoring.ensureStoredAuthoringWorkflows(store, { providers, routingRules });
+  const blocked = packs.find(pack => pack.workflow.id === definition.id);
+  assert.equal(blocked.host_tool_identity_issue.code, 'HOST_TOOL_IDENTITY_MIGRATION_UNSUPPORTED');
+  assert.equal(blocked.host_tool_identity_issue.host_tool_id, workflow.host_tools[0].id);
+  assert.deepEqual(await store.snapshot(definition.id), original);
+  for (const pack of packs.filter(pack => pack.workflow.id !== definition.id)) authoring.storedAuthoringBindings(pack.workflow, providers);
+  assert.throws(() => authoring.storedAuthoringBindings(blocked.workflow, providers), { code: 'AUTHORING_WORKFLOW_CONTRACT' });
+});
 
 test('a future bundled authoring contract fails before any downgrade write',async()=>{
   const definition=authoring.AUTHORING_WORKFLOWS[0];

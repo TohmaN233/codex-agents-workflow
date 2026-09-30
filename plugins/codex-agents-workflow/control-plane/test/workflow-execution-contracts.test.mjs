@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from './physical-tempdir.mjs';
 import { WorkflowStore } from '../lib/workflow-store.mjs';
@@ -13,7 +13,9 @@ import { HostToolRunner, hostToolBindingIssues, requireHostToolBindings, validat
 import { initialCostLedger, recordUsage, reserveCost } from '../lib/workflow-cost-ledger.mjs';
 import { validateWorkflowGraph } from '../lib/workflow-validator.mjs';
 import { managedNativeResultSchema, semanticResultSchema, strictAgentOutputSchema, hostNodeTurnSchema, hostNodeTurnResult } from '../lib/execution/host-main-automation.mjs';
-import { managedThreadStartParams } from '../lib/execution/managed-native-session.mjs';
+import { createManagedNativeSession } from '../lib/execution/managed-native-session.mjs';
+import { createWorkflowResourceBroker } from '../lib/execution/workflow-resource-broker.mjs';
+import { digest } from '../lib/workflow-revisions.mjs';
 
 const identity = { name: 'fixture-tool', version: '1', sha256: 'a'.repeat(64) };
 const fixtureProvider = { id: 'fixture-provider', name: 'Fixture', kind: 'openai_compatible', enabled: true, capabilities: { read: true, write: true }, requires_user_approval: false, config: { role: 'implementer' } };
@@ -117,16 +119,62 @@ test('Host node result distinguishes a concrete blocker from a completed semanti
   assert.throws(() => hostNodeTurnResult({ outcome: 'completed', result: null, block_reason: '' }, semantic), { code: 'DATA_INVALID' });
 });
 
-test('managed native sessions inherit normal Codex permissions and retain Workflow resource tools', () => {
-  const dynamicTools = [{ name: 'write_workspace', description: 'write', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }];
-  const params = managedThreadStartParams({ cwd: 'C:/isolated/workspace', model: 'gpt-5.6-luna', access: 'bounded_write', dynamicTools });
-  assert.equal(params.sandbox, undefined);
-  assert.equal(params.approvalPolicy, undefined);
-  assert.equal(params.baseInstructions, undefined);
-  assert.equal(params.environments, undefined);
-  assert.equal(params.ephemeral, false);
-  assert.deepEqual(params.dynamicTools, dynamicTools);
-  assert.notEqual(params.dynamicTools, dynamicTools);
+test('managed thread/start activates exact Run access and retains normal permissions and Workflow resource tools', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'managed-thread-contract-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const binary = join(root, 'fixture-binary'), cwd = join(root, 'workspace'), home = join(root, 'home');
+  await writeFile(binary, 'fixture'); await mkdir(cwd); await mkdir(home);
+  const model = 'fixture-model', resource = { path: 'source/task.md', bytes: Buffer.from('task'), sha256: digest('task') };
+  for (const { access, returnedSandbox } of [
+    { access: 'read_only', returnedSandbox: 'readOnly' },
+    { access: 'bounded_write', returnedSandbox: 'workspaceWrite' },
+    { access: 'read_only', returnedSandbox: 'workspaceWrite' },
+  ]) {
+    const resourceBroker = await createWorkflowResourceBroker({ workspace: cwd, access,
+      allowedPaths: access === 'bounded_write' ? ['.'] : [], resources: [resource], authorize: async () => {}, onOperation: async () => {} });
+    let params, turnStarts = 0;
+    const client = {
+      events: [], initialized() {}, async close() {},
+      async call(method, arguments_) {
+        if (method === 'initialize') return {};
+        if (method === 'account/read') return { account: { type: 'chatgpt' }, requiresOpenaiAuth: true };
+        if (method === 'model/list') return { data: [{ model, supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }] };
+        if (method === 'skills/list') return { data: [{ cwd, skills: [], errors: [] }] };
+        if (method === 'thread/start') {
+          params = arguments_;
+          return { model, modelProvider: 'openai', sandbox: { type: returnedSandbox }, thread: { id: 'fixture-thread' } };
+        }
+        if (method === 'turn/start') {
+          turnStarts++;
+          this.events.push({ method: 'item/completed', params: { threadId: 'fixture-thread', turnId: 'fixture-turn',
+            item: { type: 'agentMessage', phase: 'final_answer', text: '{"done":true}' } } });
+          return { turn: { id: 'fixture-turn' } };
+        }
+        assert.fail(`Unexpected App Server method: ${method}`);
+      },
+      async waitFor() { return { method: 'turn/completed', params: { threadId: 'fixture-thread', turn: { id: 'fixture-turn', status: 'completed' } } }; },
+    };
+    const session = await createManagedNativeSession({ parent: root, binary, expectedBinaryHash: digest('fixture'),
+      cwd, model, effort: 'high', access, allowedPaths: access === 'bounded_write' ? ['.'] : [], env: { CODEX_HOME: home },
+      skillPolicy: { implicit: 'deny', ambient_allow: [], shadowed_skill_paths: [] }, toolBroker: resourceBroker,
+      dynamicToolFormat: 'tagged_function', clientFactory: () => client, modelMetadataReader: async () => ({ slug: model, tool_mode: 'code_mode_only',
+        base_instructions: 'Normal instructions', input_modalities: ['text'], supports_parallel_tool_calls: true }) });
+    try {
+      if (access === 'read_only' && returnedSandbox === 'workspaceWrite')
+        await assert.rejects(session.turn('Perform the supplied task'), { code: 'CODEX_SANDBOX_UNCONTROLLED' });
+      else assert.equal((await session.turn('Perform the supplied task')).output, '{"done":true}');
+      assert.equal(turnStarts, access === 'read_only' && returnedSandbox === 'workspaceWrite' ? 0 : 1);
+      assert.equal(params.cwd, cwd); assert.equal(params.model, model);
+      assert.equal(params.sandbox, access === 'read_only' ? 'read-only' : 'workspace-write');
+      assert.equal(params.approvalPolicy, undefined); assert.equal(params.baseInstructions, undefined);
+      assert.equal(params.environments, undefined); assert.equal(params.ephemeral, false);
+      assert.equal(params.allowProviderModelFallback, false);
+      const resourceTools = resourceBroker.tools();
+      assert.deepEqual(params.dynamicTools.slice(0, resourceTools.length), resourceTools.map(tool => ({ ...tool, type: 'function' })));
+      assert(params.dynamicTools.some(tool => tool.name === 'run_workspace_command'));
+      assert(!params.dynamicTools.some(tool => tool.name === 'write_workspace'));
+    } finally { await session.close(); }
+  }
 });
 
 test('host tool binding preflight rejects stale implementation identity before a run starts', () => {

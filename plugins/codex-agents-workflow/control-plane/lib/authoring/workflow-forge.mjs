@@ -203,7 +203,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
   const resourceRefsForSections=ids=>[...new Set(ids.flatMap(id=>{const section=inventory.get(id);if(!section||section.source_span.resource!==entrypoint)return [];const text=entryLines.slice(section.source_span.start_line-1,section.source_span.end_line).join('\n').replaceAll('\\','/');return supporting.filter(path=>{const relative=path.startsWith('source/')?path.slice(7):path;return text.includes(path)||text.includes(relative);});}))];
   const routing=context.routing_rules;
   const nodes=[],edges=[],stageIds=new Map(),activityIds=new Map(),activityOutputs=new Map(),compiledBlocks=new Map(),compilingBlocks=new Set(),edgeKeys=new Set(),approvalBindings=[];
-  let nodeOrdinal=0,edgeOrdinal=0,parallelOrdinal=0,conditionOrdinal=0;
+  let nodeOrdinal=0,edgeOrdinal=0,parallelOrdinal=0;
   const nodeId=prefix=>`${prefix}_${String(++nodeOrdinal).padStart(3,'0')}`;
   const addEdge=(source,target,extra={})=>{
     if(source===target)return;
@@ -354,7 +354,8 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     }
     else if(block.kind==='parallel'){
       requireValue(Array.isArray(block.branches)&&block.branches.length>=2,'AUTHORING_FORMAT','Parallel needs at least two branches');
-      const pair=String(++parallelOrdinal).padStart(3,'0'),fork=nodeId('parallel'),join=nodeId('join');
+      ++parallelOrdinal;
+      const fork=nodeId('parallel'),join=nodeId('join');
       const parts=block.branches.map(compileBlock),sections=[...new Set(parts.flatMap(item=>item.sections))];
       nodes.push({id:fork,type:'parallel',semantic_key:block.key,join_id:join,failure_policy:block.failure_meaning==='partial_evidence_allowed'?'collect':'fail_fast',confidence:1,...evidence(sections)});
       nodes.push({id:join,type:'join',semantic_key:block.key,parallel_id:fork,confidence:1,...evidence(sections)});
@@ -502,7 +503,7 @@ function findActivity(block,key){
 // Preflight supplies precise typed findings. A lowering error without one is a
 // Host diagnostic gap, not permission to guess an ACL or send an unlocalized
 // planner repair.
-export function actionableSemanticError(error,blueprint){
+export function actionableSemanticError(error,_blueprint){
   if(error?.code!=='AUTHORING_SEMANTIC'||Array.isArray(error.findings)&&error.findings.length)return error;
   error.code='AUTHORING_DIAGNOSTIC_GAP';
   error.message=`Host lowering did not localize a semantic contradiction: ${String(error.message??'unknown')}`;

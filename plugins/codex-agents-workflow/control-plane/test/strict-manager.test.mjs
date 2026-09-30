@@ -1,16 +1,17 @@
 import { REVIEW_IDS } from '../lib/skill-import/review-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, rm, readFile, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join, resolve } from 'node:path';
 import { WorkflowService } from '../lib/workflow-service.mjs';
 import { loadConfig, saveConfig } from '../lib/config.mjs';
 import { createDraft } from '../lib/workflow-schema.mjs';
 import { StrictSessionManager, strictOutputByteBudget } from '../lib/execution/strict-session-manager.mjs';
+import { refreshCodexRegistration } from '../lib/execution/codex-runtime-registration.mjs';
 import { EXECUTOR_RESULT_MAX_BYTES } from '../lib/workflow-run-store.mjs';
 import { codexStructuredSchema, restoreOptionalOmissions } from '../lib/execution/codex-structured-output.mjs';
-import { validateStrictConfig, qualifiedStrictSettings, verifyCodexDistribution, QUALIFIED_CODEX } from '../lib/execution/strict-config.mjs';
+import { validateStrictConfig, qualifiedStrictSettings, qualifiedCodexBinary, verifyCodexDistribution, codexQualification } from '../lib/execution/strict-config.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 import { randomUUID } from 'node:crypto';
 import { processIdentity } from '../lib/execution/codex-process-ownership.mjs';
@@ -638,7 +639,7 @@ async function fixture(t, options = {}) {
   return { root, workspace, configPath, service, manager, sessions, run, claim, args, entry };
 }
 
-test('Strict settings are opt-in, reject secrets/unknown fields and never turn arbitrary hashes into capability', async () => {
+test('Strict settings are opt-in, reject secrets/unknown fields and verify selected executable integrity', async () => {
   assert.equal(validateStrictConfig().enabled, false);
   assert.equal(validateStrictConfig().authentication.mode, 'host_chatgpt');
   assert.throws(() => validateStrictConfig({ authentication: { api_key: 'secret' } }), { code: 'STRICT_CONFIG' });
@@ -649,10 +650,10 @@ test('Strict settings are opt-in, reject secrets/unknown fields and never turn a
   assert.equal(validateStrictConfig().main_reasoning_effort, '');
   assert.throws(() => validateStrictConfig({ main_model: 'bad model' }), { code: 'STRICT_CONFIG' });
   assert.throws(() => validateStrictConfig({ main_reasoning_effort: 'bad effort' }), { code: 'STRICT_CONFIG' });
-  await assert.rejects(qualifiedStrictSettings({ strict_executor: { enabled: true, codex_binary: resolve('fake.exe'), binary_sha256: 'a'.repeat(64) } }), { code: 'STRICT_EXECUTOR_UNQUALIFIED' });
+  await assert.rejects(qualifiedStrictSettings({ strict_executor: { enabled: true, codex_binary: resolve('fake.exe'), binary_sha256: 'a'.repeat(64) } }), { code: 'CODEX_BINARY_MISSING' });
 });
 
-test('qualified Windows distribution requires the adjacent Code Mode host and native companions before any turn', async t => {
+test('selected distribution file pins detect missing and changed actual companions', async t => {
   const root = await mkdtemp(join(tmpdir(), 'codex-distribution-'));
   t.after(async () => { assert(resolve(root).startsWith(resolve(tmpdir()))); await rm(root, { recursive: true, force: true }); });
   const binary = join(root, 'codex.exe');
@@ -668,8 +669,189 @@ test('qualified Windows distribution requires the adjacent Code Mode host and na
   await writeFile(join(root, names[0]), bytes[names[0]]);
   await rm(join(root, names[1]));
   await assert.rejects(verifyCodexDistribution(binary, expected), { code: 'CODEX_COMPANION_MISSING' });
-  assert.equal(QUALIFIED_CODEX.version, '0.158.0-alpha.2.1');
-  assert.equal(QUALIFIED_CODEX.companions['codex-code-mode-host.exe'], '4970a4ce8a7c6091a87dfea34cae03b3b95dd70f26f89f392e11de7fd8ea759e');
+});
+
+function protocolFixture() {
+  const params = {
+    initialize: ['clientInfo', 'capabilities'], 'account/read': ['refreshToken'], 'config/read': ['includeLayers'],
+    'model/list': ['includeHidden', 'limit'], 'skills/list': ['cwds', 'forceReload'],
+    'thread/start': ['cwd', 'model', 'modelProvider', 'sandbox', 'config', 'dynamicTools', 'ephemeral', 'allowProviderModelFallback'],
+    'turn/start': ['threadId', 'input', 'effort', 'outputSchema'], 'turn/interrupt': ['threadId', 'turnId'],
+    'thread/read': ['threadId', 'includeTurns'], 'thread/list': ['parentThreadId', 'sourceKinds', 'modelProviders', 'useStateDbOnly', 'limit'],
+    'thread/turns/list': ['threadId', 'itemsView', 'sortDirection', 'limit'],
+    'command/exec': ['command', 'cwd', 'env', 'disableOutputCap', 'disableTimeout', 'sandboxPolicy', 'processId', 'streamStdin', 'streamStdoutStderr', 'timeoutMs'],
+    'command/exec/write': ['deltaBase64', 'closeStdin', 'processId'], 'command/exec/terminate': ['processId'],
+  };
+  const methods = entries => ({ oneOf: entries.map(([method, fields]) => ({ properties: {
+    method: { enum: [method] }, params: { type: 'object', properties: Object.fromEntries(fields.map(field => [field, {}])) },
+  } })) });
+  const client = methods(Object.entries(params));
+  client.definitions = { DynamicToolSpec: { type: 'object', properties: { name: {}, description: {}, inputSchema: {} } } };
+  return { ClientRequest: client, ServerRequest: methods([['item/tool/call', ['threadId', 'turnId', 'callId', 'tool', 'arguments']]]),
+    ServerNotification: methods([['turn/completed', []], ['item/completed', []], ['thread/tokenUsage/updated', []]]) };
+}
+
+async function qualificationFixture(t, name = 'codex') {
+  const root = await mkdtemp(join(tmpdir(), 'portable-codex-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'distribution'); await mkdir(directory);
+  const binary = join(directory, name), bytes = Buffer.from(`selected real distribution fixture: ${name}`);
+  await writeFile(binary, bytes);
+  const calls = [], schemas = protocolFixture(), env = { CODEX_HOME: root };
+  const clientFactory = (_binary, { home }) => ({ initialized() {}, async close() { calls.push('close'); },
+    async call(method) {
+      calls.push(method);
+      if (method === 'initialize') return { userAgent: 'fixture-cli arbitrary-release' };
+      if (method === 'account/read') return { account: { type: 'chatgpt' }, requiresOpenaiAuth: true };
+      if (method === 'config/read') return { config: {} };
+      if (method === 'model/list') return { data: [{ model: 'fixture-model', supportedReasoningEfforts: [] }], nextCursor: null };
+      if (method === 'skills/list') return { data: [{ cwd: home, skills: [], errors: [] }] };
+      assert.fail(`Qualification must not call ${method}`);
+    } });
+  const settings = validateStrictConfig({ enabled: true, codex_binary: binary, binary_sha256: digest(bytes) });
+  return { root, binary, settings, schemas, calls, options: { env, schemaReader: async () => schemas, clientFactory, cache: new Map() } };
+}
+
+test('selected Codex distributions qualify by actual protocol without a shipped release or platform hash', async t => {
+  for (const name of ['codex', 'codex.exe']) {
+    const f = await qualificationFixture(t, name);
+    assert.equal(await qualifiedCodexBinary(f.settings, f.options), f.settings);
+    assert.deepEqual(f.calls, ['initialize', 'account/read', 'config/read', 'model/list', 'skills/list', 'close']);
+    const before = [...f.calls];
+    await qualifiedCodexBinary(f.settings, f.options);
+    assert.deepEqual(f.calls, before, 'The same observed executable/profile reuses successful capability evidence');
+    await writeFile(f.binary, 'changed selected executable');
+    await assert.rejects(qualifiedCodexBinary(f.settings, f.options), { code: 'CODEX_BINARY_CHANGED' });
+  }
+});
+
+test('missing required App Server capability rejects before thread or model effects', async t => {
+  const f = await qualificationFixture(t);
+  delete f.schemas.ClientRequest.oneOf.find(item => item.properties.method.enum[0] === 'turn/start').properties.params.properties.outputSchema;
+  await assert.rejects(qualifiedCodexBinary(f.settings, f.options), error =>
+    error.code === 'CODEX_CAPABILITY_UNSUPPORTED' && error.capability === 'turn/start.outputSchema');
+  assert.deepEqual(f.calls, []);
+});
+
+test('qualification resolves selected executable aliases and negotiates tagged function tools', async t => {
+  const f = await qualificationFixture(t), aliasDirectory = join(f.root, 'selected-distribution'), alias = join(aliasDirectory, 'codex');
+  await symlink(join(f.root, 'distribution'), aliasDirectory, process.platform === 'win32' ? 'junction' : 'dir');
+  f.settings.codex_binary = alias;
+  f.schemas.ClientRequest.definitions.DynamicToolSpec = { oneOf: [{ properties: { name: {}, description: {}, inputSchema: {}, type: { enum: ['function'] } },
+    required: ['name', 'description', 'inputSchema', 'type'] }] };
+  await qualifiedCodexBinary(f.settings, f.options);
+  const proof = codexQualification(f.settings);
+  assert.equal(proof.selected_path, alias);assert.equal(proof.resolved_path, f.binary);
+  assert.equal(proof.executable_sha256, f.settings.binary_sha256);assert.equal(proof.dynamic_tool_format, 'tagged_function');
+  assert.equal(proof.model_calls, 0);
+  await rm(aliasDirectory, { recursive: true }); const changed = join(f.root, 'changed-distribution'); await mkdir(changed);
+  await writeFile(join(changed, 'codex'), 'different executable'); await symlink(changed, aliasDirectory, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(qualifiedCodexBinary(f.settings, f.options), { code: 'CODEX_BINARY_CHANGED' });
+});
+
+test('qualification scopes exclude unrelated native continuation and execution capabilities', async t => {
+  const f = await qualificationFixture(t);
+  f.schemas.ClientRequest.oneOf = f.schemas.ClientRequest.oneOf.filter(item => !['thread/read', 'thread/list', 'thread/turns/list'].includes(item.properties.method.enum[0]));
+  await qualifiedCodexBinary(f.settings, f.options);
+  assert.equal(codexQualification(f.settings).scope, 'main');
+  await qualifiedCodexBinary(f.settings, { ...f.options, scope: 'managed_native' });
+  assert.equal(codexQualification(f.settings).scope, 'managed_native');
+  f.calls.length = 0;
+  const discovery = { ClientRequest: { oneOf: f.schemas.ClientRequest.oneOf.filter(item => ['initialize', 'skills/list'].includes(item.properties.method.enum[0])) } };
+  await qualifiedCodexBinary(f.settings, { ...f.options, scope: 'discovery', schemaReader: async () => discovery });
+  assert.deepEqual(f.calls, ['initialize', 'skills/list', 'close']);
+  assert.equal(codexQualification(f.settings).scope, 'discovery');
+});
+
+test('Strict prepare qualification survives config revalidation and reaches actual launch arguments',async t=>{
+  const f=await fixture(t),q=await qualificationFixture(t);
+  const config=await f.service.config();
+  config.strict_executor.codex_binary=q.binary;config.strict_executor.binary_sha256=q.settings.binary_sha256;
+  await saveConfig(config,{configPath:f.service.configPath});
+  f.manager.qualify=async current=>qualifiedCodexBinary(validateStrictConfig(current.strict_executor),q.options);
+  await f.service.call('dispatch',f.args);await f.entry(f.args).job;
+  assert.equal(f.sessions[0].settings.expectedBinaryPath,q.binary);
+  assert.equal(f.sessions[0].settings.dynamicToolFormat,'untagged_function');
+});
+
+test('in-place Codex upgrade re-registers only the proved local executable before a new Run',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const service=new WorkflowService({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  await service.call('migrate_v6',{}, {human:true});
+  const config=await service.config();
+  config.strict_executor={...f.settings,binary_sha256:digest('prior release')};
+  await saveConfig(config,{configPath});
+  const original=structuredClone(config),qualify=async candidate=>qualifiedCodexBinary(validateStrictConfig(candidate.strict_executor),f.options);
+  const saved=await refreshCodexRegistration({configPath,config,qualify,env:f.options.env});
+  assert.equal(saved.strict_executor.binary_sha256,f.settings.binary_sha256);
+  assert.equal(saved.strict_executor.codex_binary,original.strict_executor.codex_binary);
+  assert.deepEqual(saved.providers,original.providers);
+  assert.deepEqual(saved.strict_executor.authentication,original.strict_executor.authentication);
+  const audit=JSON.parse(await readFile(join(f.root,'codex-runtime-registration.json'),'utf8'));
+  assert.equal(audit.status,'registered');assert.equal(audit.qualification.model_calls,0);
+  assert.equal(audit.previous_sha256,original.strict_executor.binary_sha256);
+  assert.equal(audit.executable_sha256,f.settings.binary_sha256);
+  const count=f.calls.length;
+  await refreshCodexRegistration({configPath,config:saved,qualify,env:f.options.env});
+  assert.equal(f.calls.length,count);
+  await writeFile(f.binary,'changed during owned attempt');
+  await assert.rejects(qualifiedCodexBinary(validateStrictConfig(saved.strict_executor),f.options),{code:'CODEX_BINARY_CHANGED'});
+});
+
+test('unqualified Codex upgrade and concurrent user edits never overwrite local registration',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const service=new WorkflowService({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  await service.call('migrate_v6',{}, {human:true});
+  const config=await service.config();
+  config.strict_executor={...f.settings,binary_sha256:digest('old installed release')};
+  await saveConfig(config,{configPath});
+  const before=await readFile(configPath,'utf8');
+  await assert.rejects(refreshCodexRegistration({configPath,config,qualify:async()=>{throw Object.assign(new Error('Unsupported output contract'),{code:'CODEX_CAPABILITY_UNSUPPORTED'});}}),{code:'CODEX_CAPABILITY_UNSUPPORTED'});
+  assert.equal(await readFile(configPath,'utf8'),before);
+  const qualify=async candidate=>{
+    const changed=structuredClone(config);changed.global.max_prompt_chars++;
+    await saveConfig(changed,{configPath});
+    return qualifiedCodexBinary(validateStrictConfig(candidate.strict_executor),f.options);
+  };
+  await assert.rejects(refreshCodexRegistration({configPath,config,qualify,env:f.options.env}),/configuration changed/);
+  const retained=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  assert.equal(retained.strict_executor.binary_sha256,config.strict_executor.binary_sha256);
+  assert.equal(retained.global.max_prompt_chars,config.global.max_prompt_chars+1);
+});
+
+test('removed Codex installation is rediscovered, qualified and durably registered without changing Providers',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const service=new WorkflowService({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  await service.call('migrate_v6',{}, {human:true});
+  const config=await service.config();
+  config.strict_executor={...f.settings,codex_binary:join(f.root,'removed-install','codex')};
+  await saveConfig(config,{configPath});
+  let discoveries=0;
+  const saved=await refreshCodexRegistration({configPath,config,env:f.options.env,
+    discover:async()=>{discoveries++;return {binary:f.binary};},
+    qualify:candidate=>qualifiedCodexBinary(validateStrictConfig(candidate.strict_executor),f.options)});
+  assert.equal(discoveries,1);assert.equal(saved.strict_executor.codex_binary,f.binary);
+  assert.deepEqual(saved.providers,config.providers);
+  const audit=JSON.parse(await readFile(join(f.root,'codex-runtime-registration.json'),'utf8'));
+  assert.equal(audit.reason,'stale_installation_rediscovered');
+  assert.equal(audit.previous_selected_path,config.strict_executor.codex_binary);
+  assert.equal(audit.qualification.model_calls,0);
+});
+
+test('qualification preserves authentication checks and closes failed read-only probes without caching them', async t => {
+  const f = await qualificationFixture(t), config = { strict_executor: { ...f.settings,
+    authentication: { mode: 'environment_api_key', api_key_env: 'PORTABLE_CODEX_TEST_KEY' } } };
+  await assert.rejects(qualifiedStrictSettings(config, f.options.env, f.options), { code: 'CODEX_CREDENTIAL_MISSING' });
+  assert.deepEqual(f.calls, []);
+  let closes = 0, reads = 0;
+  f.options.clientFactory = () => ({ initialized() {}, async close() { closes++; }, async call(method) {
+    reads++;
+    if (method === 'initialize') return {};
+    throw Object.assign(new Error('unsupported account RPC'), { rpc_code: -32601 });
+  } });
+  for (let attempt = 0; attempt < 2; attempt++) await assert.rejects(qualifiedCodexBinary(f.settings, f.options),
+    error => error.code === 'CODEX_CAPABILITY_PROBE_FAILED' && error.capability === 'account/read' && error.rpc_code === -32601);
+  assert.equal(reads, 4);assert.equal(closes, 2);
 });
 
 test('Strict manager owns the exact close-capable session before initialization can fail', async t => {

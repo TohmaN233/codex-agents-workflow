@@ -1,6 +1,5 @@
 import { posix } from 'node:path';
 import { sourceSectionInventory } from './source-dispositions.mjs';
-import { bindingPointers } from '../workflow-bindings.mjs';
 import { exclusiveConditionFanIn, nearestDataProducerIds, selectedUpstreamBinding } from './fan-in-topology.mjs';
 import { authoringSourcePath, SKILL_SOURCE } from './authoring-source.mjs';
 import { dependencyExecutables, sourceContractIndex } from './source-contracts.mjs';

@@ -32,7 +32,7 @@ The Wyckoff-position, earthquake-plate, lake-warming, and video-silence tasks co
 
 - `N-main`: Main runs directly, with neither Skill nor Workflow.
 - `S-main`: Main runs with the frozen Skill.
-- `W-main`: the converted Workflow runs, and every Main node receives a fresh node-scoped context containing only its declared resources.
+- `W-main`: the converted Workflow condition supplies declared process resources as needed, with semantic decisions made by the same Main model.
 
 Every arm used `gpt-5.6-terra / medium`; `W-main` did not gain a cheaper submodel. The 40 valid isolated results include 12 runs in each primary arm and four full-preload Workflow control runs.
 
@@ -44,20 +44,20 @@ Every arm used `gpt-5.6-terra / medium`; `W-main` did not gain a cheaper submode
 
 At identical measured quality, `W-main` used **45.5% fewer tokens** than `S-main` and **49.9% fewer** than `N-main`. Node-scoped projection also used **31.4% fewer tokens** than the control that preloaded the complete Workflow packet into Main.
 
-No subagent produced this advantage. The saving came from **isolating Main-node context**: the same Main model still made the semantic decisions, but each step stopped inheriting the full parent conversation and every other node's raw material.
+No cheaper submodel produced this advantage. The original comparison used continuous Main sessions; the later earthquake replacement used the Host Main executor. These observations associate resource projection with lower tokens, but do not isolate fresh-node context as the sole cause. The current implementation must not be substituted for historical execution evidence.
 
 ### Experiment 2: a 31-card Zenonzard implementation with multiple agents
 
 Zenonzard was a longer code-production task. The Workflow assigned work across Sol and Luna, then applied a strict card-by-card semantic review.
 
-| Implementation | Total tokens | API-equivalent cost | Strict semantic pass |
+| Implementation | Valid-result tokens | API-equivalent cost | Strict semantic pass |
 | --- | ---: | ---: | ---: |
 | Skill | 28,122,593 | $6.9240 | 20/31 (64.52%) |
 | Workflow | 33,900,996 | **$3.3929** | **28/31 (90.32%)** |
 
-The Workflow used **20.55% more total tokens** and improved the strict pass rate by **25.80 percentage points**. At the model prices recorded for the experiment, its API-equivalent cost was **51.00% lower**. A later source audit corrected the remaining three cards, so the current checkout is 31/31; that later repair does not retroactively change the experimental 28/31 result.
+The selected valid Workflow result used **20.55% more tokens** and improved the strict pass rate by **25.80 percentage points**. At the recorded model prices, its API-equivalent cost was **51.00% lower**. This comparison excludes invalid trials caused by old implementation defects; it is not the total cost of development and debugging. A later source audit corrected the remaining three cards, so the current checkout is 31/31; that later repair does not retroactively change the experimental 28/31 result.
 
-This result matters just as much as the first one: **using more subagents does not imply fewer total tokens.** Repeated project and task-context reads by the Luna nodes were visible in the ledger. Host-owned silent event waits remove Main's polling cost; they do not erase the reading and reasoning cost inside the child agents themselves. The plugin therefore treats parallelism and model routing as tools for quality, isolation, and throughput rather than automatic token optimizations.
+**Using more subagents does not imply fewer total tokens.** Repeated project and task-context reads by the Luna nodes were visible in the ledger. Host-owned silent event waits remove Main's polling cost; they do not erase child reading and reasoning costs. Model routing, review, and repair also changed in this comparison, so neither quality nor price differences can be attributed to context isolation alone.
 
 ## How it works
 
@@ -127,6 +127,8 @@ Math, Zenonzard, and video-use do not populate the default library. They live in
 ## Quick start
 
 You need a plugin-capable Codex installation, Node.js 20+, and Git.
+
+The workbench supports Windows, macOS, and Linux. Executors check the capabilities exposed by your local Codex installation rather than a fixed release or platform hash. If an upgrade removes a registered path, the Host rediscovers and verifies the local installation. Optional Workflow dependencies are checked separately and do not block unrelated workflows.
 
 ```sh
 git clone https://github.com/TohmaN233/codex-agents-workflow.git

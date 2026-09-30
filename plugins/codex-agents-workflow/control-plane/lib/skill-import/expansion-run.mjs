@@ -14,7 +14,6 @@ import { WORKSPACE_SOURCE_LOCATIONS } from '../workspace-source-locations.mjs';
 // The finite runtime JSON-Schema vocabulary has no regular expressions; the
 // compiler performs identifier and JSON-Pointer validation after this exact
 // structural gate.
-const pointer = { type: 'string', minLength: 1, maxLength: 512 };
 const id = { type: 'string', minLength: 1, maxLength: 128 };
 const stringList = (max = 128) => ({ type: 'array', maxItems: max, items: { type: 'string', minLength: 1, maxLength: 1024 } });
 const sourceSpan = { type: 'object', required: ['resource', 'start_line', 'end_line'], additionalProperties: false, properties: { resource: { type: 'string', minLength: 1, maxLength: 1024 }, start_line: { type: 'integer', minimum: 1 }, end_line: { type: 'integer', minimum: 1 } } };
@@ -132,7 +131,7 @@ function canonicalizeConditionCases(proposal, repairs) {
   }
 }
 
-function derivePlanningAnalysis(nodes,edges){
+function derivePlanningAnalysis(nodes,_edges){
   const parallel=nodes.filter(item=>item.type==='parallel').map(item=>item.id);
   const main=nodes.filter(item=>item.type==='agent' && item.execution_target==='main').map(item=>item.id);
   const subagents=nodes.filter(item=>item.type==='agent' && item.execution_target==='subagent').map(item=>item.id);

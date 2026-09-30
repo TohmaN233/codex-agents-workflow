@@ -1,5 +1,5 @@
 import {prepareDirectToolCatalog} from './direct-tool-catalog.mjs';
-import { mkdtemp, readFile, mkdir, open } from 'node:fs/promises';
+import { mkdtemp, readFile, mkdir, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createCodexClient } from './codex-app-server-client.mjs';
@@ -105,6 +105,8 @@ async function normalModelMetadata({client,home,cwd,model}) {
 export async function createCodexSession(options) {
   const { cwd, model, effort, access, env = process.env, onEvent = () => {}, onToolRead = () => {} } = options;
   requireValue(['read_only', 'bounded_write'].includes(access), 'CODEX_ACCESS_MODE', 'Normal Codex node requires its exact Run access mode');
+  requireValue(['tagged_function', 'untagged_function'].includes(options.dynamicToolFormat),
+    'CODEX_CAPABILITY_UNSUPPORTED', 'Normal Codex session requires the selected executable dynamic-tool capability evidence');
   const sandbox = access === 'read_only' ? 'read-only' : 'workspace-write';
   const authenticationMode = options.authentication?.mode ?? (options.hostAuth ? 'host_chatgpt' : 'managed_chatgpt');
   requireValue(['host_chatgpt', 'managed_chatgpt', 'environment_api_key'].includes(authenticationMode),
@@ -122,8 +124,10 @@ export async function createCodexSession(options) {
   ] : [];
   requireValue(typeof cwd === 'string' && typeof model === 'string' && typeof effort === 'string',
     'CODEX_SESSION_ARGUMENTS', 'Normal Codex session requires a workspace, model and effort');
-  await noSymlinks(options.binary);
-  const binaryHash = digest(await readFile(options.binary));
+  const binary = await realpath(options.binary);
+  await noSymlinks(binary);
+  requireValue(!options.expectedBinaryPath || binary === options.expectedBinaryPath, 'CODEX_BINARY_CHANGED', 'Selected Codex executable alias changed its verified target before process launch');
+  const binaryHash = digest(await readFile(binary));
   requireValue(binaryHash === options.expectedBinaryHash, 'CODEX_BINARY_CHANGED', 'Codex executable changed before process launch');
   const home = resolve(env.CODEX_HOME || join(homedir(), '.codex'));
   await ensureDirectory(options.parent);
@@ -136,7 +140,7 @@ export async function createCodexSession(options) {
   await record({});
   const clientFactory = options.clientFactory ?? createCodexClient;
   let client, activeThread = null, activeTurn = null, continuationThread = null, closed = false, turns = 0, closing, catalogChecked = false, skillPins, toolCatalog;
-  const commandBroker = createCodexCommandBroker({ binary: options.binary, home, cwd, access, env,
+  const commandBroker = createCodexCommandBroker({ binary, home, cwd, access, env,
     spoolRoot: join(receiptHome, 'command-output'), getClient: () => client,
     allowedPaths: options.allowedPaths ?? [],
     recoverToolErrors:true,
@@ -232,7 +236,7 @@ export async function createCodexSession(options) {
     },
   };
   function openClient(overrides) {
-    return clientFactory(options.binary, { home, cwd, overrides, env,
+    return clientFactory(binary, { home, cwd, overrides, env,
       onEvent: async event => {
         await onEvent(codexEventMetadata(event));
         if (event.method === 'item/agentMessage/delta' && options.onOutput) {
@@ -348,7 +352,8 @@ export async function createCodexSession(options) {
     }
     turns++;
     const provider = authenticationMode === 'environment_api_key' ? apiKeyProvider : 'openai';
-    const dynamicTools = [...(options.toolBroker?.tools() ?? []), ...commandBroker.tools()];
+    const dynamicTools = [...(options.toolBroker?.tools() ?? []), ...commandBroker.tools()]
+      .map(tool => options.dynamicToolFormat === 'tagged_function' ? { ...tool, type: 'function' } : tool);
     requireValue(new Set(dynamicTools.map(tool => tool.name)).size === dynamicTools.length,
       'CODEX_TOOL_DUPLICATE', 'Normal node dynamic tool names must be unique');
     const commandAuditStart = commandBroker.audit().length;

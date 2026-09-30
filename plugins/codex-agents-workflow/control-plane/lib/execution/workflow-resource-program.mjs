@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { lstat, readFile, readdir, unlink } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createCodexToolBroker } from './codex-tool-broker.mjs';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
@@ -8,7 +8,7 @@ import { requireValue } from '../workflow-paths.mjs';
 
 const name='workflow-resource-program';
 const version='1';
-const implementation=digest(readFileSync(fileURLToPath(import.meta.url)));
+const implementation=digest(readFileSync(fileURLToPath(import.meta.url),'utf8').replace(/\r\n/g,'\n'));
 const emptyEffects=()=>({observed:true,changed_paths:[],outside_paths:[],artifacts:[]});
 const within=(path,root)=>root==='.'||path===root||path.startsWith(root+'/');
 

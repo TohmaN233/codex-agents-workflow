@@ -4,6 +4,7 @@ import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { SEMANTIC_BLUEPRINT_CONTRACT, SEMANTIC_REPAIR_CONTRACT } from './blueprint-contract.mjs';
 import { DEFAULT_AGENT_ATTEMPTS, MAX_AUTHORING_ATTEMPTS, MAX_PLANNER_ATTEMPTS, MAX_SEMANTIC_REPAIRS } from '../skill-import/generation-retry-policy.mjs';
 import { AUTHORING_HOST_TOOL_IDS, authoringHostToolContracts } from '../execution/authoring-host-tools.mjs';
+import { rebindBuiltinHostToolIdentities } from '../workflow-host-tool-identity.mjs';
 import { canonicalNativeProviderId } from '../native-provider-identity.mjs';
 
 export const AUTHORING_PLANNER_PROMPT='Read analysis/request.txt sequentially with read_workflow_resource_chunk, starting at byte 0 and following each next_byte until complete. The packet contains the numbered source, Host observations and the planner contract. Return only workflow-semantic-blueprint/v6 meaning: activities, compact inputs/outputs, source dispositions, approvals and needed control groups. Select only resolved source contracts as exact; candidate artifact observations are evidence to check against the source, not output schemas. Every approval names its activity.output subject and authorized activities. Missing future-Run answers block with concrete questions; no Agent node pauses for conversation. Use static parallelism for known responsibilities and worker fanout for runtime-cardinality lists; Main nodes never set worker count. Preserve repeatable feedback through persisted state and later Runs with renewed approval and validation; never add a source-absent revision cap or an in-Run graph cycle. Avoid duplicating data-implied ordering or source prose. Do not invent the root, graph mechanics, JSON Schema, bindings, providers, permissions, manifests, source spans or package fields: the Host owns them. On repair, return only stable-key changes for the supplied semantic targets, never a regenerated plan. Do not execute source commands. Return exactly {"proposal":...} with no prose.';
@@ -235,6 +236,20 @@ export async function ensureStoredAuthoringWorkflows(store,{providers,routingRul
       }
     }
     requireValue(pack.provenance?.kind==='bundled_authoring_workflow' && pack.provenance?.authoring_workflow_id===definition.id,'AUTHORING_WORKFLOW_ID_CONFLICT',`Stored Workflow ID ${definition.id} is not the bundled authoring Workflow`);
+    let rebound;
+    try { rebound = rebindBuiltinHostToolIdentities(pack.workflow); }
+    catch (error) {
+      if (error.code !== 'HOST_TOOL_IDENTITY_MIGRATION_UNSUPPORTED') throw error;
+      // Inventory must remain available. An unknown Host pin stays untouched,
+      // including during later prompt upgrades; launch validates this contract.
+      packs.push({ ...pack, host_tool_identity_issue: { code: error.code, message: error.message,
+        host_tool_id: error.host_tool_id, identity: structuredClone(error.identity) } });
+      continue;
+    }
+    if (rebound.changes.length) pack = await store.save(definition.id, rebound.workflow, {
+      expected_revision: pack.revision_hash,
+      provenance: { ...pack.provenance, host_tool_identity_migration: { kind: 'builtin_host_tool_identity', changes: rebound.changes } },
+    });
     const storedPlanner=pack.workflow.nodes.find(node=>node.id==='expand');
     const storedReviewer=pack.workflow.nodes.find(node=>node.id==='final');
     const storedPlannerId=storedPlanner?.executor?.provider_id;
@@ -288,7 +303,7 @@ export async function ensureStoredAuthoringWorkflows(store,{providers,routingRul
 // The two built-ins are real Workflow constructors, not labels for a service
 // state machine. Source-specific resources and Provider slots are materialized
 // per Run while the stage topology and authority boundary stay invariant.
-export function instantiateAuthoringWorkflow({definition,templateWorkflow,id,sourceName,planner,reviewer,generation,planningResources,plannerResources=Object.keys(planningResources).sort(),reviewResources,plannerSchema,plannerPrompt,reviewSchema,reviewPrompt}){
+export function instantiateAuthoringWorkflow({definition,templateWorkflow,id,sourceName,planner,reviewer,planningResources,plannerResources=Object.keys(planningResources).sort(),reviewResources,plannerSchema,plannerPrompt,reviewSchema,reviewPrompt}){
   requireValue(AUTHORING_WORKFLOWS.some(item=>item.id===definition?.id),'AUTHORING_WORKFLOW_MISSING','Authoring Run needs a registered built-in Workflow');
   requireValue(planner?.kind==='native_agent','EXPANSION_EXECUTOR_UNAVAILABLE','Authoring requires a user-selected native planning Provider');
   const workflow={...structuredClone(templateWorkflow ?? createDraft(id,definition.name)),id,name:`${definition.name}: ${String(sourceName).slice(0,220)}`,revision:1,status:'ready',description:`Read-only ${definition.name} Run. The Host compiles its semantic output and a human explicitly publishes the resulting Draft.`,tags:['internal-authoring',definition.id,definition.source_kind],inputs_schema:{type:'object',required:['task'],additionalProperties:false,properties:{task:{type:'string',minLength:1,maxLength:2000}}},finalization:{required:true,node_id:'final'}};

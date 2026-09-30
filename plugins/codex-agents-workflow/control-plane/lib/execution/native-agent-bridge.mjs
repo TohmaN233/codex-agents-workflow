@@ -53,8 +53,8 @@ export function nativeAgentHandoff(record, definition, lease, dispatched, maxPro
   const packets = selected.map(({items,index}) => {
     const material=dispatched.materialized_packets?.[index];
     const activeItems=material?.assigned_items??items;
-    const itemPositions=material?.item_positions??(definition.fanout?.result_mode==='per_item'
-      ?assignedFanoutIndices(plan,definition.fanout,index):null);
+    if(material?.item_positions==null && definition.fanout?.result_mode==='per_item')
+      assignedFanoutIndices(plan,definition.fanout,index);
     const allowedPaths=material?.allowed_paths??(activeItems===null?dispatched.envelope.effective_allowed_paths:assignedFanoutWritePaths({
       workspace:dispatched.envelope.workspace,nodeAllowedPaths:dispatched.envelope.effective_allowed_paths,
       assignedItems:activeItems,fanout:definition.fanout}));

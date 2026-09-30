@@ -7,13 +7,14 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { prepareTaskInputs, generateTaskBrief } from './task-inputs.mjs';
 import { localCodexCatalog } from './execution/local-codex-catalog.mjs';
+import { refreshCodexRegistration } from './execution/codex-runtime-registration.mjs';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { advanceGeneration, acceptGeneration, loginGeneration, recheckGenerationProposal, acceptRecheckedGenerationReview, prepareAuthoringReview } from './skill-import/generation.mjs';
 import { continueGenerationRepair } from './skill-import/generation-repair.mjs';
 import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
 import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
-import { loadConfig, saveConfig, configRevision, isEnvironmentDisabled } from './config.mjs';
+import { loadConfig, isEnvironmentDisabled } from './config.mjs';
 import { WorkflowStore } from './workflow-store.mjs';
 import { WorkflowRuntime, resolvedSubagentPlan, nativeRejectedTurnHistory } from './workflow-runtime.mjs';
 import { assignedFanoutIndices, activeFanoutAssignmentIndices } from './execution/fanout-input-projection.mjs';
@@ -24,7 +25,7 @@ import { migrateV6OnDisk, restoreV6Backup } from './workflow-migration-v6.mjs';
 import { connectorRegistryFor } from '../connectors/registry.mjs';
 import { requireValue, insideRoot, noSymlinks, ensureDirectory, workflowId } from './workflow-paths.mjs';
 import { importCoarseSkill, verifyCoarseRelocation } from './skill-import/coarse-compiler.mjs';
-import { expansionPacket, applyExpansion, compileExpansion } from './skill-import/semantic-expander.mjs';
+import { expansionPacket, applyExpansion } from './skill-import/semantic-expander.mjs';
 import { buildProviderAdapter } from './providers.mjs';
 import { strictManagerFor } from './execution/strict-session-manager.mjs';
 import { managedNativeManagerFor } from './execution/managed-native-manager.mjs';
@@ -43,7 +44,7 @@ import { canonicalJSON, digest, prepareResources } from './workflow-revisions.mj
 import { inlineSkillReference } from './skill-import/inline-skill.mjs';
 import { parallelManagerFor } from './parallel/worktree-manager.mjs';
 import { readEditorResource, writeEditorResource, publishEditorWorkflow, publishableEditorWorkflow } from './workflow-editor.mjs';
-import { QUALIFIED_CODEX, qualifiedStrictSettings } from './execution/strict-config.mjs';
+import { codexQualification, qualifiedStrictSettings } from './execution/strict-config.mjs';
 import { adoptRunTree, conversationControlRecoveryRequest, controllerAttempt, reattachAttempt } from './workflow-recovery.mjs';
 import { childIdentity } from './workflow-subworkflow.mjs';
 import { nodePermissions, leaseToken } from './workflow-execution-envelope.mjs';
@@ -65,6 +66,7 @@ import { templateKind, roleNode } from './template-kind.mjs';
 import { renderTemplate } from './templates.mjs';
 import { validateData } from './workflow-data-schema.mjs';
 import { migrateStoredWorkflowProviderIds } from './workflow-provider-identity.mjs';
+import { migrateStoredWorkflowHostToolIdentities } from './workflow-host-tool-identity.mjs';
 
 const WORKFLOW_INPUT_FILE_LIMIT=1024*1024;
 
@@ -445,6 +447,18 @@ export class WorkflowService {
     return packet;
   }
   async config() { return loadConfig({ configPath: this.configPath, defaultConfigPath: this.defaultConfigPath }); }
+  async prepareCodexRegistration(closure) {
+    const config = await this.config();
+    if (!config.strict_executor.enabled) return;
+    const main = closure.packs.some(pack => pack.workflow.nodes.some(node => node.executor?.kind === 'main'));
+    const native = closure.provider_ids.some(id => config.providers.some(provider => provider.id === id && provider.kind === 'native_agent'));
+    // Explicitly supplied executor managers own their own registration. The
+    // built-in path refreshes only a selected enabled local Codex installation.
+    if (!(main && !this.capabilities.hostMainManager && !this.capabilities.strictManager)
+      && !(native && !this.capabilities.managedNativeManager && !this.capabilities.strictManager)) return;
+    await refreshCodexRegistration({ configPath: this.configPath, defaultConfigPath: this.defaultConfigPath, config,
+      env: this.env, qualify: this.capabilities.codexRegistrationQualifier });
+  }
   async inspectNativeAgents(runtime,args,definition,attempt,agentIds,{signal}={}) {
     const afterTurnIds={},rejectedTurnIds={};let parentThreadId;
     const checkActive=async()=>{
@@ -713,10 +727,11 @@ export class WorkflowService {
     await noSymlinks(storeRoot); // A missing migrated generation is corruption, not an empty new library.
     const store = await new WorkflowStore(storeRoot, { validationContext: context }).initialize();
     const providerIdentityMigrations = await migrateStoredWorkflowProviderIds(store);
+    const hostToolIdentityMigrations = await migrateStoredWorkflowHostToolIdentities(store);
     context.roles=await activeRoleProfiles(this.defaultConfigPath,config.providers,store);
     store.validationContext=context;
     const runtime = await new WorkflowRuntime({ workflowStore: store, runRoot: join(dirname(this.configPath), 'workflow-runs'), context, executionAdmission: this.attemptAdmission,
-      parallelManager: this.parallelManager,
+      parallelManager: this.parallelManager, beforeStart: closure => this.prepareCodexRegistration(closure),
       environmentResolver:(requirements,options)=>discoverRuntimeEnvironment(requirements,{...options,env:this.env,registryPath:registryPathForConfig(this.configPath)}),
       environmentVerifier:(requirements,pinned)=>verifyRuntimeEnvironment(requirements,pinned,{env:this.env,registryPath:registryPathForConfig(this.configPath)}),
       strictCapability: this.capabilities.strictCapability ?? (async (pack, closure) => { await this.strictManager.capability(pack, config.providers, closure?.skills); return true; }),
@@ -734,7 +749,9 @@ export class WorkflowService {
     runtime.quiesceFailedOrigin = entry => coordinator.quiesceOrigin(entry);
     executor.coordinator = coordinator;
     return { config, context, store, runtime, executor, coordinator, drive: new WorkflowDrive({ runtime, executor }), hostMainManager: this.hostMainManager,
-      provider_identity_migrations: providerIdentityMigrations };
+      provider_identity_migrations: providerIdentityMigrations,
+      host_tool_identity_migrations: hostToolIdentityMigrations.filter(item => item.status !== 'blocked'),
+      host_tool_identity_issues: hostToolIdentityMigrations.filter(item => item.status === 'blocked') };
   }
   modelResult(value){return modelNativeContinuationView(value);}
   async call(operation,args={},options={}) {
@@ -936,13 +953,16 @@ export class WorkflowService {
         requireValue(human,'HUMAN_CLIENT_DISCOVERY','Local client discovery belongs to the console');
         const codex=await localCodexCatalog({env:this.env,extra:[config.strict_executor.codex_binary].filter(Boolean)});
         const connectors=await Promise.all(config.providers.filter(p=>p.kind==='builtin_connector').map(async provider=>{try{return {provider_id:provider.id,...await this.registry.probe(provider,{}),models:{source:'client_managed',available:null,message:'模型由客户端管理；当前接口未提供完整模型目录。'}};}catch(error){return {provider_id:provider.id,error:{code:error.code,message:error.message}};}}));
-        return {codex,connectors,execution_runtime:{binary:config.strict_executor.codex_binary,qualification:QUALIFIED_CODEX}};
+        let qualification, qualification_error;
+        try { qualification=codexQualification(await qualifiedStrictSettings(config,this.env)); }
+        catch(error){ qualification_error={code:error.code??'CODEX_QUALIFICATION_FAILED',message:error.message,...(error.capability?{capability:error.capability}:{})}; }
+        return {codex,connectors,execution_runtime:{binary:config.strict_executor.codex_binary,qualification:qualification??null,...(qualification_error?{qualification_error}:{})}};
       }
       case 'capabilities': {
         let strict;
-        try { await qualifiedStrictSettings(config, this.env); strict = { available: true }; }
-        catch (error) { strict = { available: false, code: error.code ?? 'STRICT_UNAVAILABLE', message: error.message }; }
-        return { strict: { ...strict, qualification: QUALIFIED_CODEX, authentication: config.strict_executor.authentication.mode },
+        try { strict = { available: true, qualification: codexQualification(await qualifiedStrictSettings(config, this.env)) }; }
+        catch (error) { strict = { available: false, code: error.code ?? 'STRICT_UNAVAILABLE', message: error.message, ...(error.capability?{capability:error.capability}:{}) }; }
+        return { strict: { ...strict, authentication: config.strict_executor.authentication.mode },
           tools: context.tools, mcp_servers: context.mcp_servers ?? [], executables: context.executables ?? [], parallel_write: 'qualified Strict broker with Git worktrees', boundary: 'application catalog, explicit Skill input and broker; not an OS ACL' };
       }
       case 'routing_defaults': return loadRoutingSettings(dirname(this.configPath),config.providers);
@@ -1018,7 +1038,7 @@ export class WorkflowService {
         // The reviewer binding is part of every authoring Run.  The automatic
         // flag controls bounded Host advancement/repair only; it must not make
         // a manually driven Run silently fall back to the generic main model.
-        const planning = await new WorkflowRuntime({ generationPolicy:args.automatic_generation === true ? {settings:job.provenance.generation,reviewer:bindings.reviewer} : null, authoringReviewer:bindings.reviewer, workflowStore: jobs, runRoot: runtime.runs.root, context, strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
+        const planning = await new WorkflowRuntime({ generationPolicy:args.automatic_generation === true ? {settings:job.provenance.generation,reviewer:bindings.reviewer} : null, authoringReviewer:bindings.reviewer, workflowStore: jobs, runRoot: runtime.runs.root, context, beforeStart: closure => this.prepareCodexRegistration(closure), strictCapability: async definition => { await this.strictManager.capability(definition, config.providers); return true; } }).initialize();
         return store.withWriter(async()=>{
           const current=await store.snapshot(args.workflow_id);
           requireValue(current.revision_hash===pack.revision_hash,'REVISION_CONFLICT','Private authoring source changed before its Run was registered');

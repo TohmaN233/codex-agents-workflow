@@ -2,7 +2,7 @@ import { readFile, lstat } from 'node:fs/promises';
 import { join, isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createCodexClient } from '../execution/codex-app-server-client.mjs';
-import { qualifiedCodexBinary, validateStrictConfig, QUALIFIED_CODEX } from '../execution/strict-config.mjs';
+import { qualifiedCodexBinary, validateStrictConfig, codexQualification } from '../execution/strict-config.mjs';
 import { skillPathKey } from '../execution/codex-skill-policy.mjs';
 import { noSymlinks, requireValue } from '../workflow-paths.mjs';
 import { digest } from '../workflow-revisions.mjs';
@@ -13,7 +13,7 @@ import { digest } from '../workflow-revisions.mjs';
 export async function discoverCodexSkills(workspace, { config, env = process.env, clientFactory = createCodexClient, qualify = qualifiedCodexBinary } = {}) {
   requireValue(typeof workspace === 'string' && isAbsolute(workspace), 'SKILL_DISCOVERY_WORKSPACE', 'Discovery requires an absolute workspace');
   await noSymlinks(workspace); requireValue((await lstat(workspace)).isDirectory(), 'SKILL_DISCOVERY_WORKSPACE', 'Discovery workspace must exist');
-  const settings = validateStrictConfig(config.strict_executor); await qualify(settings);
+  const settings = validateStrictConfig(config.strict_executor); await qualify(settings, { env, scope: 'discovery' });
   const home = env.CODEX_HOME || join(homedir(), '.codex');
   requireValue(isAbsolute(home), 'SKILL_DISCOVERY_HOME', 'Configured CODEX_HOME must be absolute'); await noSymlinks(home);
   const configPath = join(home, 'config.toml');
@@ -38,7 +38,8 @@ export async function discoverCodexSkills(workspace, { config, env = process.env
       return { path: skill.path, scope: skill.scope, enabled: skill.enabled };
     });
     result = { skills, errors: entry.errors.map(error => ({ code: 'CODEX_SKILL_DISCOVERY_ERROR', path: typeof error.path === 'string' ? error.path : null })),
-      discovered_by: `codex-${QUALIFIED_CODEX.version}-configured-profile`, profile_scope: 'configured-CODEX_HOME-and-workspace', model_invocations: 0 };
+      discovered_by: 'selected-codex-app-server-configured-profile', qualification: codexQualification(settings),
+      profile_scope: 'configured-CODEX_HOME-and-workspace', model_invocations: 0 };
   } catch (error) { errors.push(error); }
   finally {
     if (client) try { await client.close(); } catch (error) { errors.push(error); }

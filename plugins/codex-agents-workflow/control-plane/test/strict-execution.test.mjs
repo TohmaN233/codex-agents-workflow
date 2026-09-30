@@ -13,8 +13,8 @@ import { digest } from '../lib/workflow-revisions.mjs';
 import { processIdentity } from '../lib/execution/codex-process-ownership.mjs';
 
 const testMetadata=async({model})=>({slug:model,tool_mode:'code_mode_only',base_instructions:'Unchanged normal instructions',input_modalities:['text','image'],supports_parallel_tool_calls:true});
-const createCodexSession=options=>createCodexSessionImpl({...options,modelMetadataReader:testMetadata});
-const createManagedNativeSession=options=>createManagedNativeSessionImpl({...options,modelMetadataReader:testMetadata});
+const createCodexSession=options=>createCodexSessionImpl({...options,dynamicToolFormat:'untagged_function',modelMetadataReader:testMetadata});
+const createManagedNativeSession=options=>createManagedNativeSessionImpl({...options,dynamicToolFormat:'untagged_function',modelMetadataReader:testMetadata});
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 

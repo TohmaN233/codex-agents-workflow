@@ -107,6 +107,41 @@ async function fixture(t, options = {}) {
 }
 const control = run => ({ run_id: run.run_id, control_token: run.control_token });
 
+test('unknown Host identity reports only its workflow while service opening and unrelated start remain available', async t => {
+  const f = await fixture(t); await f.migrate();
+  const { store } = await f.service.open();
+  const workflow = { ...createDraft('unknown-host-identity', 'Unknown Host identity'), host_tools: [{
+    id: 'unknown-resource-tool', identity: { ...workflowResourceProgramIdentity(), sha256: 'f'.repeat(64) },
+    argv: ['node', 'scripts/check.mjs', 'work'], input_schema: { type: 'object' }, output_schema: { type: 'object' }, env_allow: [],
+    permissions: { network: false, read_paths: [], write_paths: ['work'] }, output_cap_bytes: 4096,
+    deadline_ms: 10000, idempotency: { mode: 'safe' },
+  }] };
+  const original = await store.create(workflow);
+  const opened = await f.service.open();
+  assert.equal(opened.host_tool_identity_issues.length, 1);
+  assert.equal(opened.host_tool_identity_issues[0].workflow_id, workflow.id);
+  assert.equal(opened.host_tool_identity_issues[0].code, 'HOST_TOOL_IDENTITY_MIGRATION_UNSUPPORTED');
+  assert.deepEqual(await opened.store.snapshot(workflow.id), original);
+  const listed = await f.service.call('list', { include_legacy: true });
+  const blocked = listed.find(pack => pack.id === workflow.id);
+  assert.equal(blocked.validation.launch_ready, false);
+  assert(blocked.validation.errors.some(error => error.host_tool_id === 'unknown-resource-tool'));
+  const authoring = await opened.store.snapshot(listed.find(pack => pack.system_managed).id);
+  const unknownAuthoring = structuredClone(authoring.workflow);
+  unknownAuthoring.host_tools[0].identity.sha256 = 'e'.repeat(64);
+  const authoringHead = await opened.store.save(authoring.workflow.id, unknownAuthoring, { expected_revision: authoring.revision_hash });
+  const inventory = await f.service.call('list', { include_legacy: true });
+  assert.equal(inventory.find(pack => pack.id === authoring.workflow.id).validation.launch_ready, false);
+  assert.deepEqual(await opened.store.snapshot(authoring.workflow.id), authoringHead);
+  const beforeRuns = (await opened.runtime.runs.list()).length;
+  await assert.rejects(f.service.call('start', { workflow_id: workflow.id, workspace: f.workspace, access: 'read_only', main_actor: 'root', inputs: {} }),
+    { code: 'HOST_TOOL_BINDING_STALE' });
+  assert.equal((await opened.runtime.runs.list()).length, beforeRuns);
+  const unrelated = await f.start();
+  assert.equal(unrelated.status, 'running');
+  assert.deepEqual(await opened.store.snapshot(workflow.id), original);
+});
+
 async function recordNativeSpawn(f,args){
   const {runtime}=await f.service.open();await runtime.authorizeController(args.run_id,{control_token:args.control_token});
   const record=await runtime.runs.read(args.run_id);

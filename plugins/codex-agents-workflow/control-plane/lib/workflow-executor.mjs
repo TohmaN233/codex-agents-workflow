@@ -183,7 +183,7 @@ export class WorkflowExecutor {
     finally { activeHost.settle(activeError && activeHost.intent_pending && !activeHost.receipt_recorded ? { error: activeError } : {}); }
   }
 
-  async externalCall(runId, args, envelope, request, call, { cancellationKind = null, signal = null } = {}) {
+  async externalCall(runId, _args, envelope, request, call, { cancellationKind = null, signal = null } = {}) {
     try { return await call(); }
     catch (cause) {
       if (cancellationKind === 'connector' && signal?.aborted && cause.cancellation_confirmed === true) throw cause;

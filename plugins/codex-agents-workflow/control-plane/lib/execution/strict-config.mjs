@@ -1,18 +1,29 @@
-import { basename, dirname, isAbsolute, join } from 'node:path';
-import { lstat, readFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { lstat, readFile, realpath, mkdtemp, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createCodexClient } from './codex-app-server-client.mjs';
 import { requireValue, noSymlinks } from '../workflow-paths.mjs';
-import { digest } from '../workflow-revisions.mjs';
+import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 
-// This is the complete Windows distribution observed in the normal-session
-// native image/shell proof. The older .sandbox-bin/codex.exe alone cannot run
-// Code Mode host tools and must never qualify a production model node.
-export const QUALIFIED_CODEX = Object.freeze({ platform: 'win32', architecture: 'x64', version: '0.158.0-alpha.2.1',
-  sha256: '8f0554ede25bbc5450921897c468b2e84635aa513c5017457997af0954581f49',
-  companions: Object.freeze({
-    'codex-code-mode-host.exe': '4970a4ce8a7c6091a87dfea34cae03b3b95dd70f26f89f392e11de7fd8ea759e',
-    'codex-command-runner.exe': 'ed216441555458ab92c5b24b53bb6b4c6346b63a658636f5e2d428dbbf70f6c5',
-    'codex-windows-sandbox-setup.exe': '987d744df3c1ba4d81580a75ac28864275e8c174c3e0fa9592fb2e3e0a257e74',
-  }), boundary: 'normal-app-server-native-tools' });
+// These are adapter capabilities, not a release/platform allowlist. The selected
+// executable supplies its own protocol schema and proves its read-only surface.
+export const CODEX_EXECUTION_REQUIREMENTS = Object.freeze({
+  initialize: ['clientInfo', 'capabilities'], 'account/read': ['refreshToken'], 'config/read': ['includeLayers'],
+  'model/list': ['includeHidden', 'limit'], 'skills/list': ['cwds', 'forceReload'],
+  'thread/start': ['cwd', 'model', 'modelProvider', 'sandbox', 'config', 'dynamicTools', 'ephemeral', 'allowProviderModelFallback'],
+  'turn/start': ['threadId', 'input', 'effort', 'outputSchema'], 'turn/interrupt': ['threadId', 'turnId'],
+  'command/exec': ['command', 'cwd', 'env', 'disableOutputCap', 'disableTimeout', 'sandboxPolicy', 'processId', 'streamStdin', 'streamStdoutStderr', 'timeoutMs'],
+  'command/exec/write': ['deltaBase64', 'closeStdin', 'processId'], 'command/exec/terminate': ['processId'],
+});
+const discoveryRequirements = { initialize: CODEX_EXECUTION_REQUIREMENTS.initialize, 'skills/list': CODEX_EXECUTION_REQUIREMENTS['skills/list'] };
+function requirementsFor(scope) {
+  requireValue(['main', 'managed_native', 'discovery'].includes(scope), 'CODEX_QUALIFICATION_SCOPE', 'Unknown Codex capability qualification scope');
+  return scope === 'discovery' ? discoveryRequirements : CODEX_EXECUTION_REQUIREMENTS;
+}
+const qualificationCache = new Map(), qualifications = new WeakMap(), exec = promisify(execFile);
+export const codexQualification = settings => structuredClone(qualifications.get(settings) ?? null);
 
 function keys(value, allowed, label) {
   requireValue(value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).every(key => allowed.includes(key)), 'STRICT_CONFIG', `${label} contains unknown fields`);
@@ -50,26 +61,134 @@ async function verifiedDistributionFile(path, expectedHash, label) {
     label === 'Codex executable' ? 'CODEX_BINARY_CHANGED' : 'CODEX_COMPANION_CHANGED', `${label} differs from the qualified distribution: ${path}`);
 }
 
-// File verification is separated from the fixed qualification gate so tests
-// can exercise missing and altered package members with synthetic bytes.
 export async function verifyCodexDistribution(binary, expected) {
-  requireValue(basename(binary).toLowerCase() === 'codex.exe', 'CODEX_DISTRIBUTION_LAYOUT', 'Select codex.exe within its full distribution directory');
-  await verifiedDistributionFile(binary, expected.sha256, 'Codex executable');
-  for (const [name, hash] of Object.entries(expected.companions))
-    await verifiedDistributionFile(join(dirname(binary), name), hash, name);
+  let target;
+  try { target = await realpath(binary); }
+  catch (error) { if (error.code === 'ENOENT') requireValue(false, 'CODEX_BINARY_MISSING', `Selected Codex executable is missing: ${binary}`); throw error; }
+  await verifiedDistributionFile(target, expected.sha256, 'Codex executable');
+  for (const [name, hash] of Object.entries(expected.companions ?? {}))
+    await verifiedDistributionFile(join(dirname(target), name), hash, name);
+  return target;
 }
 
-export async function qualifiedCodexBinary(settings) {
-  requireValue(process.platform === QUALIFIED_CODEX.platform && process.arch === QUALIFIED_CODEX.architecture && settings.binary_sha256 === QUALIFIED_CODEX.sha256,
-    'STRICT_EXECUTOR_UNQUALIFIED', 'This platform/executable has no shipped normal Codex distribution qualification');
-  await verifyCodexDistribution(settings.codex_binary, QUALIFIED_CODEX);
+function capability(condition, name) {
+  requireValue(condition, 'CODEX_CAPABILITY_UNSUPPORTED', `Selected Codex App Server lacks required capability: ${name}`, { capability: name });
+}
+function dereference(schema, value) {
+  if (!value?.$ref) return value;
+  capability(value.$ref.startsWith('#/'), 'local protocol references');
+  return value.$ref.slice(2).split('/').reduce((item, key) => item?.[key.replaceAll('~1', '/').replaceAll('~0', '~')], schema);
+}
+function methodParams(schema, method) {
+  const variants = schema?.oneOf ?? schema?.anyOf ?? [];
+  const entry = variants.find(item => item.properties?.method?.enum?.includes(method) || item.properties?.method?.const === method);
+  capability(entry, method);
+  return dereference(schema, entry.properties.params);
+}
+export function validateCodexProtocol(schemas, { scope = 'main' } = {}) {
+  const schema = schemas.ClientRequest;
+  const requirements = requirementsFor(scope);
+  for (const [method, fields] of Object.entries(requirements)) {
+    const params = methodParams(schema, method);
+    for (const field of fields) capability(Object.hasOwn(params?.properties ?? {}, field), `${method}.${field}`);
+    for (const field of params?.required ?? []) capability(fields.includes(field), `${method}.required:${field}`);
+  }
+  if (scope === 'discovery') return { scope, methods: Object.keys(requirements) };
+  const call = methodParams(schemas.ServerRequest, 'item/tool/call');
+  for (const field of ['threadId', 'turnId', 'callId', 'tool', 'arguments']) capability(Object.hasOwn(call?.properties ?? {}, field), `item/tool/call.${field}`);
+  for (const method of ['turn/completed', 'item/completed', 'thread/tokenUsage/updated']) methodParams(schemas.ServerNotification, method);
+  const dynamic = schema?.definitions?.DynamicToolSpec ?? schema?.$defs?.DynamicToolSpec;
+  const variants = dynamic?.oneOf ?? dynamic?.anyOf ?? [dynamic];
+  const functionTool = variants.find(item => ['name', 'description', 'inputSchema'].every(field => Object.hasOwn(item?.properties ?? {}, field))
+    && (item.properties.type === undefined || item.properties.type.enum?.includes('function') || item.properties.type.const === 'function'));
+  capability(functionTool, 'thread/start.dynamicTools:function');
+  const tagged = Boolean(functionTool.properties.type);
+  for (const field of functionTool.required ?? []) capability(['name', 'description', 'inputSchema', ...(tagged ? ['type'] : [])].includes(field), `dynamicTools.required:${field}`);
+  return { scope, methods: Object.keys(requirements), dynamic_tool_format: tagged ? 'tagged_function' : 'untagged_function' };
+}
+
+async function readCodexProtocol(binary, env, { scope = 'main' } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'workflow-codex-protocol-'));
+  let result, primary;
+  try {
+    try { await exec(binary, ['app-server', 'generate-json-schema', '--experimental', '--out', directory], { env, windowsHide: true, timeout: 10000, maxBuffer: 65536 }); }
+    catch (cause) { throw Object.assign(new Error('Selected Codex cannot export its experimental App Server protocol', { cause }), { code: 'CODEX_CAPABILITY_UNSUPPORTED', capability: 'app-server.generate-json-schema' }); }
+    result = {};
+    for (const name of scope === 'discovery' ? ['ClientRequest'] : ['ClientRequest', 'ServerRequest', 'ServerNotification']) {
+      const file = join(directory, `${name}.json`), info = await lstat(file);
+      capability(info.isFile() && info.size <= 16 * 1024 * 1024, `protocol schema:${name}`);
+      result[name] = JSON.parse(await readFile(file, 'utf8'));
+    }
+  } catch (error) { primary = error; }
+  try { await rm(directory, { recursive: true }); }
+  catch (error) { if (primary) throw Object.assign(new AggregateError([primary, error], 'Protocol discovery and cleanup failed'), { code: 'CODEX_QUALIFICATION_INCOMPLETE' }); throw error; }
+  if (primary) throw primary;
+  return result;
+}
+async function profileFileHash(path) {
+  try { await noSymlinks(path); return digest(await readFile(path)); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+}
+async function probeReadOnly(binary, home, env, settings, clientFactory, scope) {
+  const client = clientFactory(binary, { home, cwd: home, env });
+  let result, primary;
+  try {
+    let current;
+    const read = async (method, params) => {
+      current = method;
+      try { return await client.call(method, params); }
+      catch (cause) { throw Object.assign(new Error(`Selected Codex App Server read-only probe failed: ${method}`, { cause }),
+        { code: 'CODEX_CAPABILITY_PROBE_FAILED', capability: method, ...(cause.rpc_code === undefined ? {} : { rpc_code: cause.rpc_code }) }); }
+    };
+    const initialized = await read('initialize', { clientInfo: { name: 'codex_workflow_qualification', version: '1.0.0' }, capabilities: { experimentalApi: true } });
+    client.initialized();
+    if (scope !== 'discovery') {
+      const account = await read('account/read', { refreshToken: false });
+      capability(account && (Object.hasOwn(account, 'account') || typeof account.requiresOpenaiAuth === 'boolean'), current);
+      if (settings.authentication.mode === 'host_chatgpt') requireValue(account.account?.type === 'chatgpt', 'CODEX_AUTH_REQUIRED', 'Selected Codex profile has no authenticated ChatGPT account');
+      if (settings.authentication.mode === 'managed_chatgpt' && account.account) requireValue(account.account.type === 'chatgpt', 'CODEX_AUTH_MODE', 'Selected managed ChatGPT profile uses another authentication type');
+      const config = await read('config/read', { includeLayers: false }); capability(config?.config && typeof config.config === 'object', current);
+      const models = await read('model/list', { includeHidden: true, limit: 1 }); capability(Array.isArray(models?.data), current);
+    }
+    const skills = await read('skills/list', { cwds: [home], forceReload: false });
+    capability(Array.isArray(skills?.data) && skills.data.length === 1 && Array.isArray(skills.data[0]?.skills) && Array.isArray(skills.data[0]?.errors), current);
+    result = { user_agent: typeof initialized?.userAgent === 'string' ? initialized.userAgent : null,
+      read_only_methods: scope === 'discovery' ? ['initialize', 'skills/list'] : ['initialize', 'account/read', 'config/read', 'model/list', 'skills/list'] };
+  } catch (error) { primary = error; }
+  try { await client.close(); }
+  catch (error) { if (primary) throw Object.assign(new AggregateError([primary, error], 'Codex qualification and owned process shutdown failed'), { code: 'CODEX_QUALIFICATION_INCOMPLETE' }); throw error; }
+  if (primary) throw primary;
+  return result;
+}
+
+export async function qualifiedCodexBinary(settings, { env = process.env, schemaReader = readCodexProtocol, clientFactory = createCodexClient, cache = qualificationCache, scope = 'main' } = {}) {
+  requirementsFor(scope);
+  const binary = await verifyCodexDistribution(settings.codex_binary, { sha256: settings.binary_sha256 });
+  const home = resolve(env.CODEX_HOME || join(homedir(), '.codex'));
+  const profile = { config: await profileFileHash(join(home, 'config.toml')), auth: await profileFileHash(join(home, 'auth.json')) };
+  const key = digest(canonicalJSON({ binary, sha256: settings.binary_sha256, home, profile, scope, authentication: settings.authentication,
+    environment: digest(canonicalJSON({ path: env.PATH ?? env.Path ?? '', api_key: settings.authentication.api_key_env ? env[settings.authentication.api_key_env] ?? null : null })) }));
+  if (!cache.has(key)) {
+    const pending = (async () => {
+      const schemas = await schemaReader(binary, env, { scope }), capabilities = validateCodexProtocol(schemas, { scope });
+      const runtime = await probeReadOnly(binary, home, env, settings, clientFactory, scope);
+      requireValue(await verifyCodexDistribution(settings.codex_binary, { sha256: settings.binary_sha256 }) === binary,
+        'CODEX_BINARY_CHANGED', 'Selected Codex executable alias changed during qualification');
+      return { boundary: 'selected-app-server-protocol', selected_path: settings.codex_binary, resolved_path: binary,
+        executable_sha256: settings.binary_sha256, protocol_sha256: digest(canonicalJSON(schemas)), platform: process.platform, architecture: process.arch,
+        ...capabilities, ...runtime, model_calls: 0 };
+    })();
+    cache.set(key, pending);
+    try { await pending; } catch (error) { cache.delete(key); throw error; }
+  }
+  qualifications.set(settings, await cache.get(key));
   return settings;
 }
 
-export async function qualifiedStrictSettings(config, env = process.env) {
+export async function qualifiedStrictSettings(config, env = process.env, options = {}) {
   const settings = validateStrictConfig(config.strict_executor);
   requireValue(settings.enabled, 'STRICT_DISABLED', 'The user has not enabled the Codex executor');
-  await qualifiedCodexBinary(settings);
   requireValue(settings.authentication.mode !== 'environment_api_key' || Boolean(env[settings.authentication.api_key_env]), 'CODEX_CREDENTIAL_MISSING', 'Configured authentication environment variable is unavailable');
+  await qualifiedCodexBinary(settings, { ...options, env });
   return settings;
 }

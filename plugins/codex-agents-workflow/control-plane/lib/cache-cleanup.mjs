@@ -49,8 +49,7 @@ export async function workflowCachePlan(store,runs) {
   return {files,retained_revisions:snapshots.length-files.filter(f=>f.kind==='workflow_revision').length};
 }
 
-async function pluginInventory(cacheRoot,env) {
-  requireValue(process.platform==='win32','CACHE_PLATFORM','Plugin cache inspection currently requires Windows');
+export async function pluginInventory(cacheRoot,env,{platform=process.platform,execImpl=exec}={}) {
   // Only version names leave this probe. Never expose process command lines.
   const script=`$ErrorActionPreference='Stop'
 $cacheRoot=$env:WORKFLOW_CLEANUP_CACHE_ROOT
@@ -63,13 +62,34 @@ $commands=@(Get-CimInstance Win32_Process | ForEach-Object { if ($_.CommandLine)
 $active=@(Get-ChildItem -LiteralPath $cacheRoot -Directory | Where-Object { $candidate=$_.FullName.ToLowerInvariant(); @($commands | Where-Object { $_.Contains($candidate) }).Count -gt 0 } | ForEach-Object { $_.Name })
 $hosts=@(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'codex.exe' -and $_.CommandLine -match 'app-server' } | ForEach-Object { @{pid=$_.ProcessId;started_at=$_.CreationDate.ToUniversalTime().ToString('o')} })
 @{installed=$installed;active=$active;hosts=$hosts} | ConvertTo-Json -Depth 4 -Compress`;
-  const {stdout}=await exec('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{windowsHide:true,timeout:30000,maxBuffer:65536,env:{...env,WORKFLOW_CLEANUP_CACHE_ROOT:cacheRoot}});
-  const state=JSON.parse(stdout);
+  let state;
+  if(platform==='win32'){
+    const {stdout}=await execImpl('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{windowsHide:true,timeout:30000,maxBuffer:65536,env:{...env,WORKFLOW_CLEANUP_CACHE_ROOT:cacheRoot}});
+    state=JSON.parse(stdout);
+  }else{
+    const {stdout:registryText}=await execImpl('codex',['plugin','list','--marketplace','codex-agents-workflow','--json'],{env,timeout:30000,maxBuffer:65536});
+    const registry=JSON.parse(registryText);
+    requireValue(Array.isArray(registry.installed),'CACHE_REGISTRY','Codex did not return an installed-plugin inventory');
+    // ps exists on both Linux and macOS. Keep command lines inside this probe;
+    // only plugin versions and exact host PID/start evidence leave it.
+    const {stdout}=await execImpl('ps',['-axww','-o','pid=,lstart=,command='],{env:{...env,LC_ALL:'C'},timeout:10000,maxBuffer:4*1024*1024});
+    const processes=stdout.split(/\r?\n/).filter(line=>line.trim()).map(line=>{
+      const match=/^\s*(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)$/.exec(line);
+      requireValue(match&&Number.isFinite(Date.parse(match[2])),'CACHE_PROCESS_SCHEMA','Process inventory returned incomplete PID/start evidence');
+      return {pid:Number(match[1]),started_at:new Date(match[2]).toISOString(),command:match[3]};
+    });
+    const entries=await readdir(cacheRoot,{withFileTypes:true});
+    state={installed:registry.installed.filter(item=>item.pluginId==='codex-agents-workflow@codex-agents-workflow').map(item=>item.version),
+      active:entries.filter(item=>item.isDirectory()&&processes.some(row=>row.command.includes(join(cacheRoot,item.name)+'/'))).map(item=>item.name),
+      hosts:processes.filter(row=>/(?:^|\/)codex(?:\s|$)/.test(row.command)&&/\bapp-server\b/.test(row.command)).map(({pid,started_at})=>({pid,started_at}))};
+  }
+  requireValue(Array.isArray(state.installed)&&state.installed.length===1&&Array.isArray(state.active)&&Array.isArray(state.hosts),'CACHE_REGISTRY','Invalid installed plugin or process inventory');
   const retentionPath=resolve(cacheRoot,'../../../../codex-agents-workflow/runtime-retention.json');
   let retention={versions:{}};
   try{retention=JSON.parse(await readFile(retentionPath,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
-  const live=new Set((state.hosts??[]).map(h=>`${h.pid}:${h.started_at}`));
-  state.active.push(...Object.entries(retention.versions).filter(([,hosts])=>hosts.some(h=>live.has(`${h.pid}:${h.started_at}`))).map(([version])=>version));
+  const hostKey=h=>`${h.pid}:${Math.floor(Date.parse(h.started_at)/1000)}`;
+  const live=new Set(state.hosts.map(hostKey));
+  state.active.push(...Object.entries(retention.versions).filter(([,hosts])=>hosts.some(h=>live.has(hostKey(h)))).map(([version])=>version));
   return state;
 }
 async function treeFiles(root,path=root,result=[]) {
@@ -89,13 +109,14 @@ export async function pluginCachePlan(home,{env=process.env,inventory=pluginInve
   const state=await inventory(root,env);
   requireValue(Array.isArray(state.installed) && state.installed.length===1 && Array.isArray(state.active),'CACHE_REGISTRY','Invalid installed plugin inspection');
   const keep=new Set([...state.installed,...state.active]);
-  const current=fileURLToPath(import.meta.url).replaceAll('\\','/').toLowerCase();
+  const pathKey=path=>process.platform==='win32'?path.replaceAll('\\','/').toLowerCase():path;
+  const current=pathKey(fileURLToPath(import.meta.url));
   const config=await readFile(join(home,'config.toml'),'utf8');
   const directories=[];
   for(const entry of await readdir(root,{withFileTypes:true})) {
     const path=insideRoot(root,join(root,entry.name));await noSymlinks(path);
     requireValue(entry.isDirectory() && /^[0-9][A-Za-z0-9.+_-]*$/.test(entry.name),'CACHE_VERSION_ENTRY','Unexpected plugin version entry');
-    if(current.startsWith(path.replaceAll('\\','/').toLowerCase()+'/') || config.includes(entry.name))keep.add(entry.name);
+    if(current.startsWith(pathKey(path)+'/') || config.includes(entry.name))keep.add(entry.name);
     if(keep.has(entry.name))continue;
     // Interrupted installs can leave a version directory without a manifest.
     // Its exact plugin-cache namespace, version name and scanned contents still

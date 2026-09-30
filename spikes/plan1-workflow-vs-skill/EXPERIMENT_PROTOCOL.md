@@ -1,6 +1,6 @@
 # Plan 1 comparison protocol
 
-Status: `DRAFT_PENDING_USER_CONFIRMATION`. Native feasibility is proven; no model comparison arm has run.
+Status: historical protocol. The retained results and their valid-sample boundaries are documented in [the experiment report](../../docs/EXPERIMENT_RESULTS.md). This protocol describes the original continuous Main-session design; it does not describe every later runtime revision or the replacement earthquake run.
 
 Four task-specific Workflow Packs are now registered as Drafts. Every `agent` node uses `executor.kind = main`; no Provider, worker, thread, or sub-Agent executor appears in these graphs. The graphs may contain deterministic host-tool nodes for input preflight, shared public helper execution, and public validation. Those are not Agent nodes and the exact same wrapper surface must remain available to all four experimental arms. Draft status and unavailable wrapper registrations prevent accidental launch while the comparison plan is under review.
 
@@ -41,8 +41,8 @@ The abbreviations are defined here and used consistently afterwards:
 
 - **N-main — No-Skill main-agent baseline:** the same main Agent receives the task, inputs, common tools, and thin wrappers, but no Skill body and no Workflow graph.
 - **S-main — Skill main-agent baseline:** the same main Agent receives the original frozen Skill resources in addition to the same task, inputs, tools, and wrappers.
-- **W-control — Workflow control:** the converted Workflow graph runs after all of its Workflow-native resources are preloaded into the fresh main-Agent context. This preserves the graph and host-tool behavior while disabling node-scoped resource projection.
-- **W-main — Workflow main treatment:** the same converted graph runs with only each claimed node's declared Workflow-native resources read into the fresh main-Agent context.
+- **W-control — Workflow control:** the converted Workflow graph runs after all of its Workflow-native resources are preloaded into the fresh candidate's Main context. This preserves the graph and host-tool behavior while disabling node-scoped resource projection.
+- **W-main — Workflow main treatment:** the same converted graph supplies only the current stage's declared Workflow-native resources as needed within the candidate's Main session.
 
 `main` means that every semantic judgment stays in one continuous main-model session. No cheaper submodel or independent Agent is introduced in this comparison.
 

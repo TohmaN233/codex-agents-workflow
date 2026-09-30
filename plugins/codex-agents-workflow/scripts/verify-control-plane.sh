@@ -144,6 +144,9 @@ for operation in workflow_start workflow_native_next workflow_native_spawned_bat
 done
 pass "v7 execution, v6 compatibility, connector contracts, and three-platform CI documented"
 
+node "$script_dir/rebind-workflow-packages.mjs" --check
+pass "shipped packages use current built-in Host implementations"
+
 node --check "$server"
 node --check "$control/open-console.mjs"
 for file in "$control"/lib/*.mjs "$control"/connectors/*.mjs "$control"/web/app.js; do

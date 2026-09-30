@@ -107,7 +107,7 @@ export class ParallelWorktreeManager {
     const { pins, state } = await runtime.runs.read(runId); const region = pins.parallel?.regions.find(item => item.id === args.region_id && item.isolated);
     requireValue(region && state.nodes[region.join_id].status === 'blocked', 'PARALLEL_GATE_NOT_READY', 'Join has not reached its integration gate');
     await this.ensureRegion(runtime, runId, args, region.id, { gate: true });
-    const result = await runtime.transition(runId, 'parallel_proposal', async (current, currentPins) => {
+    const result = await runtime.transition(runId, 'parallel_proposal', async (current, _currentPins) => {
       active(current, { gate: true }); const record = current.parallel[region.id];
       requireValue(region.node_ids.every(id => ['succeeded', 'skipped'].includes(current.nodes[id].status)), 'PARALLEL_BRANCH_FAILED', 'A failed or unfinished branch cannot enter successful integration');
       if (record.proposal) { await runtime.runs.readArtifact(runId, record.proposal.artifact); return record.proposal; }

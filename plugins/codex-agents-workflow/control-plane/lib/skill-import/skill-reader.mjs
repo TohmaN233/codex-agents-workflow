@@ -23,7 +23,7 @@ export function parseSkill(text) {
 // makes the Draft non-executable; it is not claimed to detect arbitrary secrets.
 export function redactKnownCredentials(text, { sourcePath = '' } = {}) {
   const findings = [];
-  const replace = (match, prefix = '') => {
+  const replace = (_match, prefix = '') => {
     findings.push({ code: 'CREDENTIAL_REDACTED', replacement: `REDACTED_REQUIREMENT_${findings.length + 1}` });
     return prefix + `[${findings.at(-1).replacement}]`;
   };

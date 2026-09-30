@@ -1,6 +1,6 @@
 import {spawn,execFileSync} from 'node:child_process';
 import {createInterface} from 'node:readline';
-import {mkdir,writeFile,readFile,access,cp,mkdtemp} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,access,mkdtemp} from 'node:fs/promises';
 import {join,dirname,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';

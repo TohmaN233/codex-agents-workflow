@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './physical-tempdir.mjs';
 import { loadWorkflowInputsFile } from '../lib/workflow-service.mjs';
 import { digest } from '../lib/workflow-revisions.mjs';
 import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';

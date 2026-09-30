@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `N-main` | No-Skill main-agent baseline | 主 Agent 直接完成任务；获得相同的任务、输入、公共工具和薄封装，但不获得 Skill 内容或 Workflow 图。 |
 | `S-main` | Skill main-agent baseline | 同一类主 Agent 在相同任务条件下，额外获得冻结的原始 Skill 资源。 |
-| `W-main` | Workflow main treatment | 运行转换后的 Workflow 图；每个节点在新的主 Agent 上下文中只获得该节点声明的 Workflow 原生资源。 |
+| `W-main` | Workflow main treatment | 转换后的 Workflow 条件；按需提供声明的流程资源，语义判断使用相同的 Main 模型。 |
 
 后文的 `N`、`S`、`W` 分别是上述三组的简称；`main` 表示主 Agent 实验组。
 
@@ -15,6 +15,8 @@
 报告比较五个案例。四个简单任务直接比较 `N-main`（不用 Skill）、`S-main`（使用 Skill）和 `W-main`（Workflow），每组计入 3 个有效结果；Zenonzard 比较完整 31 卡 Workflow Run 与 Skill 实现。
 
 四个简单任务统一使用 `gpt-5.6-terra` / `medium`。Token 为在线模型总 token，包含缓存输入；结果由隔离隐藏测试判定。Zenonzard 的结果采用逐卡严格语意审查：一张卡只要存在语意、注册或生命周期 bug 即判失败，不给部分分。
+
+成本按选定有效结果归集，排除旧版本代码缺陷造成的无效试验，不表示开发和全部调试尝试的总成本。原始简单任务比较使用连续 Main 会话，后续地震替换结果使用 Host Main 执行器；不能将全部 token 差异归因于每节点新上下文。原始记录复核见 [`main-context-evidence.json`](../spikes/plan1-workflow-vs-skill/main-context-evidence.json)。
 
 ## 四个简单任务
 
@@ -52,7 +54,7 @@ W-main 相比 S-main 少 **45.5%** token，平均得分和严格通过数相同�
 
 ## Zenonzard 31 卡
 
-### Token 与 API 等价成本
+### 有效结果 Token 与 API 等价成本
 
 | 实现 | 模型 | 未缓存输入 | 缓存输入 | 输出 | 总 Token | API 等价成本 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |

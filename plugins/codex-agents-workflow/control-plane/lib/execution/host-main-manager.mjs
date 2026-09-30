@@ -7,7 +7,7 @@ import { createHostAuthBroker } from './codex-host-auth.mjs';
 import { createWorkflowResourceBroker, loadNodeSkillSnapshots } from './workflow-resource-broker.mjs';
 import {rejectWorkspaceScope} from './workspace-scope-evidence.mjs';
 import {snapshotWorkspace, changedWorkspacePaths as changedPaths} from './workspace-snapshot.mjs';
-import { qualifiedStrictSettings, validateStrictConfig } from './strict-config.mjs';
+import { qualifiedStrictSettings, validateStrictConfig, codexQualification } from './strict-config.mjs';
 import { hostResultProposalEnvelope, semanticResultSchema, strictAgentOutputSchema } from './host-main-automation.mjs';
 import { authoringReviewIdentity, isAuthoringRunProvenance } from '../authoring/authoring-workflows.mjs';
 import { leaseToken } from '../workflow-execution-envelope.mjs';
@@ -244,14 +244,9 @@ export class HostMainManager {
     const before = await snapshot('before');
     const resources = await resourceItems(runtime, runId, envelope);
     const allowedSkills = await loadNodeSkillSnapshots(runtime, runId, envelope);
-    const inputRoots = typeof envelope.inputs.task_root === 'string' && isAbsolute(envelope.inputs.task_root)
-      ? [{ name: 'task_root', path: envelope.inputs.task_root }] : [];
     entry.broker = await createWorkflowResourceBroker({
       workspace: envelope.workspace, access: envelope.access, allowedPaths: envelope.effective_allowed_paths,
-      deniedPaths: [this.configPath, runtime.workflows.root, runtime.runs.root, join(dirname(this.configPath), 'workflow-expansion-jobs'), this.parent],
-      inputRoots, executionBinding: record.state.constraints?.execution_binding, runtimeEnvironment: record.state.runtime_environment ?? record.state.constraints?.runtime_environment,
-      prepareRuntimeEnvironment: () => runtime.ensureRuntimeEnvironment(runId, {control_token:binding.control_token}),
-      resources, authorize, recoverToolErrors: true,
+      resources, authorize,
       onOperation: metadata => event('tool_operation', metadata),
     });
     await event('tool_capabilities', { access: envelope.access, tools: entry.broker.tools().map(tool => tool.name).join(',') });
@@ -264,7 +259,8 @@ export class HostMainManager {
     entry.session = await this.sessionFactory({
       parent: this.parent, owner: { run_id: runId, node_id: binding.node_id, attempt_id: binding.attempt_id },
       hostAuth: settings.authentication.mode === 'host_chatgpt' ? this.hostAuth : undefined,
-      binary: settings.codex_binary, expectedBinaryHash: settings.binary_sha256, authentication: settings.authentication, model, effort,
+      binary: settings.codex_binary, expectedBinaryHash: settings.binary_sha256, expectedBinaryPath: codexQualification(settings)?.resolved_path,
+      dynamicToolFormat: codexQualification(settings)?.dynamic_tool_format, authentication: settings.authentication, model, effort,
       cwd: envelope.workspace, access: envelope.access, allowedPaths:envelope.effective_allowed_paths, env: environment, toolBroker: entry.broker, authorize, assertActive,
       skillPolicy: envelope.skill_policy ?? {mode:"cooperative",implicit:"deny",ambient_allow:[],shadowed_skill_paths:[]}, allowedSkills,
       maxTurns: remainingTurns,

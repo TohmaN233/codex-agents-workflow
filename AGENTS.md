@@ -57,6 +57,8 @@
 - Semantic review findings receive targeted patches. Mechanical compiler, schema, dependency, permission, and identity failures stop without spending another model attempt.
 - Explicit persistent task lineage may compile to `thread`; all other Agent stages default to registered native Providers.
 - Runtime dependency preparation is Host-owned step 0 for every Workflow. Workflows declare logical executable names and portable version/module constraints only.
+- Codex executor compatibility depends on the selected executable's required protocol capabilities, never a shipped OS, architecture, version or universal binary-hash allowlist. Keep the actual local executable identity and fail on a change during an owned attempt; platform-specific optional adapters must not block unrelated executors.
+- Unavailable dependencies or obsolete tool identities affect the requesting Workflow. Report its diagnostic without preventing the Workbench from opening or unrelated Ready Workflows from running.
 - The Host searches registered paths, PATH, common local installations, and explicit directories. If none satisfy the declaration, it asks for installation approval. A stale binding follows the same discovery and registration path before node effects.
 - Actual dependency paths and probe evidence live in the Host registry and Run journal. They are never exported in Workflow packages.
 - Export only current content-addressed package format. Validate graph, resources, dependency manifest, revision hash, and package hash before atomic installation.

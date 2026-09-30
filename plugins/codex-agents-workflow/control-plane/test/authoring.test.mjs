@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './physical-tempdir.mjs';
 import { compileWorkflowBrief } from '../lib/skill-import/workflow-authoring.mjs';
 import { compileCoarseSkill } from '../lib/skill-import/coarse-compiler.mjs';
 import { compileDeployableConversion } from '../lib/skill-import/conversion-deployment.mjs';

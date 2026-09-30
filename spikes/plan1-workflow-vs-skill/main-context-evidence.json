@@ -1,0 +1,128 @@
+{
+  "schema": "main-context-evidence/v1",
+  "manifest_sha256": "3cfab114bf64716d62c812847fceed95906eb674bd9693fca1875ce43a0d4c9a",
+  "method": "Read retained candidate histories; no model calls or experiment reruns.",
+  "conclusion": "The original retained W-main candidate histories use one controller session each. They do not establish independent fresh model sessions at every semantic node. Do not attribute the entire measured reduction to fresh-node sessions.",
+  "replacement": {
+    "thread_id": "01a0d63b-de47-7303-8061-5b87d868ef26",
+    "run_id": "0ca14936-a4e0-44d0-b32e-506b1e7c1055",
+    "host_main_nodes": [
+      "analyze-earthquakes",
+      "final"
+    ],
+    "separate_node_sessions": "not_independently_proven_by_retained_receipt",
+    "evidence": "Retained result and journal report two Host Main invocations; shared logical session ID is a Run identity, not a physical thread ID. Historical event metadata omitted physical thread IDs. Do not substitute the current fresh-node factory implementation for historical execution evidence."
+  },
+  "original_retained_candidates": [
+    {
+      "candidate_id": "p1-03-crystal-w-main-r1",
+      "thread_id": "01a0bd25-a6d9-7ff2-ba2c-b9d0a98ccbfd",
+      "history_sha256": "d7af561715ec7d316bc86d59ffec6044d3b499e88430b357c92cf9e285c92b89",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-05-crystal-w-main-r2",
+      "thread_id": "01a0bd30-6ec0-7f60-95e7-3515c388b3a4",
+      "history_sha256": "64f2c7f6d1f13c84b62970de1c21d189195c6ae80711ee581d47d60d18ba7faf",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-08-crystal-w-main-r3",
+      "thread_id": "01a0bd36-2b64-7573-a0f2-f6a556aa8189",
+      "history_sha256": "6326cd1e8f752ed8b1dea3082d73e3db96516b0d7fb93e3289bcc6593467bbca",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-13-quake-w-main-r1",
+      "thread_id": "01a0bd49-03e6-7421-a6a9-6a68cea3b5d0",
+      "history_sha256": "860e63dab70acdf75e81dac60be86bded5b241a9e37107d521fa913cd3c90058",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-15-quake-w-main-r2",
+      "thread_id": "01a0bd4e-6ce6-78a2-8cd7-67f82f1e49a9",
+      "history_sha256": "99b521b991fdb6a51d7e745b39855ba19101f4b40be1252a8b3dfabf1ee56d4b",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-22-lake-w-main-r1",
+      "thread_id": "01a0beaa-dbff-7ae3-81db-eca48fed2dca",
+      "history_sha256": "dd9797955e0f30d53a37e88a42539e16dd68c99f8d8cca9883a9e05da223e8f2",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-27-lake-w-main-r2",
+      "thread_id": "01a0bec1-2a24-7113-af0d-ebad3cf4ac6c",
+      "history_sha256": "e0579d17f201effa70ebe13bc0793fbb1988d0aecc9605bfd32878d9a5c7b7f9",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-29-lake-w-main-r3",
+      "thread_id": "01a0becd-c7b1-7092-b760-b1657eb7f339",
+      "history_sha256": "0a7470e476efc1f92fb9aff1c553f469adddd184282d197b1f31e1d6d0f75e02",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-33-video-w-main-r1",
+      "thread_id": "01a0bee7-dccd-76a1-af31-ebc3815e13f9",
+      "history_sha256": "0df1e9da6e813222e257ee244500b2aabdf6ac56e956b8b8b4050d2fe7050f88",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-36-video-w-main-r2",
+      "thread_id": "01a0beff-15d3-7aa1-bcdb-ae183e1a5638",
+      "history_sha256": "dac3b1bad56171424d20ee2d387cf84c831f6768e75c43eac7f9e3dac732161b",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    },
+    {
+      "candidate_id": "p1-38-video-w-main-r3",
+      "thread_id": "01a0bf0e-5536-73a1-9bc3-b1f4dfc3dc34",
+      "history_sha256": "03384db965b5b1402ddcb148ec0117515e30e6971816f706208b3d98c449fb9a",
+      "session_metadata_count": 1,
+      "tool_names": [
+        "exec"
+      ],
+      "child_creation_calls": 0
+    }
+  ]
+}

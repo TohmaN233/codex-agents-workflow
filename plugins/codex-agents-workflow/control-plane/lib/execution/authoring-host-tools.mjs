@@ -29,7 +29,7 @@ const inputSchema=({stage,previous})=>({
   },
 });
 
-const implementationBytes=readFileSync(fileURLToPath(import.meta.url));
+const implementationBytes=readFileSync(fileURLToPath(import.meta.url),'utf8').replace(/\r\n/g,'\n');
 export const AUTHORING_HOST_IMPLEMENTATION_SHA256=digest(implementationBytes);
 
 export function authoringToolIdentity(name){

@@ -104,10 +104,10 @@ export function resolvedSubagentPlan(definition,state){
 }
 
 export class WorkflowRuntime {
-  constructor({ workflowStore, runRoot, generationPolicy = null, authoringReviewer = null, context = {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, executionAdmission = null, environmentResolver = discoverRuntimeEnvironment, environmentVerifier = verifyRuntimeEnvironment, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
+  constructor({ workflowStore, runRoot, generationPolicy = null, authoringReviewer = null, context = {}, beforeStart = async () => {}, strictCapability = () => false, parallelWriteCapability = () => false, parallelManager, executionAdmission = null, environmentResolver = discoverRuntimeEnvironment, environmentVerifier = verifyRuntimeEnvironment, supportedNodeTypes = ['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow'] }) {
     this.generationPolicy = generationPolicy; this.authoringReviewer = authoringReviewer; this.environmentResolver = environmentResolver; this.environmentVerifier = environmentVerifier;
     this.workflows = workflowStore; this.runs = new WorkflowRunStore(runRoot); this.context = context;
-    this.strictCapability = strictCapability; this.parallelWriteCapability = parallelWriteCapability;
+    this.beforeStart = beforeStart; this.strictCapability = strictCapability; this.parallelWriteCapability = parallelWriteCapability;
     this.parallelManager = parallelManager; this.executionAdmission = executionAdmission;
     this.supportedNodeTypes = new Set(supportedNodeTypes);
   }
@@ -163,6 +163,7 @@ export class WorkflowRuntime {
       requireValue(!skill.observations.length, 'SKILL_DEPENDENCY_UNRESOLVED', 'Linked Skill dependencies need review or inlining before execution', { path: skill.path, observations: skill.observations });
       for (const [kind, names] of Object.entries(skill.requirements)) if (['tools', 'mcp_servers'].includes(kind)) requireValue(names.every(name => (this.context[kind] ?? []).includes(name)), 'SKILL_REQUIREMENT_UNAVAILABLE', 'Linked Skill requires an unavailable executor capability', { path: skill.path, kind, requirements: names });
     }
+    await this.beforeStart(closure);
     const requirements = {executables:normalizeExecutableRequirements([...closure.packs.flatMap(pack=>pack.workflow.requirements.executables??[]), ...closure.skills.flatMap(skill=>skill.requirements.executables??[])])};
     const environment = preparedEnvironment ?? await this.environmentResolver(requirements,{extraDirectories:environment_directories,knownDirectories:workspaceRuntimeDirectories(permissions.workspace)});
     requireValue(environment.status === 'ready','ENVIRONMENT_SETUP_REQUIRED','请先准备运行依赖：发现缺少的工具后询问用户是否安装，完成后重新检查。',{environment});
@@ -359,7 +360,7 @@ export class WorkflowRuntime {
       // Late shutdown metadata may document an already fenced attempt; it never
       // changes its lease or makes further execution permissible.
       const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });
-      const definition=pins.root.workflow.nodes.find(item=>item.id===node_id),authoringFinal=isAuthoringRunProvenance(pins.root.provenance)&&node_id===pins.root.workflow.finalization.node_id;
+      const authoringFinal=isAuthoringRunProvenance(pins.root.provenance)&&node_id===pins.root.workflow.finalization.node_id;
       if(authoringFinal && ['review_context_prepared','result_proposed'].includes(event.kind)){
         const expected=authoringReviewIdentity({state,pins}),observed={proposal_hash:event.metadata.proposal_hash,source_revision:event.metadata.source_revision,expand_attempt_id:event.metadata.expand_attempt_id};
         requireValue(canonicalJSON(observed)===canonicalJSON(expected),'AUTHORING_REVIEW_IDENTITY','Reviewer event is not bound to the current canonical proposal');
@@ -844,7 +845,7 @@ export class WorkflowRuntime {
           const childEvidence=payload.evidence.filter(item=>['managed_native_result','native_agent_result'].includes(item?.kind)),trustedResults=attempt.managed_native_results,joined=definition.fanout?payload.structured_output?.[definition.fanout.result_output]:null;
           const perItem=definition.fanout?.result_mode==='per_item';
           const inherited=new Set(attempt.inherited_native_item_indices??[]);
-          const activeAssignments=perItem?assignments.map((assigned,assignmentIndex)=>{
+          const activeAssignments=perItem?assignments.map((_assigned,assignmentIndex)=>{
             const indices=assignedFanoutIndices({count,items,assignments},definition.fanout,assignmentIndex).filter(itemIndex=>!inherited.has(itemIndex));
             return {assignmentIndex,indices,items:indices.map(itemIndex=>items[itemIndex])};
           }).filter(item=>item.indices.length):assignments.map((assigned,assignmentIndex)=>({assignmentIndex,items:assigned}));
@@ -951,7 +952,6 @@ export class WorkflowRuntime {
       requireValue(!['cancelled', 'succeeded', 'paused'].includes(state.status), 'RUN_TERMINAL', 'Run cannot release a retry in its current state');
       const node = state.nodes[node_id]; const graph = graphInfo(pins.root.workflow); const definition = graph.nodes.get(node_id);
       requireValue(node && ['failed', 'interrupted', 'blocked'].includes(node.status), 'NODE_RETRY_STATE', 'Only a failed, interrupted or blocked node can be retried');
-      const native=definition.executor?.kind==='provider'&&pins.providers.some(provider=>provider.id===definition.executor.provider_id&&provider.kind==='native_agent');
       // Native same-Agent correction turns are bounded while that attempt is
       // active. They must not also consume every explicit node-attempt slot:
       // otherwise a protocol/format failure permanently prevents a clean
@@ -1088,7 +1088,7 @@ export class WorkflowRuntime {
         const {count,items,assignments}=resolvedSubagentPlan(definition,state);
         if(count>1||definition.fanout){
           const perItem=definition.fanout?.result_mode==='per_item',inherited=new Set(attempt.inherited_native_item_indices??[]);
-          const activeAssignments=perItem?assignments.map((assigned,assignmentIndex)=>{
+          const activeAssignments=perItem?assignments.map((_assigned,assignmentIndex)=>{
             const indices=assignedFanoutIndices({count,items,assignments},definition.fanout,assignmentIndex).filter(itemIndex=>!inherited.has(itemIndex));
             return {assignmentIndex,items:indices.map(itemIndex=>items[itemIndex])};
           }).filter(item=>item.items.length):assignments.map((assigned,assignmentIndex)=>({assignmentIndex,items:assigned}));
@@ -1156,7 +1156,7 @@ export class WorkflowRuntime {
 
   async recordHostToolReceipt(runId, { node_id, attempt_id, lease_token, control_token, receipt }) {
     validateHostToolReceipt(receipt);
-    const result = await this.transition(runId, 'host_tool_receipt', async (state, pins) => {
+    const result = await this.transition(runId, 'host_tool_receipt', async state => {
       // Run cancellation fences completion but must still durably journal the
       // qualified broker's exact termination receipt for the owned attempt.
       authorize(state, control_token); const { attempt } = attemptFor(state, node_id, attempt_id, lease_token, { active: false });

@@ -6,7 +6,7 @@ import { codexStructuredSchema, restoreOptionalOmissions } from './codex-structu
 import { createHostAuthBroker } from './codex-host-auth.mjs';
 import { createWorkflowResourceBroker } from './workflow-resource-broker.mjs';
 import { waitForManagedLogin } from './codex-managed-login.mjs';
-import { qualifiedStrictSettings, validateStrictConfig, QUALIFIED_CODEX } from './strict-config.mjs';
+import { qualifiedStrictSettings, validateStrictConfig, codexQualification } from './strict-config.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { validateData } from '../workflow-data-schema.mjs';
@@ -89,7 +89,7 @@ export class StrictSessionManager {
     }
     return settings;
   }
-  async prepare(runtime, runId, args, envelope) {
+  async prepare(runtime, runId, _args, envelope) {
     requireValue(this.accepting && executionAdmissionOpen(this.configPath), 'STRICT_SESSION_STOPPED', 'Strict manager is closed to new work');
     assertExecutionAdmission(this.configPath, runId);
     const record = await runtime.runs.read(runId), { pins } = record;
@@ -105,7 +105,7 @@ export class StrictSessionManager {
       : { model: envelope.provider.config.model, effort: envelope.provider.config.reasoning_effort };
     return { execution: 'strict_codex', model: selection.model, effort: selection.effort,
       executable_sha256: settings.binary_sha256, settings_sha256: digest(canonicalJSON(settings)),
-      final_acceptance_required: main && envelope.role === 'finalizer', qualification: QUALIFIED_CODEX };
+      final_acceptance_required: main && envelope.role === 'finalizer', qualification: codexQualification(settings) };
   }
   async launch(runtime, runId, args, { envelope, adapter, prompt }) {
     requireValue(this.accepting && executionAdmissionOpen(this.configPath), 'STRICT_SESSION_STOPPED', 'Strict manager is closed to new work');
@@ -189,9 +189,8 @@ export class StrictSessionManager {
       }
       entry.skillResources = skillResources;
       entry.broker = await createWorkflowResourceBroker({ workspace: envelope.workspace, access: envelope.access, allowedPaths: envelope.effective_allowed_paths,
-        deniedPaths: [this.configPath, runtime.workflows.root, runtime.runs.root, join(dirname(this.configPath), 'workflow-expansion-jobs'), this.parent], resources, authorize: entry.authorize,
-        recoverToolErrors: true,
-        onOperation: async metadata => { await event('tool_operation', metadata); if (metadata.tool === 'write_workspace' && metadata.phase === 'committed') entry.writes.add(metadata.path); },
+        resources, authorize: entry.authorize,
+        onOperation: async metadata => { await event('tool_operation', metadata); },
       });
         if (settings.authentication.mode === 'host_chatgpt' && this.hostAuthBinary !== settings.codex_binary) {
           this.hostAuth?.clear();
@@ -200,7 +199,8 @@ export class StrictSessionManager {
         }
         entry.session = await this.sessionFactory({ parent: this.parent, owner: { run_id: runId, node_id: args.node_id, attempt_id: args.attempt_id },
         hostAuth: settings.authentication.mode === 'host_chatgpt' ? this.hostAuth : undefined,
-        binary: settings.codex_binary, expectedBinaryHash: settings.binary_sha256, authentication: settings.authentication, model: adapter.model, effort: adapter.effort,
+        binary: settings.codex_binary, expectedBinaryHash: settings.binary_sha256, expectedBinaryPath: adapter.qualification?.resolved_path,
+        dynamicToolFormat: adapter.qualification?.dynamic_tool_format, authentication: settings.authentication, model: adapter.model, effort: adapter.effort,
         cwd: envelope.workspace, access: envelope.access, allowedPaths:envelope.effective_allowed_paths, env: this.env, skillPolicy: envelope.skill_policy, allowedSkills, toolBroker: entry.broker, authorize: entry.authorize, assertActive: entry.assertActive,
         onSessionOwned: session => { entry.session = session; },
         onProfilePrepared: profile => event('profile_owned', { home: profile.home, ...(profile.receipt_home ? {receipt_home:profile.receipt_home} : {}), executable_sha256: profile.binary_sha256 }),

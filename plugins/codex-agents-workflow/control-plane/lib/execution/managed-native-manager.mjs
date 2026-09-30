@@ -5,14 +5,13 @@ import { createHostAuthBroker } from './codex-host-auth.mjs';
 import { createWorkflowResourceBroker, loadNodeSkillSnapshots } from './workflow-resource-broker.mjs';
 import {rejectWorkspaceScope} from './workspace-scope-evidence.mjs';
 import {snapshotWorkspace, changedWorkspacePaths as changedPaths} from './workspace-snapshot.mjs';
-import { qualifiedStrictSettings } from './strict-config.mjs';
+import { qualifiedStrictSettings, codexQualification } from './strict-config.mjs';
 import { managedNativeResultSchema, hostCompletionEnvelope, strictAgentOutputSchema, hostNodeTurnSchema, hostNodeTurnResult } from './host-main-automation.mjs';
-import { validateData } from '../workflow-data-schema.mjs';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 import { isEnvironmentDisabled } from '../config.mjs';
 import { compactCodexResultEvidence, persistCodexCommandAudits } from './codex-result-evidence.mjs';
-import { assertExecutionAdmission, assertExecutionAttemptAdmission, executionAdmissionOpen } from './attempt-admission.mjs';
+import { assertExecutionAttemptAdmission, executionAdmissionOpen } from './attempt-admission.mjs';
 import { assignFanoutItems, assignedFanoutIndices, assignedFanoutWritePaths, projectFanoutInputs } from './fanout-input-projection.mjs';
 import { nativeAgentResultSchema } from './native-agent-bridge.mjs';
 import { materializeNodeInputs } from './node-input-materials.mjs';
@@ -46,7 +45,7 @@ function poolAssignments(subagents, accepted = {}) {
   if (!subagents?.fanout) return null;
   const { resolved_count: count, items, fanout } = subagents;
   const raw=assignFanoutItems(items,fanout,count),plan={count,items,assignments:raw};
-  return raw.map((assigned,index)=>{
+  return raw.map((_assigned,index)=>{
     const item_indices=assignedFanoutIndices(plan,fanout,index).filter(itemIndex=>!accepted[itemIndex]);
     return {index,item_indices,items:item_indices.map(itemIndex=>items[itemIndex])};
   }).filter(assignment=>assignment.item_indices.length);
@@ -170,10 +169,10 @@ export class ManagedNativeManager {
   async prepare(_runtime, _runId, _args, envelope) {
     requireValue(this.accepting && executionAdmissionOpen(this.configPath), 'MANAGED_NATIVE_STOPPED', 'Managed native manager is closed to new work');
     requireValue(envelope.skill_policy.mode === 'cooperative' && envelope.provider?.kind === 'native_agent', 'MANAGED_NATIVE_NODE', 'Managed native execution requires a cooperative native Provider node');
-    const settings = await this.qualify(await this.getConfig(), this.env);
+    const settings = await this.qualify(await this.getConfig(), this.env, { scope: 'managed_native' });
     requireValue(this.accepting && executionAdmissionOpen(this.configPath), 'MANAGED_NATIVE_STOPPED', 'Managed native manager is closed to new work');
     return { execution: 'managed_native_codex', model: envelope.provider.config.model, effort: envelope.provider.config.reasoning_effort,
-      executable_sha256: settings.binary_sha256, settings, final_acceptance_required: false };
+      executable_sha256: settings.binary_sha256, settings, qualification: codexQualification(settings), final_acceptance_required: false };
   }
   async launch(runtime, runId, args, prepared) {
     requireValue(this.accepting && executionAdmissionOpen(this.configPath), 'MANAGED_NATIVE_STOPPED', 'Managed native manager is closed to new work');
@@ -252,15 +251,11 @@ export class ManagedNativeManager {
     const before = await snapshot('before');
     const resources = await resourceItems(runtime, runId, envelope);
     const allowedSkills = await loadNodeSkillSnapshots(runtime, runId, envelope);
-    const inputRoots = typeof envelope.inputs.task_root === 'string' && isAbsolute(envelope.inputs.task_root) ? [{ name: 'task_root', path: envelope.inputs.task_root }] : [];
     const brokerFor = async index => {
       const broker = await createWorkflowResourceBroker({
         workspace: envelope.workspace, access: envelope.access, allowedPaths: assignmentWritePaths.get(index),
-        deniedPaths: [this.configPath, runtime.workflows.root, runtime.runs.root, join(dirname(this.configPath), 'workflow-expansion-jobs'), this.parent],
-        inputRoots, executionBinding: record.state.constraints?.execution_binding, runtimeEnvironment: record.state.runtime_environment ?? record.state.constraints?.runtime_environment,
-        prepareRuntimeEnvironment: () => runtime.ensureRuntimeEnvironment(runId, {control_token:args.control_token}),
-        resources, authorize: entry.authorize, recoverToolErrors: true,
-        onOperation: async metadata => { const call_id = `${index + 1}:${String(metadata.call_id).slice(0, 240)}`; await event('tool_operation', { ...metadata, call_id }); if (metadata.tool === 'write_workspace' && metadata.phase === 'committed') entry.writes.add(metadata.path); },
+        resources, authorize: entry.authorize,
+        onOperation: async metadata => { const call_id = `${index + 1}:${String(metadata.call_id).slice(0, 240)}`; await event('tool_operation', { ...metadata, call_id }); },
       });
       entry.brokers.push(broker);
       await event('tool_capabilities', { access: envelope.access, tools: broker.tools().map(tool => tool.name).join(','),
@@ -277,7 +272,8 @@ export class ManagedNativeManager {
       const session = await this.sessionFactory({
         parent: this.parent, owner: { run_id: runId, node_id: args.node_id, attempt_id: dispatchId },
         hostAuth: adapter.settings.authentication.mode === 'host_chatgpt' ? this.hostAuth : undefined,
-        binary: adapter.settings.codex_binary, expectedBinaryHash: adapter.settings.binary_sha256, authentication: adapter.settings.authentication,
+        binary: adapter.settings.codex_binary, expectedBinaryHash: adapter.settings.binary_sha256, expectedBinaryPath: adapter.qualification?.resolved_path,
+        dynamicToolFormat: adapter.qualification?.dynamic_tool_format, authentication: adapter.settings.authentication,
         model: adapter.model, effort: adapter.effort, cwd: envelope.workspace, access: envelope.access, allowedPaths:assignmentWritePaths.get(index), env, toolBroker: broker, authorize: entry.authorize, assertActive: entry.assertActive,
         maxTurns: definition.fanout?.result_mode==='per_item' ? definition.retry.max_attempts : 1,
         skillPolicy: envelope.skill_policy, allowedSkills,
@@ -334,7 +330,6 @@ export class ManagedNativeManager {
               issues=[{item_index:null,category:'invalid',reason:error.message}];}
             const fresh=await runtime.runs.read(runId);
             const attempt=fresh.state.nodes[definition.id].attempts.find(item=>item.id===args.attempt_id);
-            const accepted=assigned.filter(index=>attempt.native_item_results?.[index]);
             const unresolved=assigned.filter(index=>!attempt.native_item_results?.[index]);
             if(recorded && !issues.length && !unresolved.length){
               await session.close();

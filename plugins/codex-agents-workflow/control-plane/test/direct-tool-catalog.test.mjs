@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { tmpdir } from './physical-tempdir.mjs';
 import { join } from 'node:path';
 import { canonicalJSON, digest } from '../lib/workflow-revisions.mjs';
 import { prepareDirectToolCatalog } from '../lib/execution/direct-tool-catalog.mjs';

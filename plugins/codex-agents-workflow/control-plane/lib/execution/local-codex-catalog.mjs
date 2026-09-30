@@ -1,4 +1,4 @@
-import { readdir, stat, readFile } from 'node:fs/promises';
+import { readdir, stat, readFile, realpath } from 'node:fs/promises';
 import { join, delimiter, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { execFile } from 'node:child_process';
@@ -11,7 +11,7 @@ const exec=promisify(execFile);
 export function newestVersion(items) {
   return [...items].sort((a,b)=>{const x=a.version.split('.').map(Number),y=b.version.split('.').map(Number);for(let i=0;i<3;i++){if(x[i]!==y[i])return y[i]-x[i];}return a.binary.localeCompare(b.binary);})[0];
 }
-export async function discoverLocalCodex({env=process.env,platform=process.platform,extra=[]}={}) {
+export async function discoverLocalCodex({env=process.env,platform=process.platform,extra=[],execImpl=exec}={}) {
   const names=platform==='win32'?['codex.exe']:['codex'];
   const candidates=new Set(extra);
   for(const dir of (env.PATH ?? env.Path ?? '').split(delimiter).filter(isAbsolute)) for(const name of names)candidates.add(join(dir,name));
@@ -24,7 +24,7 @@ export async function discoverLocalCodex({env=process.env,platform=process.platf
   for(const binary of [...candidates].slice(0,128)) {
     let info;try{info=await stat(binary);}catch(error){if(['ENOENT','ENOTDIR'].includes(error.code))continue;throw error;}
     if(!info.isFile())continue;
-    try{const result=await exec(binary,['--version'],{timeout:5000,maxBuffer:4096,windowsHide:true});const match=/codex-cli (\d+\.\d+\.\d+)/.exec(result.stdout);requireValue(match,'CODEX_VERSION','Unrecognized Codex version');found.push({binary,version:match[1]});}
+    try{const target=await realpath(binary),result=await execImpl(target,['--version'],{timeout:5000,maxBuffer:4096,windowsHide:true});const match=/codex-cli (\d+\.\d+\.\d+)/.exec(result.stdout);requireValue(match,'CODEX_VERSION','Unrecognized Codex version');found.push({binary:target,selected_path:binary,version:match[1]});}
     catch(error){diagnostics.push({binary,code:error.code ?? 'CODEX_VERSION'});}
   }
   requireValue(found.length,'LOCAL_CODEX_MISSING','No local Codex executable was discovered; configure CODEX_CATALOG_BINARY or install Codex',{diagnostics});
