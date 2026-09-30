@@ -77,4 +77,5 @@
 - Find path, hash, dependency, schema, Provider, prompt, permission, and handoff defects mechanically before starting a Workflow Run.
 - Run the complete control-plane test manifest and the installer/packaging verification after runtime changes.
 - Tests support the declared Node minimum and use portable local fixtures. Real integration dependencies are provisioned explicitly by CI; release versions come from matching package and plugin metadata.
+- CI runs the complete manifest once on each of Windows, Linux and macOS. Repository checks run independently with `--static-only`; local verification scripts run the full manifest by default. Static checks use standard shell tools rather than requiring ripgrep.
 - A Workflow Run starts only from a Ready, launchable, hash-consistent package with all runtime dependencies resolved.

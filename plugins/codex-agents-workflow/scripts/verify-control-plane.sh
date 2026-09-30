@@ -6,6 +6,13 @@ set -eu
 pass() { printf '%s\n' "PASS: $*"; }
 fail() { printf '%s\n' "FAIL: $*" >&2; exit 1; }
 
+run_tests=true
+if [ "$#" -gt 0 ]; then
+  [ "$#" -eq 1 ] && [ "$1" = --static-only ] \
+    || { printf '%s\n' 'Usage: verify-control-plane.sh [--static-only]' >&2; exit 2; }
+  run_tests=false
+fi
+
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd) || exit 1
 plugin_dir=$(CDPATH= cd "$script_dir/.." && pwd) || exit 1
 repo_dir=$(CDPATH= cd "$plugin_dir/../.." && pwd) || exit 1
@@ -152,8 +159,13 @@ node --check "$control/open-console.mjs"
 for file in "$control"/lib/*.mjs "$control"/connectors/*.mjs "$control"/web/app.js; do
   node --check "$file"
 done
-node "$control/test/run-tests.mjs"
-pass "Node syntax and control-plane tests"
+pass "Node syntax"
+if [ "$run_tests" = true ]; then
+  node "$control/test/run-tests.mjs"
+  pass "control-plane tests"
+else
+  printf '%s\n' 'Static verification requested; control-plane test manifest not run.'
+fi
 
 sh -n "$script_dir/verify-control-plane.sh"
 pass "verification script syntax"
