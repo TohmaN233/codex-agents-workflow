@@ -78,6 +78,7 @@
 
 ## Release validation
 
+- Keep experiment run records, usage ledgers, review transcripts, and generated packets outside the repository. Publish consolidated results in documentation without links to temporary experiment files.
 - Find path, hash, dependency, schema, Provider, prompt, permission, and handoff defects mechanically before starting a Workflow Run.
 - Run the complete control-plane test manifest and the installer/packaging verification after runtime changes.
 - Tests support the declared Node minimum and use portable local fixtures. Real integration dependencies are provisioned explicitly by CI; release versions come from matching package and plugin metadata.

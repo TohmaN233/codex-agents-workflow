@@ -16,7 +16,7 @@
 
 四个简单任务统一使用 `gpt-5.6-terra` / `medium`。Token 为在线模型总 token，包含缓存输入；结果由隔离隐藏测试判定。Zenonzard 的结果采用逐卡严格语意审查：一张卡只要存在语意、注册或生命周期 bug 即判失败，不给部分分。
 
-成本按选定有效结果归集，排除旧版本代码缺陷造成的无效试验，不表示开发和全部调试尝试的总成本。原始简单任务比较使用连续 Main 会话，后续地震替换结果使用 Host Main 执行器；不能将全部 token 差异归因于每节点新上下文。原始记录复核见 [`main-context-evidence.json`](../spikes/plan1-workflow-vs-skill/main-context-evidence.json)。
+成本按选定有效结果归集，排除旧版本代码缺陷造成的无效试验，不表示开发和全部调试尝试的总成本。
 
 ## 四个简单任务
 
@@ -82,9 +82,3 @@ Zenonzard Workflow 的严格通过率高 25.80 个百分点，token 多 20.55%�
 | Zenonzard 31 卡 | Workflow +20.55%；API 等价成本 −51.00% | 严格通过率 90.32% 对 64.52% |
 
 四个简单任务中，Workflow token 同时低于 No Skill 与 Skill，质量结果与 Skill 相同。Zenonzard 中，Workflow 的 token 高于 Skill，但严格语意通过率更高、API 等价成本更低。
-
-## 数据来源
-
-- 四任务正式实验：[`formal-comparison-results.json`](../spikes/plan1-workflow-vs-skill/formal-comparison-results.json)
-- Zenonzard Token 与严格审查：[`zenonzard-composed-final-usage.json`](../spikes/plan1-workflow-vs-skill/zenonzard-composed-final-usage.json)
-- Zenonzard 逐卡审查：[`zenonzard-semantic-code-quality-comparison.md`](../spikes/plan1-workflow-vs-skill/zenonzard-semantic-code-quality-comparison.md)

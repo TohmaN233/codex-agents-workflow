@@ -24,7 +24,7 @@ This plugin moves those responsibilities into the Host. When no actionable event
 
 ## What two experiments showed
 
-These are two concrete case studies, not a promise that every Workflow saves tokens. Token totals include cached input. See the [experiment report](docs/EXPERIMENT_RESULTS.md) for arm definitions, judging rules, and machine-readable sources.
+These are two concrete case studies, not a promise that every Workflow saves tokens. Token totals include cached input. See the [experiment report](docs/EXPERIMENT_RESULTS.md) for arm definitions, judging rules, and results.
 
 ### Experiment 1: four simple tasks, with every semantic node running as Main
 
@@ -43,8 +43,6 @@ Every arm used `gpt-5.6-terra / medium`; `W-main` did not gain a cheaper submode
 | Workflow (`W-main`) | **287,459** | **97.22%** | **9/12** |
 
 At identical measured quality, `W-main` used **45.5% fewer tokens** than `S-main` and **49.9% fewer** than `N-main`. Node-scoped projection also used **31.4% fewer tokens** than the control that preloaded the complete Workflow packet into Main.
-
-No cheaper submodel produced this advantage. The original comparison used continuous Main sessions; the later earthquake replacement used the Host Main executor. These observations associate resource projection with lower tokens, but do not isolate fresh-node context as the sole cause. The current implementation must not be substituted for historical execution evidence.
 
 ### Experiment 2: a 31-card Zenonzard implementation with multiple agents
 

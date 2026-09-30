@@ -23,7 +23,7 @@ Codex Agents Workflow 把这些职责拆开：Workflow 描述语义步骤和依�
 
 ## 实验证据
 
-这些是两个具体案例，不是“Workflow 对任何任务都一定省 token”的承诺。Token 包含缓存输入；详细分组、判分方法和数据文件见[实验报告](docs/EXPERIMENT_RESULTS.md)。
+这些是两个具体案例，不是“Workflow 对任何任务都一定省 token”的承诺。Token 包含缓存输入；详细分组、判分方法和结果见[实验报告](docs/EXPERIMENT_RESULTS.md)。
 
 ### 实验一：四个简单任务，全部语义节点都使用 Main
 
@@ -44,8 +44,6 @@ Wyckoff 晶位分析、地震板块计算、湖泊升温归因和视频静音移
 
 
 在质量结果相同的情况下，`W-main` 比 `S-main` 少 **45.5%** token，比 `N-main` 少 **49.9%**。
-
-这个实验没有换用便宜子模型。它显示流程资源按需提供与更低 token 相伴，但历史主比较使用连续 Main 会话，后续地震替换结果使用 Host Main 执行器。不能把全部差异归因于“每节点新上下文”，也不能用当前实现替代历史运行证据。
 
 ### 实验二：Zenonzard 31 卡，使用多 Agent 完成长流程
 
