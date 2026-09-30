@@ -527,6 +527,50 @@ export class WorkflowService {
     }
     requireValue(false,'NATIVE_AGENT_OBSERVER_REPLAY','Native Agent observer repeated only already rejected terminal turns');
   }
+  async #nativeRepairFollowup(runtime,args,{record,definition,attempt,binding,index,agentId,turnId,category,reason,
+    rejectionCount,executor,maxPromptChars}) {
+    const assigned=definition.fanout?.result_mode==='per_item'
+      ?assignedFanoutIndices(resolvedSubagentPlan(definition,record.state),definition.fanout,index):[];
+    const stored=attempt.native_item_results??{};
+    const acceptedItemIndices=assigned.filter(itemIndex=>stored[itemIndex]?.agent_id===agentId);
+    const unresolvedItemIndices=assigned.filter(itemIndex=>!stored[itemIndex]);
+    if(attempt.native_pending_followup)requireValue(definition.fanout?.result_mode==='per_item'&&
+      unresolvedItemIndices.length>0&&executor,'NATIVE_AGENT_FOLLOWUP_CHANGED',
+    'Pending repair follow-up lost its exact unresolved item or native executor');
+    const repairRemaining=definition.retry.max_attempts-rejectionCount;
+    requireValue(repairRemaining>0,'NATIVE_AGENT_REPAIR_EXHAUSTED',
+      `Native Agent ${agentId} exhausted the pinned ${definition.retry.max_attempts}-turn limit: ${reason}`);
+    let repairPrompt=`Rejected result: ${reason}. Return the Result schema from the initial packet.`,repairPacket=null;
+    if(definition.fanout?.result_mode==='per_item'&&unresolvedItemIndices.length&&executor){
+      const prepared=await executor.prepare(args.run_id,{...binding,control_token:args.control_token});
+      requireValue(digest(canonicalJSON(prepared))===attempt.dispatch.envelope_hash,
+        'NATIVE_AGENT_HANDOFF_CHANGED','The repair handoff no longer matches its pinned dispatch intent');
+      const config=maxPromptChars===undefined?await this.config():null;
+      const handoff=await materializedNativeAgentHandoff(record,definition,binding,{...prepared,
+        handoff_required:true,compiled_prompt:prepared.prompt,request_id:attempt.dispatch.request_id},
+        maxPromptChars??config.global.max_prompt_chars,index,{resourceRoot:join(runtime.runs.directory(args.run_id),'objects'),
+          itemPositionOverrides:{[index]:unresolvedItemIndices},bundleSegment:`repair-${rejectionCount}`});
+      requireValue(handoff.packets.length===1&&handoff.packets[0].index===index,
+        'NATIVE_AGENT_FOLLOWUP','Per-item repair must materialize exactly one recorded Agent packet');
+      repairPacket=handoff.packets[0];
+      repairPrompt=`Rejected result: ${reason}. ${repairPacket.prompt}`;
+      const intent={index,agent_id:agentId,item_index:unresolvedItemIndices[0],task_bundle_sha256:repairPacket.task_bundle_sha256,
+        followup_kind:'repair',rejection_count:rejectionCount};
+      if(attempt.native_pending_followup){
+        requireValue(canonicalJSON(attempt.native_pending_followup)===canonicalJSON(intent),
+          'NATIVE_AGENT_FOLLOWUP_CHANGED','Pending repair follow-up no longer matches its exact rejected turn and packet');
+      }else await runtime.recordExecutorEvent(args.run_id,{...binding,control_token:args.control_token,
+        event:{kind:'native_agent_followup_intent',metadata:intent}});
+    }else if(definition.fanout?.result_mode==='per_item')repairPrompt+=unresolvedItemIndices.length
+      ?' Repair only the unresolved entries from the prior turn, in original partition order; the Host retained every accepted sibling.'
+      :' return {"items":[]}.';
+    return {status:category==='blocked'?'native_agent_blocked':'native_agent_invalid_result',run_id:args.run_id,
+      node_id:definition.id,attempt_id:attempt.id,index,agent_id:agentId,turn_id:turnId,reason,repair_remaining:repairRemaining,
+      repair_prompt:repairPrompt,...(repairPacket?{item_index:unresolvedItemIndices[0]}:{}),
+      ...(definition.fanout?.result_mode==='per_item'?{unresolved_item_indices:unresolvedItemIndices,accepted_item_indices:acceptedItemIndices}:{}),
+      ...(repairPacket?{followup_config:{target:agentId,message:repairPrompt},
+        next_action_args:{run_id:args.run_id,control_token:args.control_token}}:{}),next_action:'repair_recorded_agent'};
+  }
   async rejectedNativeOutcome(runtime,args,{definition,attempt,binding,index,observed,category,reason,executor}) {
     const recorded=await runtime.recordNativeRejectedTurn(args.run_id,{...binding,control_token:args.control_token,
       index,agent_id:observed.agent_id,turn_id:observed.turn_id,category,reason});
@@ -546,9 +590,7 @@ export class WorkflowService {
     // per-item results. A closed attempt must not consume the fresh attempt's
     // same-Agent correction allowance.
     const consumed=Math.max(1,rejected[index]?.length??0);
-    const repairRemaining=Math.max(0,definition.retry.max_attempts-consumed);
-    let repairPrompt=`Rejected result: ${reason}. Return the Result schema from the initial packet.`,repairPacket=null;
-    if(repairRemaining===0){
+    if(definition.retry.max_attempts-consumed<=0){
       const error={code:'NATIVE_AGENT_REPAIR_EXHAUSTED',message:`Native Agent ${observed.agent_id} exhausted the pinned ${definition.retry.max_attempts}-turn limit: ${reason}`};
       const completedIds=new Set([
         ...(currentAttempt.native_serial_results??[]).map(item=>item.agent_id),
@@ -564,34 +606,8 @@ export class WorkflowService {
         ...(outstandingAgentIds.length?{controller_cleanup:{tool:'collaboration.interrupt_agent',agent_ids:outstandingAgentIds}}:{}),
         next_action:null};
     }
-    if(definition.fanout?.result_mode==='per_item'&&unresolvedItemIndices.length&&executor){
-      const prepared=await executor.prepare(args.run_id,{...binding,control_token:args.control_token});
-      requireValue(digest(canonicalJSON(prepared))===currentAttempt.dispatch.envelope_hash,
-        'NATIVE_AGENT_HANDOFF_CHANGED','The repair handoff no longer matches its pinned dispatch intent');
-      const config=await this.config();
-      const handoff=await materializedNativeAgentHandoff(fresh,definition,binding,{...prepared,
-        handoff_required:true,compiled_prompt:prepared.prompt,request_id:currentAttempt.dispatch.request_id},
-        config.global.max_prompt_chars,index,{resourceRoot:join(runtime.runs.directory(args.run_id),'objects'),
-          itemPositionOverrides:{[index]:unresolvedItemIndices},bundleSegment:`repair-${recorded.count}`});
-      requireValue(handoff.packets.length===1&&handoff.packets[0].index===index,
-        'NATIVE_AGENT_FOLLOWUP','Per-item repair must materialize exactly one recorded Agent packet');
-      repairPacket=handoff.packets[0];
-      repairPrompt=`Rejected result: ${reason}. ${repairPacket.prompt}`;
-    }else if(definition.fanout?.result_mode==='per_item')repairPrompt+=unresolvedItemIndices.length
-      ?' Repair only the unresolved entries from the prior turn, in original partition order; the Host retained every accepted sibling.'
-      :' return {"items":[]}.';
-    if(repairPacket)await runtime.recordExecutorEvent(args.run_id,{...binding,control_token:args.control_token,
-      event:{kind:'native_agent_followup_intent',metadata:{index,agent_id:observed.agent_id,
-        item_index:unresolvedItemIndices[0],task_bundle_sha256:repairPacket.task_bundle_sha256,
-        followup_kind:'repair',rejection_count:recorded.count}}});
-    return {status:category==='blocked'?'native_agent_blocked':'native_agent_invalid_result',run_id:args.run_id,
-      node_id:definition.id,attempt_id:attempt.id,index,agent_id:observed.agent_id,turn_id:observed.turn_id,
-      reason,repair_remaining:repairRemaining,repair_prompt:repairPrompt,
-      ...(repairPacket?{item_index:unresolvedItemIndices[0]}:{}),
-      ...(definition.fanout?.result_mode==='per_item'?{unresolved_item_indices:unresolvedItemIndices,accepted_item_indices:acceptedItemIndices}:{}),
-      ...(repairPacket?{followup_config:{target:observed.agent_id,message:repairPrompt},
-        next_action_args:{run_id:args.run_id,control_token:args.control_token}}:{}),
-      next_action:'repair_recorded_agent'};
+    return this.#nativeRepairFollowup(runtime,args,{record:fresh,definition,attempt:currentAttempt,binding,index,
+      agentId:observed.agent_id,turnId:observed.turn_id,category,reason,rejectionCount:recorded.count,executor});
   }
   async recordObservedNativeItems(runtime,args,{definition,attempt,binding,index,observed,executor}) {
     let recorded;
@@ -644,21 +660,34 @@ export class WorkflowService {
       next_action:'continue_recorded_agent',followup_config:{target:agentId,message:packet.prompt},
       next_action_args:{run_id:args.run_id,control_token:args.control_token}};
   }
-  async #resumeIncrementalNativeContinuation(runtime,args,{record,definition,attempt,binding,executor,maxPromptChars}){
-    if(definition.fanout?.item_delivery!=='incremental')return null;
+  async #resumeNativeFollowup(runtime,args,{record,definition,attempt,binding,executor,maxPromptChars}){
     const pending=attempt.native_pending_followup;
     if(pending){
-      if(pending.followup_kind!=='incremental')return null;
-      return this.#incrementalNativeContinuation(runtime,args,{record,definition,attempt,binding,index:pending.index,
-        agentId:pending.agent_id,turnId:attempt.native_latest_turns?.[pending.index]?.turn_id,
+      if(pending.followup_kind==='incremental')return this.#incrementalNativeContinuation(runtime,args,{
+        record,definition,attempt,binding,index:pending.index,agentId:pending.agent_id,
+        turnId:attempt.native_latest_turns?.[pending.index]?.turn_id,
         status:'native_item_continuation_pending',maxPromptChars,executor});
+      requireValue(pending.followup_kind==='repair','NATIVE_AGENT_FOLLOWUP','Unknown pending native follow-up kind');
+      const rejection=attempt.native_rejected_turns?.[pending.index];
+      const turns=nativeRejectedTurnHistory(record,definition.id,attempt.id)[pending.index]??[];
+      const rejectedTurn=turns.at(-1);
+      requireValue(rejection?.agent_id===pending.agent_id&&rejection.count===pending.rejection_count&&
+        turns.length===pending.rejection_count&&rejectedTurn&&rejectedTurn.agent_id===pending.agent_id&&
+        rejection.turn_id===rejectedTurn.turn_id&&rejection.category===rejectedTurn.category&&rejection.reason===rejectedTurn.reason,
+      'NATIVE_AGENT_FOLLOWUP_CHANGED','Pending repair follow-up no longer matches the persisted rejected turn history');
+      return this.#nativeRepairFollowup(runtime,args,{record,definition,attempt,binding,index:pending.index,
+        agentId:pending.agent_id,turnId:rejectedTurn.turn_id,category:rejectedTurn.category,reason:rejectedTurn.reason,
+        rejectionCount:pending.rejection_count,executor,maxPromptChars});
     }
+    if(definition.fanout?.item_delivery!=='incremental')return null;
     const plan=resolvedSubagentPlan(definition,record.state);
     for(const [slot,agentId]of Object.entries(attempt.native_agents??{})){
       const index=Number(slot),assigned=assignedFanoutIndices(plan,definition.fanout,index);
       const accepted=assigned.filter(itemIndex=>Boolean(attempt.native_item_results?.[itemIndex]));
       const nextItem=assigned.find(itemIndex=>!attempt.native_item_results?.[itemIndex]);
-      if(accepted.length&&Number.isSafeInteger(nextItem)&&!attempt.native_followups?.[nextItem])
+      const repaired=Number.isSafeInteger(nextItem)&&Object.values(attempt.native_repair_followups??{})
+        .some(receipt=>receipt.agent_id===agentId&&receipt.item_indices?.includes(nextItem));
+      if(accepted.length&&Number.isSafeInteger(nextItem)&&!attempt.native_followups?.[nextItem]&&!repaired)
         return this.#incrementalNativeContinuation(runtime,args,{record,definition,attempt,binding,index,agentId,
           turnId:attempt.native_latest_turns?.[index]?.turn_id,status:'native_item_continuation_pending',maxPromptChars,executor});
     }
@@ -666,7 +695,7 @@ export class WorkflowService {
   }
   async completeObservedNative(runtime,args,{record,definition,attempt,binding,executor,signal,maxPromptChars}) {
     requireValue(this.nativeAgentObserver,'NATIVE_AGENT_OBSERVER_REQUIRED','Native Agent execution requires the Host lifecycle observer');
-    const continuation=await this.#resumeIncrementalNativeContinuation(runtime,args,{record,definition,attempt,binding,executor,maxPromptChars});
+    const continuation=await this.#resumeNativeFollowup(runtime,args,{record,definition,attempt,binding,executor,maxPromptChars});
     if(continuation)return continuation;
     const activeSlots=activeNativeAssignmentSlots(record,definition,attempt);
     const agentIds=activeSlots.map(index=>attempt.native_agents?.[index]);
@@ -1454,7 +1483,7 @@ export class WorkflowService {
           const attempt = current.attempts.find(item => item.id === current.active_attempt_id);
           const lease = { run_id: args.run_id, node_id: active.id, attempt_id: attempt.id,
             lease_token: leaseToken(args.control_token, args.run_id, active.id, attempt.id, attempt.lease_generation ?? 0) };
-          const incrementalContinuation=await this.#resumeIncrementalNativeContinuation(runtime,args,{record:existing,definition:active,
+          const incrementalContinuation=await this.#resumeNativeFollowup(runtime,args,{record:existing,definition:active,
             attempt,binding:lease,executor,maxPromptChars:config.global.max_prompt_chars});
           if(incrementalContinuation)return incrementalContinuation;
           if (attempt.dispatch.receipt) {

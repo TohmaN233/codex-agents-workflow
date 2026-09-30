@@ -955,6 +955,115 @@ test('incremental ten-item delivery checkpoints one item per turn in the same ch
   assert.deepEqual(observed.map(item => item.unresolved), [0,1,2,3,4,5,6,7,7,8,9]);
 });
 
+for (const scenario of [
+  { name: 'post-seal uncapped', mode: 'uncapped-three', scheduling: 'parallel' },
+  { name: 'pre-seal capped', mode: 'capped-one', scheduling: 'parallel', maxConcurrency: 1 },
+  { name: 'pre-seal serial', mode: 'capped-one', scheduling: 'serial' },
+]) {
+  test(`incremental ${scenario.name} recovery replays an undelivered repair before observing again`, async t => {
+    const jobs = [10, 20, 30];
+    let binding;
+    let rejectedItemOne = false;
+    const observed = [];
+    const f = await fixture(t, async ids => {
+      assert.deepEqual(ids, ['repair-replay-child']);
+      const state = await f.service.call('get', binding);
+      const attempt = state.nodes.worker.attempts[0];
+      const itemIndex = jobs.findIndex((_, index) => !attempt.native_item_results?.[index]);
+      assert.ok(itemIndex >= 0, 'The observer must only see an unresolved item');
+      assert.equal(attempt.native_pending_followup ?? null, null,
+        'The Host must resolve every pending follow-up before invoking the observer');
+      observed.push(itemIndex);
+      if (itemIndex === 1 && !rejectedItemOne) {
+        rejectedItemOne = true;
+        return { status: 'completed', agent_id: ids[0], turn_id: 'item-one-blocked', result: {
+          items: [{ outcome: 'blocked', block_reason: 'Item 20 needs repair' }],
+        } };
+      }
+      return { status: 'completed', agent_id: ids[0], turn_id: `item-${itemIndex}-accepted`, result: {
+        items: [{ outcome: 'completed', result: [jobs[itemIndex]] }],
+      } };
+    });
+    const workflow = definition(`native-incremental-${scenario.name.replaceAll(' ', '-')}`, scenario.mode);
+    const worker = workflow.nodes.find(node => node.id === 'worker');
+    worker.fanout.batch_size = jobs.length;
+    worker.fanout.result_mode = 'per_item';
+    worker.fanout.item_delivery = 'incremental';
+    worker.fanout.scheduling = scenario.scheduling;
+    if (scenario.maxConcurrency) worker.fanout.max_concurrency = scenario.maxConcurrency;
+    else if (scenario.scheduling === 'serial') delete worker.fanout.max_concurrency;
+    worker.retry.max_attempts = 3;
+    ({ binding } = await startRun(f, workflow, { jobs }));
+
+    const handoff = await f.service.call('native_next', binding);
+    assert.deepEqual(handoff.packets.map(packet => packet.index), [0]);
+    await recordNativeSpawn(f, { ...binding, attempt_id: handoff.attempt_id, index: 0, agent_id: 'repair-replay-child' });
+
+    const firstContinuation = await f.service.call('native_next', binding);
+    assert.equal(firstContinuation.next_action, 'continue_recorded_agent');
+    assert.equal(firstContinuation.item_index, 1);
+    await f.service.call('native_followed_up', firstContinuation.next_action_args);
+
+    const repair = await f.service.call('native_next', binding);
+    assert.equal(repair.status, 'native_agent_blocked');
+    assert.equal(repair.next_action, 'repair_recorded_agent');
+    assert.equal(repair.item_index, 1);
+    assert.deepEqual(observed, [0, 1]);
+    const beforeRecovery = await f.service.call('get', binding);
+    const beforeAttempt = beforeRecovery.nodes.worker.attempts[0];
+    assert.deepEqual(beforeAttempt.native_item_results[0], {
+      agent_id: 'repair-replay-child', result: [10], turn_id: 'item-0-accepted',
+    });
+    assert.equal(Object.hasOwn(beforeAttempt.native_item_results, '1'), false,
+      'A rejected item stays unresolved until its repair is observed');
+    assert.equal(beforeAttempt.native_rejected_turns[0].count, 1);
+    assert.equal(beforeAttempt.native_pending_followup.index, 0);
+    assert.equal(beforeAttempt.native_pending_followup.agent_id, 'repair-replay-child');
+    assert.equal(beforeAttempt.native_pending_followup.item_index, 1);
+    assert.match(beforeAttempt.native_pending_followup.task_bundle_sha256, /^[a-f0-9]{64}$/);
+    assert.equal(beforeAttempt.native_pending_followup.followup_kind, 'repair');
+    assert.equal(beforeAttempt.native_pending_followup.rejection_count, 1);
+
+    const recoveredRepair = await f.service.call('native_next', binding);
+    assert.deepEqual(recoveredRepair, repair,
+      'Recovery must regenerate the exact persisted repair packet and message');
+    const afterRecovery = await f.service.call('get', binding);
+    const afterAttempt = afterRecovery.nodes.worker.attempts[0];
+    assert.equal(afterRecovery.sequence, beforeRecovery.sequence,
+      'Replaying pending delivery must not append another rejection or follow-up intent');
+    assert.equal(afterAttempt.native_rejected_turns[0].count, 1);
+    assert.deepEqual(afterAttempt.native_pending_followup, beforeAttempt.native_pending_followup);
+    assert.deepEqual(afterAttempt.native_item_results, beforeAttempt.native_item_results,
+      'Recovery must retain accepted siblings and must not accept the rejected turn');
+    assert.deepEqual(observed, [0, 1], 'Recovery must not observe the undelivered repair turn');
+
+    await f.service.call('native_followed_up', recoveredRepair.next_action_args);
+    const secondContinuation = await f.service.call('native_next', binding);
+    assert.equal(secondContinuation.next_action, 'continue_recorded_agent');
+    assert.equal(secondContinuation.item_index, 2,
+      'Acknowledging repair delivery must resume with the next unresolved item after accepting the repair');
+    assert.deepEqual(observed, [0, 1, 1]);
+    await f.service.call('native_followed_up', secondContinuation.next_action_args);
+    const completed = await f.service.call('native_next', binding);
+    assert.equal(completed.next_action, 'workflow_native_next');
+    assert.deepEqual(observed, [0, 1, 1, 2]);
+
+    const finalState = await f.service.call('get', binding);
+    assert.equal(finalState.nodes.worker.status, 'succeeded');
+    assert.deepEqual(finalState.nodes.worker.output.results, jobs.map(job => [job]));
+    assert.deepEqual(finalState.nodes.worker.attempts[0].native_item_results[0], {
+      agent_id: 'repair-replay-child', result: [10], turn_id: 'item-0-accepted',
+    }, 'The earlier accepted sibling remains journaled after repair');
+    assert.deepEqual(finalState.nodes.worker.attempts[0].native_item_results[1], {
+      agent_id: 'repair-replay-child', result: [20], turn_id: 'item-1-accepted',
+    });
+    assert.deepEqual(finalState.nodes.worker.attempts[0].native_item_results[2], {
+      agent_id: 'repair-replay-child', result: [30], turn_id: 'item-2-accepted',
+    });
+    assert.equal(finalState.nodes.final.status, 'ready', 'The full Host-owned item join releases the successor');
+  });
+}
+
 test('uncapped parallel incremental partitions continue their recorded children, join every item and complete downstream', async t => {
   const jobs=[0,1,2,3],observed=[];
   let binding;
