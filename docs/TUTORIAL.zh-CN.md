@@ -6,15 +6,17 @@
 
 ## 1. 安装并打开工作台
 
-先按 [README 的快速开始](../README.md#快速开始)安装插件。支持 MCP Apps 的宿主会显示工作台的侧栏入口；也可以在当前 Codex task 直接告诉 Codex：
+先按 [README 的快速开始](../README.md#快速开始)安装插件，重启 Codex 桌面应用加载入口。工作台现在使用 Codex MCP Extension：支持的宿主会显示内嵌工作台入口与独立设置入口；也可以在当前 Codex task 直接告诉 Codex：
 
 ```text
-使用 $codex-agents-workflow:workflow-control-plane，打开工作台。
+使用 $codex-agents-workflow:workflow-control-plane，在 Codex 内打开工作台。
 ```
 
 工作台和 Provider 设置是 MCP App 页面，打开页面不会启动 Workflow。输入框支持 mentions 时，可以搜索 Workflow 或 Role 并引用它；引用只提供简要上下文，不授权执行。页面通过宿主通信桥访问现有 Host，完整配置不会进入聊天的打开结果。不同宿主支持的可选能力不同，以实际协商结果为准。
 
-需要独立浏览器页面时，也可以从克隆仓库启动：
+内嵌页面无需手动启动本地 HTTP 服务、填写端口或复制认证地址。它与浏览器控制台共用 Host、用户配置和 Run 记录；切换界面不需要重新安装 Workflow。
+
+需要独立浏览器页面，或宿主不支持内嵌页面时，可以显式从克隆仓库启动：
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd
@@ -52,7 +54,7 @@ Workflow 节点不引用或注入 Role。节点只保存 Provider、节点任务
 - GPT reviewer Role 已关闭并绑定现有的 `chatgpt-web-pro` Provider，不会复制 Provider 或 Role。
 - Math、Zenonzard 与 video-use 没有自动安装。
 
-被关闭的 Role 或 Provider 不会被静默替换。依赖它们的 Workflow 可以保存和安装，但在启用所需配置前不能启动。
+关闭的 Role 不会被选择用于委派。关闭的 Provider 不会被静默替换：依赖它的 Workflow 可以保存和安装，但在该 Provider 启用前不能启动。
 
 ## 3. 配置 Provider 与 Role
 
@@ -152,6 +154,34 @@ plugins/codex-agents-workflow/examples/workflows/
 
 左侧添加节点，中间编辑连线，右侧修改 Workflow 或当前节点属性。顶部标签可以查看资源、导入审查、版本、完整 IR 和运行设置。
 
+### 设置子 Agent 数量与并发
+
+在画布选中 **Agent 节点**，将右侧 **执行方式** 设为 **Provider · 原生交接**，然后设置 **子 Agent 数量**：
+
+| 设置 | 含义 |
+| --- | --- |
+| 自动 | 没有列表分发时使用一个 Agent；启用列表 fan-out 后，按输入条数和批次大小计算数量 |
+| 固定数量（1–32） | 将输入列表分成指定数量的任务；输入条数不能少于 Agent 数量 |
+| `batch_size` | 每批处理多少项（1–32）；批处理使用 `distribution: "partition"` |
+| `max_concurrency` | 同时运行的批数上限（1–32），不是整个节点的总批数 |
+| `scheduling: "parallel"` | 并行执行；通过 `max_concurrency` 控制同时释放的批数 |
+| `scheduling: "serial"` | 前一批结果入账后才释放下一批，一次处理一批 |
+
+自动模式下，点击 **启用列表 fan-out**，再在 **运行时 fanout 合同** 中调整分配与调度字段。例如：31 项输入，使用自动数量、`distribution: "partition"`、`batch_size: 10`、`scheduling: "parallel"`、`max_concurrency: 2`，会分成 4 批，每批最多 10 项，同时最多运行 2 批。输入绑定和结果输出名称应与这个节点的实际定义一致。保存、校验并发布后，新任务才使用修改后的配置。
+
+Main 节点不显示这个数量选项；Thread 的续聊节点复用一个已有会话，也不设置新 Agent 数量。Role 用于调用一个帮手，列表任务分发在 Workflow 节点中设置。
+
+Codex 自身还限制会话中可同时打开的子 Agent 数量。在用户配置 `~/.codex/config.toml`（Windows：`%USERPROFILE%\.codex\config.toml`）或项目配置 `.codex/config.toml` 的已有 `[agents]` 段中设置，例如：
+
+```toml
+[agents]
+max_concurrent_threads_per_session = 8
+```
+
+这里的 8 不包含主 Agent，是会话上限，不代表每次都启动 8 个。现有配置中的 `max_threads` 是兼容别名，不需要同时填写两者。Workflow 的 `max_concurrency` 不会提高 Codex 自身的上限；原生节点的并发设置应留在会话可用额度内。配置含义见 [Codex 官方子 Agent 文档](https://learn.chatgpt.com/docs/agent-configuration/subagents)。
+
+### 保存与运行
+
 四个动作含义不同：
 
 1. **校验**：检查当前定义的结构与契约。
@@ -159,7 +189,7 @@ plugins/codex-agents-workflow/examples/workflows/
 3. **发布工作流**：固定修订并检查启动阻塞项。
 4. **新建任务**：使用已经发布的固定修订启动一次 Run。
 
-“结构有效”不代表当前机器已经满足全部运行依赖。Provider、Role、工具、环境和用户输入会在启动边界继续检查。
+“结构有效”不代表当前机器已经满足全部运行依赖。节点 Provider、工具、环境和用户输入会在启动边界继续检查。
 
 运行现有项目时可以在运行设置中提供项目目录；留空时由 Host 创建工作目录。可复用 Workflow 本身不应写死作者电脑上的项目路径。
 
@@ -203,13 +233,13 @@ Thread 用于确实需要在多个阶段续聊同一个侧栏可见 task 的流�
 
 | 现象 | 应检查什么 |
 | --- | --- |
-| 新 task 找不到插件工具 | 检查插件是否启用；重新安装后必须新建 task |
+| 找不到插件工具或工作台入口 | 检查插件是否启用；安装或更新后重启 Codex 桌面应用，再实际调用插件工具验证连接 |
 | Role 卡片显示 Provider 未启用 | 到 Provider 设置启用对应连接，或给 Role 选择可用 Provider |
-| Workflow 安装成功但不能启动 | 检查 Role、Provider、工具、依赖和本次输入 |
+| Workflow 安装成功但不能启动 | 检查节点 Provider、工具、依赖和本次输入 |
 | 生成过程停止 | 查看明确错误与 Run 记录；检查登录、模型、依赖和 Host 日志 |
 | 子 Agent 没有继续 | 查看 Run 是否处于等待、失败或需要处理；不要另开轮询循环 |
 | 页面断开但任务仍在运行 | 使用原 Run ID 恢复控制，先核对真实任务与产物 |
-| 更新后仍是旧界面 | 结束旧控制台并通过安装记录重新打开当前版本 |
+| 更新后仍是旧界面 | 内嵌页面：重启 Codex 后重新打开；浏览器控制台：关闭旧服务，再启动已安装版本 |
 
 恢复时可以告诉 Codex：
 
@@ -233,6 +263,6 @@ Windows 运行：
 node plugins/codex-agents-workflow/scripts/install-local.mjs
 ```
 
-安装器会安装当前版本并清理不再使用的旧插件缓存；不会为了回退而永久保留旧版本。安装完成后新建 Codex task，让它加载新的 Skills、Role 与工具。
+安装器会安装当前版本并清理不再使用的旧插件缓存；不会为了回退而永久保留旧版本。安装完成后重启 Codex 桌面应用，重新打开内嵌工作台并调用插件工具验证连接；不需要为打开页面另建 task。CLI 会话需要重新启动以加载更新。
 
 工作流、Role 自定义、Provider 配置和 Run 记录保存在用户级 Codex 配置目录，不需要提交到仓库。

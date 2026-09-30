@@ -1,5 +1,7 @@
 # Codex Agents Workflow
 
+[项目主页](https://tgy233.top/tgypage/caw/)
+
 **把流程从一段越来越长的提示词，变成可执行、可审查、可恢复的运行时。**
 
 流程型 Skill 很擅长告诉 Agent“应该怎么做”，但它仍然是一份进入模型上下文的说明。任务一长，主会话会同时背着用户对话、完整 Skill、所有中间结果和错误历史继续工作。即使把步骤交给子 Agent，主 Agent 如果反复轮询进度、转抄结果和处理重试，它自己的 token 也未必下降。
@@ -7,6 +9,8 @@
 Codex Agents Workflow 把这些职责拆开：Workflow 描述语义步骤和依赖；Host 负责调度、机械字段、状态、事件等待和恢复；每个 Agent 节点只获得当前步骤所需的材料。它不是“多叫几个 Agent”的包装，而是一套控制上下文和执行边界的本地工作流运行时。
 
 [中文](README.md) · [English](README.en.md) · [操作教程](docs/TUTORIAL.zh-CN.md) · [完整实验报告](docs/EXPERIMENT_RESULTS.md)
+
+工作台现已作为 Codex MCP Extension 接入，可直接在 Codex 内管理和运行 Workflow。它仍通过 Codex 插件安装；MCP Apps 提供内嵌界面，Extensions 提供侧栏、设置和引用入口。
 
 ![新版流程库：Role 与 Workflow 分开展示](docs/assets/tutorial/workbench-library.png)
 
@@ -148,13 +152,15 @@ codex plugin marketplace add .
 codex plugin add codex-agents-workflow@codex-agents-workflow
 ```
 
-安装后在支持 MCP Apps 的 Codex 中，从插件侧栏入口打开工作台，或在当前 task 直接说：
+安装或更新后重启 Codex 桌面应用，让它重新加载插件入口。在支持 MCP Apps 与 Extensions 的 Codex 中，从插件的工作台入口打开内嵌页面，或在当前 task 直接说：
 
 ```text
-使用 $codex-agents-workflow:workflow-control-plane，打开工作台。
+使用 $codex-agents-workflow:workflow-control-plane，在 Codex 内打开工作台。
 ```
 
-需要独立浏览器界面时，也可以手动启动本地控制台：
+内嵌页面通过 Codex 与 Host 通信，无需手动启动 HTTP 服务或复制本机地址。Provider 设置可从工作台顶部或插件设置入口打开。两种界面共用同一份配置和运行记录。
+
+如果需要独立浏览器界面，或宿主没有内嵌页面能力，可以显式启动本地控制台：
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd

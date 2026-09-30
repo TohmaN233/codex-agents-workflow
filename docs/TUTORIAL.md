@@ -6,15 +6,17 @@ This guide matches the current release workbench. It starts from the two default
 
 ## 1. Install and open the workbench
 
-Follow the [README quick start](../README.en.md#quick-start). Hosts supporting MCP Apps expose a sidebar entry for the workbench. You can also ask in your current Codex task:
+Follow the [README quick start](../README.en.md#quick-start), then restart the Codex desktop app to load the entrypoints. The workbench now uses a Codex MCP Extension: supported hosts expose an embedded workbench and a separate settings entry. You can also ask in your current Codex task:
 
 ```text
-Use $codex-agents-workflow:workflow-control-plane and open the workbench.
+Use $codex-agents-workflow:workflow-control-plane and open the workbench inside Codex.
 ```
 
 The workbench and Provider settings are MCP App views; opening them does not start a Workflow. When the composer supports mentions, search and reference a Workflow or Role. A reference supplies compact context, not permission to execute. The UI bridge calls the existing Host, and full configuration stays out of the model-visible opener result. Optional features depend on the host's negotiated capabilities.
 
-For a standalone browser page, you can also launch it from the clone:
+The embedded view needs no manual HTTP server, port, or authentication URL. It shares the Host, user configuration, and Run records with the browser console; switching interfaces does not require reinstalling Workflows.
+
+For a standalone browser page, or a host without embedded-view support, explicitly launch it from the clone:
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd
@@ -52,7 +54,7 @@ Release defaults:
 - GPT reviewer is visible but disabled and reuses the existing `chatgpt-web-pro` Provider.
 - Math, Zenonzard, and video-use are not installed automatically.
 
-A disabled Role or Provider is never silently replaced. A dependent Workflow may be saved and installed, but it cannot launch until the required configuration is enabled.
+A disabled Role is not selected for delegation. A disabled Provider is never silently replaced: dependent Workflows may be saved and installed, but cannot launch until that Provider is enabled.
 
 ## 3. Configure Providers and Roles
 
@@ -152,6 +154,34 @@ Opening a Workflow shows the current canvas:
 
 Add nodes from the left, edit edges in the canvas, and change Workflow or node properties on the right. The top tabs expose resources, import review, versions, full IR, and Run settings.
 
+### Set subagent count and concurrency
+
+Select an **Agent node** on the canvas, choose **Provider · native handoff** under **Execution mode**, then configure **Sub-Agent count**:
+
+| Setting | Meaning |
+| --- | --- |
+| Auto | Uses one Agent without list fan-out; with fan-out, derives the count from the input list and batch size |
+| Fixed count (1–32) | Partitions the input list among the specified number of Agents; there must be at least one item per Agent |
+| `batch_size` | Items per batch (1–32); batching uses `distribution: "partition"` |
+| `max_concurrency` | Maximum active batches (1–32), rather than the total batch count |
+| `scheduling: "parallel"` | Runs batches in parallel, with `max_concurrency` limiting the active window |
+| `scheduling: "serial"` | Releases the next batch only after the previous result is journaled |
+
+For Auto, click **Enable list fan-out**, then edit the distribution and scheduling fields in **Runtime fanout contract**. For example, 31 input items with Auto, `distribution: "partition"`, `batch_size: 10`, `scheduling: "parallel"`, and `max_concurrency: 2` produce four batches of at most ten items, with at most two active at once. Input bindings and result output names must match the node's actual definition. Save, validate, and publish before starting a task with the updated settings.
+
+Main nodes do not expose this count control. A Thread continuation reuses one existing chat rather than creating more Agents. A Role calls one helper; configure list distribution on a Workflow node.
+
+Codex also limits concurrently open subagents within a session. In the existing `[agents]` section of your user config, `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`), or project config, `.codex/config.toml`, set for example:
+
+```toml
+[agents]
+max_concurrent_threads_per_session = 8
+```
+
+This limit excludes Main and does not force every task to spawn eight Agents. Existing configurations can use the legacy alias `max_threads`; do not set both. Workflow `max_concurrency` does not raise Codex's own limit, so keep native-node concurrency within the session's available capacity. See the [official Codex subagent documentation](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+
+### Save and run
+
 The four actions have different meanings:
 
 1. **Validate** checks the current definition and contracts.
@@ -159,7 +189,7 @@ The four actions have different meanings:
 3. **Publish workflow** pins a revision and checks launch blockers.
 4. **New task** starts one Run from an already published revision.
 
-“Structurally valid” does not mean the current machine satisfies every runtime dependency. Provider, Role, tool, environment, and user-input checks continue at the launch boundary.
+“Structurally valid” does not mean the current machine satisfies every runtime dependency. Node Provider, tool, environment, and user-input checks continue at the launch boundary.
 
 Run settings can point to an existing project directory, or the Host can create a workspace when the field is empty. A reusable Workflow should not hard-code the author's project path.
 
@@ -204,13 +234,13 @@ The optional Math Workflow demonstrates the choice: short investigations use one
 
 | Symptom | Check |
 | --- | --- |
-| A new task cannot find plugin tools | Verify that the plugin is enabled; create a new task after reinstalling |
+| Plugin tools or the workbench entry are missing | Verify that the plugin is enabled; restart the Codex desktop app after installation or update, then call a plugin tool to verify the connection |
 | A Role says its Provider is disabled | Enable that connection or bind the Role to an available Provider |
-| A Workflow installs but cannot launch | Check Roles, Providers, tools, dependencies, and Run inputs |
+| A Workflow installs but cannot launch | Check node Providers, tools, dependencies, and Run inputs |
 | Authoring stops | Inspect the explicit error and Run record; check login, model, dependencies, and Host logs |
 | A child agent does not advance | Check whether the Run is waiting, failed, or needs attention; do not start another polling loop |
 | The page disconnected while work continues | Recover the original Run and reconcile real tasks and artifacts |
-| The old UI appears after update | Stop the old console and reopen the installed current version |
+| The old UI appears after update | Embedded view: restart Codex and reopen it. Browser console: stop the old service and launch the installed version |
 
 To recover:
 
@@ -234,6 +264,6 @@ On Windows:
 node plugins/codex-agents-workflow/scripts/install-local.mjs
 ```
 
-The installer installs the current version and removes obsolete plugin-cache versions after releasing the processes that use them. It does not retain old releases indefinitely for rollback. Create a new Codex task after installation so it loads the new Skills, Roles, and tools.
+The installer installs the current version and removes obsolete plugin-cache versions after releasing the processes that use them. It does not retain old releases indefinitely for rollback. Restart the Codex desktop app, reopen the embedded workbench, and call a plugin tool to verify the connection; opening the page does not require a new task. Restart CLI sessions to load updates.
 
 Workflow definitions, Role customizations, Provider settings, and Run records live in the user-level Codex configuration directory rather than the distributable repository.

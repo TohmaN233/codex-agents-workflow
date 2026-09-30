@@ -13,7 +13,7 @@ controller tokens to the Host.
 reaches a native node, follow `workflow_native_next`. Each returned packet contains:
 
 - a stable packet index;
-- the console-selected native `spawn_config`;
+- the workbench-selected native `spawn_config`;
 - a small node prompt with the workspace, access, writable paths and one exact local
   task-bundle address.
 

@@ -18,7 +18,7 @@ workspace retains qualified host discovery. Preserve the discovery selection
 when importing. Skill authoring uses editable skill2workflow classification rules
 pinned to the authoring Run; configured eligible Providers are assigned per node
 by the compiler, never inherited from the planner. Read `workflow_routing_defaults`
-for current rules; shared defaults are edited in the console. Import only the selected
+for current rules; shared defaults are edited in the workbench. Import only the selected
 entry through `workflow_import_skill`; the result is a full-resource Draft with
 visible provenance and unresolved dependencies. Never modify the original Skill.
 

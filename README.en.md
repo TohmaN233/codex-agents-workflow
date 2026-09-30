@@ -1,5 +1,7 @@
 # Codex Agents Workflow
 
+[Project website](https://tgy233.top/tgypage/caw/)
+
 **Turn a growing process prompt into an executable, reviewable, recoverable runtime.**
 
 A process-oriented Skill can tell an agent what to do, but it is still instruction text loaded into model context. As a task grows, the main session carries the user conversation, the complete Skill, intermediate results, and failure history. Delegating steps to subagents does not automatically reduce Main-agent tokens either: if Main keeps polling progress, relaying outputs, and coordinating retries, it continues to spend tokens while the child works.
@@ -7,6 +9,8 @@ A process-oriented Skill can tell an agent what to do, but it is still instructi
 Codex Agents Workflow separates those responsibilities. A Workflow declares semantic steps and dependencies. The Host owns scheduling, mechanical fields, state, event waits, and recovery. Each agent node receives only the material required for its current step. This is a local workflow runtime, not a wrapper that merely spawns more agents.
 
 [中文](README.md) · [English](README.en.md) · [Guide](docs/TUTORIAL.md) · [Full experiment report](docs/EXPERIMENT_RESULTS.md)
+
+The workbench is now a Codex MCP Extension, so you can manage and run Workflows inside Codex. It is still installed as a Codex plugin: MCP Apps supplies the embedded UI, while Extensions supplies sidebar, settings, and reference entrypoints.
 
 ![The current workflow library separates Roles from Workflows](docs/assets/tutorial/workbench-library.png)
 
@@ -141,13 +145,15 @@ codex plugin marketplace add .
 codex plugin add codex-agents-workflow@codex-agents-workflow
 ```
 
-After installation, open the plugin's sidebar entry in a Codex host supporting MCP Apps, or say in your current task:
+After installing or updating, restart the Codex desktop app to reload the plugin entrypoints. In Codex with MCP Apps and Extensions support, open the plugin's workbench entry, or say in your current task:
 
 ```text
-Use $codex-agents-workflow:workflow-control-plane and open the workbench.
+Use $codex-agents-workflow:workflow-control-plane and open the workbench inside Codex.
 ```
 
-For a standalone browser interface, start the local console manually:
+The embedded view communicates with the Host through Codex; no manual HTTP server or local URL is needed. Open Provider settings from the workbench navigation or the plugin settings entry. Both interfaces share configuration and Run records.
+
+If you want a standalone browser interface, or your host does not support embedded views, explicitly start the local console:
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd

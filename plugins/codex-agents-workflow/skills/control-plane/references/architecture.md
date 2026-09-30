@@ -18,8 +18,8 @@ own work.
    - resolves one selected Task Type and executes its fixed Stage plan in order.
 2. **Human-owned configuration plane**
    - stores configuration under the user state directory outside plugin caches;
-   - exposes a token-protected console bound to `127.0.0.1`;
-   - is the only supported writer for Task Types, Stage bindings, and Provider switches.
+   - exposes an embedded MCP App through Extensions entrypoints and an explicitly launched token-protected browser console;
+   - shares one validated Workbench API between both interfaces and agent management tools.
 3. **Provider adapters and connectors**
    - native Codex role, repository-owned Cursor/Grok connector, external-MCP
      descriptor, packet web review, or direct OpenAI-compatible advisory API;
@@ -52,11 +52,13 @@ The default configuration path is `$CODEX_HOME/codex-agents-workflow/control-pla
 input alias and is translated into the canonical store. Saves are validated, atomic, restrictive-permission,
 and revision-checked.
 The default is user-global and independent of the repository or current working directory.
-The authenticated human console reports the active scope and path: normal launches are
+The human workbench reports the active scope and path: normal launches are
 marked `global`; an explicit path override is marked `override` so test state cannot be
 mistaken for the user's shared policy. This storage detail is not exposed by sanitized
 agent-facing status.
-The human console uses the stable loopback address `127.0.0.1:58712` by default. An
+The embedded App uses the host bridge without starting a loopback HTTP server. Its
+bootstrap and configuration travel in UI-only metadata, outside model-visible results.
+The standalone browser console uses `127.0.0.1:58712` by default. An
 explicit port still overrides it, and port `0` requests an automatically selected free
 port for parallel tests or exceptional local conflicts.
 Version-1 and version-2 files migrate atomically to version 3. Legacy scenarios become
