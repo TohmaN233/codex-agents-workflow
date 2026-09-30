@@ -24,6 +24,7 @@
 - The built-in native Provider registry has exactly three model connections: `native-luna` (GPT-6 Luna / max), `native-sol` (GPT-6.1 Sol / high), and `native-astra` (GPT-6 Astra / medium). Planning, implementation, solving, and review behavior belongs to editable Roles and Workflow nodes rather than duplicate Providers.
 - Retired purpose-specific Luna, Terra, Astra, and generation-reviewer Provider IDs are accepted only by configuration and stored-Workflow migration boundaries and are immediately canonicalized. Runtime validation rejects them.
 - Workbench Roles are the only plugin Role registry. When no Workflow matches, Main automatically selects an enabled Role, compiles its current Provider adapter, and assigns the helper without requiring the user to name it.
+- Built-in connector Roles launch through `workflow_start_role_connector`; the Host resolves the pinned Role and delivers its instructions directly, without a legacy Task Type or Workflow Run. Connector status/control keep the returned exact task identity.
 - Main continues independent work, then uses one event-driven wait with the longest supported timeout and verifies the helper result after wakeup. Do not poll.
 - Workflow Providers use the generic `default` native agent with an explicit model and effort. Workflow nodes never pin or inject Workbench Role instructions; generated nodes retain only their Provider and node task.
 - Fresh context excludes unrelated conversation and Skill instructions. It must retain normal Codex reading, image, shell, editing, search, and task-relevant tools.

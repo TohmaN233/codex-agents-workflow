@@ -46,7 +46,10 @@ function App() {
   const [strict,setStrict] = useState<Json | null>(null); const [filter,setFilter] = useState('');
   const invalidChanged = useCallback((id: string, failed: boolean) => setInvalid(current => { if (current.has(id) === failed) return current; const next = new Set(current); if (failed) next.add(id); else next.delete(id); return next; }), []);
   const act = useCallback((work: () => Promise<any>) => { setBusy(n => n + 1); setError(null); void work().catch(cause => setError({ message: cause.message, ...(cause.detail ?? {}) })).finally(() => setBusy(n => n - 1)); }, []);
-  async function refreshLibrary() { setLibrary(await api('list', { include_legacy: true })); }
+  async function refreshLibrary() {
+    const [library, roles] = await Promise.all([api('list', { include_legacy: true }), api('role_templates')]);
+    setLibrary(library); setRoles(roles);
+  }
   async function reload() {
     const config = await request('/api/config'); setConfiguration(config); setStrict(config.config.strict_executor ?? null);
     if (config.config.version === 7) { const values = await Promise.all([api('list', { include_legacy: true }), api('role_templates')]); setLibrary(values[0]); setRoles(values[1]); }

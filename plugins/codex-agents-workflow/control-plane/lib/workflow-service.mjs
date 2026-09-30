@@ -14,7 +14,7 @@ import { continueGenerationRepair } from './skill-import/generation-repair.mjs';
 import { discoverFolderSkills } from './skill-import/folder-inventory.mjs';
 import { loadRoutingSettings, saveRoutingSettings } from './skill-import/routing-settings.mjs';
 import { dirname, join, resolve, isAbsolute, relative } from 'node:path';
-import { loadConfig, isEnvironmentDisabled } from './config.mjs';
+import { loadConfig, isEnvironmentDisabled, appendAuditEvent } from './config.mjs';
 import { WorkflowStore } from './workflow-store.mjs';
 import { WorkflowRuntime, resolvedSubagentPlan, nativeRejectedTurnHistory } from './workflow-runtime.mjs';
 import { assignedFanoutIndices, activeFanoutAssignmentIndices } from './execution/fanout-input-projection.mjs';
@@ -169,6 +169,7 @@ function roleProviderModel(provider){
 function compiledRoleProvider(provider,access,options={}){
   if(!provider)return {provider_kind:null,adapter:null,agent_type:'default',model:null,reasoning_effort:null};
   const adapter=buildProviderAdapter(provider,{access,requires_user_approval:false},options);
+  if(adapter.execution==='builtin_connector')adapter.operations.start='workflow_start_role_connector';
   return {provider_kind:provider.kind,adapter,agent_type:adapter.agent_type??null,
     model:roleProviderModel(provider),reasoning_effort:provider.config?.reasoning_effort??null};
 }
@@ -830,7 +831,23 @@ export class WorkflowService {
         compiled.provenance={...compiled.provenance,kind:'role_customization',builtin_role_id:entry.id,builtin_role_revision:entry.revision_hash};
         return store.create(compiled.workflow,compiled);
       }
+      case 'start_role_connector':
       case 'role_template': {
+        const deliver=async profile=>{
+          if(operation==='role_template')return profile;
+          requireValue(args.revision_hash===profile.revision_hash,'ROLE_REVISION','Role launch must pin the compiled Role revision');
+          requireValue(config.global.enabled&&!isEnvironmentDisabled(this.env)&&executionAdmissionOpen(this.configPath),
+            'CONTROL_DISABLED','Role execution is disabled');
+          requireValue(profile.adapter?.execution==='builtin_connector','ROLE_CONNECTOR_REQUIRED','Selected Role must use a built-in connector');
+          const provider=config.providers.find(item=>item.id===profile.provider_id);
+          requireValue(typeof args.workspace==='string'&&isAbsolute(args.workspace),'ROLE_WORKSPACE','Role connector needs an absolute existing Git workspace');
+          const result=await this.registry.start({provider,stage:{id:'role',read_only:profile.access==='read_only',requires_user_approval:false},
+            prompt:profile.instructions,workspace:args.workspace,taskTypeId:profile.id,stageId:'role',allowedPaths:args.allowed_paths,
+            userApproved:args.user_approved===true,assertActive:()=>{requireValue(!signal?.aborted,'ROLE_START_CANCELLED','Role launch was cancelled');}});
+          await appendAuditEvent(this.configPath,{event:'role-connector-start',role_id:profile.id,revision_hash:profile.revision_hash,
+            provider_id:profile.provider_id,access:profile.access,task_id:result.task_id,outcome:'ok'},{effectCommitted:true});
+          return result;
+        };
         requireValue(typeof args.task==='string'&&args.task.trim()&&args.task.length<=30000,'ROLE_TASK','Role task must be nonempty and bounded');
         if(args.workflow_id.startsWith(BUILTIN_ROLE_PREFIX)){
           const entry=(await bundledRoles(this.defaultConfigPath,config.providers)).find(item=>item.id===args.workflow_id);
@@ -839,19 +856,19 @@ export class WorkflowService {
           if(customization?.workflow.status==='ready'){
             requireValue(!args.revision_hash||args.revision_hash===customization.revision_hash,'ROLE_REVISION','Built-in Role customization revision has changed');
             const node=roleNode(customization),unchanged=node.prompt_template===entry.stage.template;
-            return storedRoleProfile(customization,config.providers,args,{id:entry.id,providerOptions:{env:this.env,allowDirectApi:config.global.allow_direct_api},
-              ...(unchanged&&entry.item.role_instructions?{instructions_override:entry.item.role_instructions}:{})});
+            return deliver(storedRoleProfile(customization,config.providers,args,{id:entry.id,providerOptions:{env:this.env,allowDirectApi:config.global.allow_direct_api},
+              ...(unchanged&&entry.item.role_instructions?{instructions_override:entry.item.role_instructions}:{})}));
           }
           requireValue(entry.item.enabled!==false,'ROLE_NOT_READY','Built-in Role is disabled');
           requireValue(!args.revision_hash||args.revision_hash===entry.revision_hash,'ROLE_REVISION','Built-in role revision has changed');
           const {item,stage,provider,id,revision_hash}=entry;
           requireValue(roleProviderAvailable(provider,stage.access),'ROLE_PROVIDER_UNAVAILABLE','Pinned Role needs an enabled compatible Provider');
-          return {id,revision_hash,template_kind:'role',role:stage.role,access:stage.access,provider_id:provider.id,
+          return deliver({id,revision_hash,template_kind:'role',role:stage.role,access:stage.access,provider_id:provider.id,
             ...compiledRoleProvider(provider,stage.access,{env:this.env,allowDirectApi:config.global.allow_direct_api}),
-            instructions:directRolePrompt(item.role_instructions||stage.template,args)};
+            instructions:directRolePrompt(item.role_instructions||stage.template,args)});
         }
         const pack=await store.snapshot(args.workflow_id,args.revision_hash);
-        return storedRoleProfile(pack,config.providers,args,{providerOptions:{env:this.env,allowDirectApi:config.global.allow_direct_api}});
+        return deliver(storedRoleProfile(pack,config.providers,args,{providerOptions:{env:this.env,allowDirectApi:config.global.allow_direct_api}}));
       }
       case 'authoring_workflows': {
         const packs=await this.ensureAuthoringWorkflows(store,config);

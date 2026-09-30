@@ -38,6 +38,8 @@ Windows 启动器根据 Codex 的安装记录打开当前插件版本；macOS / 
 
 插件加载后，Main 会在普通任务适合委派时自动选择已启用的 Role；用户不需要点名 Role，也不需要先运行 Workflow。Main 会先继续不依赖帮手结果的工作，然后进入最长一小时的事件等待，等完成、失败或需要输入时被唤醒，最后检查真实改动和验证结果。
 
+Role 使用 Grok 等内置连接器时，Host 通过 `workflow_start_role_connector` 直接启动选定的已发布 Role，编译并交付当前要求，不需要旧版任务类型，也不创建 Workflow Run。返回的任务标识用于查看状态和取消。原生 Role 使用返回的原生 Agent 启动配置；GPT reviewer 使用已配置的审阅包路线。
+
 Workflow 节点不引用或注入 Role。节点只保存 Provider、节点任务、输入和权限。生成 Workflow 时可以根据任务类型选择适合的 Provider；运行时不会叠加工作台 Role。
 
 默认状态：

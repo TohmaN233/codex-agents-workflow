@@ -38,6 +38,8 @@ A fresh library contains only two Workflows: **Build Workflow** and **Skill to W
 
 Once the plugin is loaded, Main automatically selects an enabled Role when an ordinary task benefits from delegation. The user does not need to name a Role or start a Workflow. Main first continues work that does not depend on the helper, then enters an event wait of up to one hour. Completion, failure, or a request for input wakes Main, which inspects the actual changes and verification evidence.
 
+For a Role using a built-in connector such as Grok, the Host launches the selected published Role directly through `workflow_start_role_connector`. It compiles and delivers the current instructions without requiring a legacy Task Type or creating a Workflow Run. The returned task identity is used for status and cancellation. Native Roles use the returned native spawn configuration; GPT reviewer uses the configured packet review route.
+
 Workflow nodes do not reference or inject Roles. A node stores only its Provider, task, inputs, and access. Workflow generation may choose a Provider by task type; runtime does not stack a Workbench Role on the node.
 
 Release defaults:

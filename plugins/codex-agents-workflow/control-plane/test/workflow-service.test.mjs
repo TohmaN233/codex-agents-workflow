@@ -11,6 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { loadConfig, saveConfig, configRevision, resolveAuditPath } from '../lib/config.mjs';
 import { WorkflowService } from '../lib/workflow-service.mjs';
 import { ConnectorTaskStore } from '../connectors/task-store.mjs';
+import { connectorRegistryFor } from '../connectors/registry.mjs';
 import { DEFAULT_CONFIG_PATH, handleRpc, startConsole, stopConsole } from '../server.mjs';
 import { SkillInventory } from '../lib/skill-import/inventory.mjs';
 import { workflowToolDefinitions, HOST_ONLY_WORKFLOW_OPERATIONS } from '../lib/workflow-tools.mjs';
@@ -22,6 +23,64 @@ import { CONVERSION_CONTRACT } from '../lib/skill-import/conversion-contract.mjs
 import { digest } from '../lib/workflow-revisions.mjs';
 import { workflowResourceProgramIdentity } from '../lib/execution/workflow-resource-program.mjs';
 import { qualifiedExecutionBinding } from '../lib/execution/codex-tool-broker.mjs';
+
+test('customized connector Role delivers its current instructions without a legacy Task Type or Workflow Run',async t=>{
+  const delivered=[];
+  const f=await fixture(t,{configure:config=>{config.providers.find(p=>p.id==='grok-local').enabled=true;},
+    registry:{start:async args=>{delivered.push(args);return {task_id:'connector-role-task',state:'running'};}}});
+  await f.migrate();
+  const draft=await f.service.call('customize_role',{workflow_id:'builtin-role-cross-review'},{human:true});
+  const workflow=structuredClone(draft.workflow);workflow.enabled=true;
+  const node=workflow.nodes.find(n=>n.id==='role');node.executor={kind:'provider',provider_id:'grok-local'};
+  node.prompt_template='Review the actual source independently. Return evidence-backed findings.';
+  const saved=await f.service.call('save',{workflow_id:workflow.id,expected_revision:draft.revision_hash,workflow},{human:true});
+  await f.service.call('publish',{workflow_id:workflow.id,expected_revision:saved.revision_hash},{human:true});
+  const role=(await f.service.call('role_templates')).find(r=>r.id==='builtin-role-cross-review');
+  const args={workflow_id:role.id,revision_hash:role.revision_hash,task:'Audit retry identity.',workspace:f.workspace,
+    context:'Frozen local commit',constraints:'No writes',verification:'Trace the actual callers'};
+  const profile=await f.service.call('role_template',args);
+  assert.equal(profile.adapter.operations.start,'workflow_start_role_connector');
+  const tool=workflowToolDefinitions().find(t=>t.name===profile.adapter.operations.start);
+  assert(tool);assert(tool.inputSchema.required.includes('revision_hash'));
+  assert.equal(Object.hasOwn(tool.inputSchema.properties,'task_type_id'),false);
+  t.mock.method(connectorRegistryFor({configPath:f.configPath,env:{}}),'start',f.service.registry.start);
+  const rpc=await handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:tool.name,arguments:args}},
+    {configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{}});
+  assert.notEqual(rpc.result.isError,true,JSON.stringify(rpc.result));
+  assert.equal(delivered.length,1);assert.equal(delivered[0].provider.id,'grok-local');
+  assert.equal(delivered[0].prompt,profile.instructions);assert.equal(delivered[0].stage.read_only,true);
+  assert.equal(delivered[0].taskTypeId,role.id);assert.equal(delivered[0].userApproved,false);
+  assert.equal((await f.service.call('runs')).length,0);
+  const audit=await readFile(resolveAuditPath(f.configPath),'utf8');
+  assert.match(audit,/role-connector-start/);assert.match(audit,/connector-role-task/);
+  await assert.rejects(f.service.call('start_role_connector',{...args,revision_hash:'stale'}),{code:'ROLE_REVISION'});
+  await assert.rejects(f.service.call('start_role_connector',{...args,revision_hash:undefined}),{code:'ROLE_REVISION'});
+  const config=await loadConfig({configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  config.providers.find(p=>p.id==='grok-local').enabled=false;await saveConfig(config,{configPath:f.configPath});
+  await assert.rejects(f.service.call('start_role_connector',args),{code:'ROLE_PROVIDER_UNAVAILABLE'});
+  assert.equal(delivered.length,1,'Rejected configuration must not invoke a different Provider');
+});
+
+test('connector Role launch retains write scope/approval and rejects disabled control, native routes and cancellation',async t=>{
+  const delivered=[];
+  const f=await fixture(t,{configure:config=>{const p=config.providers.find(p=>p.id==='grok-local');p.enabled=true;p.requires_user_approval=true;},
+    registry:{start:async args=>{args.assertActive();delivered.push(args);return {task_id:'write-role-task',state:'running'};}}});
+  await f.migrate();
+  const draft=await f.service.call('build_workflow',{workflow_id:'write-connector-role',name:'Write connector Role',brief:'Fix the owned parser.',provider_id:'grok-local',template_kind:'role',access:'bounded_write'});
+  const ready=await f.service.call('publish',{workflow_id:draft.workflow.id,expected_revision:draft.revision_hash},{human:true});
+  const args={workflow_id:ready.workflow.id,revision_hash:ready.revision_hash,task:'Fix parser.',workspace:f.workspace,allowed_paths:['parser.mjs'],user_approved:true};
+  await f.service.call('start_role_connector',args);
+  assert.equal(delivered[0].stage.read_only,false);assert.deepEqual(delivered[0].allowedPaths,['parser.mjs']);
+  assert.equal(delivered[0].provider.requires_user_approval,true);assert.equal(delivered[0].userApproved,true);
+  const cancelled=new AbortController();cancelled.abort();
+  await assert.rejects(f.service.call('start_role_connector',args,{signal:cancelled.signal}),{code:'ROLE_START_CANCELLED'});
+  const native=await f.service.call('role_template',{workflow_id:'builtin-role-repository-analysis',task:'Trace calls'});
+  await assert.rejects(f.service.call('start_role_connector',{workflow_id:native.id,revision_hash:native.revision_hash,task:'Trace calls',workspace:f.workspace}),{code:'ROLE_CONNECTOR_REQUIRED'});
+  const config=await loadConfig({configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});config.global.enabled=false;
+  await saveConfig(config,{configPath:f.configPath});
+  await assert.rejects(f.service.call('start_role_connector',args),{code:'CONTROL_DISABLED'});
+  assert.equal(delivered.length,1);
+});
 import { nativeRejectedTurnHistory } from '../lib/workflow-runtime.mjs';
 import { readHostMainWorker, watchHostMainAuthority, writeHostMainWorker } from '../lib/execution/host-main-worker.mjs';
 import { AUTHORING_PLANNER_PROMPT_V26, AUTHORING_REVIEW_PROMPT_V21 } from '../lib/authoring/authoring-workflows.mjs';
