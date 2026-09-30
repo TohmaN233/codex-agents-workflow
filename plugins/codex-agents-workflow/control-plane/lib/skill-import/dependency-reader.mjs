@@ -1,6 +1,6 @@
 import { informationalImportObservation } from '../workflow-import-observations.mjs';
 import { posix } from 'node:path';
-import { readDependencyMetadata } from './metadata-reader.mjs';
+import { normalizeImportedExecutableRequirements, readDependencyMetadata } from './metadata-reader.mjs';
 
 // Deliberately finite static observations. This never runs a script or claims
 // to infer its behavior. Unresolved observations remain visible Draft blockers.
@@ -63,7 +63,9 @@ export function analyzeSkillDependencies(snapshot) {
       if (!present) unresolved.push({ code: 'UNRESOLVED_COMMAND_REFERENCE', path, line, target, origin: 'observed' });
     }
   }
-  for (const kind of Object.keys(requirements)) requirements[kind] = [...new Set(requirements[kind])].sort();
+  for (const kind of Object.keys(requirements)) requirements[kind] = kind === 'executables'
+    ? normalizeImportedExecutableRequirements(requirements[kind])
+    : [...new Set(requirements[kind])].sort();
   const observations = observed_dependencies.filter((item, index, all) => all.findIndex(other => other.kind === item.kind && other.name === item.name && other.path === item.path && other.evidence === item.evidence) === index)
     .sort((a, b) => `${a.kind}\0${a.name}\0${a.path}\0${a.evidence}`.localeCompare(`${b.kind}\0${b.name}\0${b.path}\0${b.evidence}`));
   const hasRequiredExternal = requirements.executables.length || requirements.environment.length || requirements.mcp_servers.length || requirements.tools.some(tool => tool !== 'read_workflow_resource');

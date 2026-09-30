@@ -19,10 +19,26 @@ export function skillInventory(result, cwd) {
   }).sort((a, b) => skillPathKey(a.path).localeCompare(skillPathKey(b.path), 'en'));
 }
 
-export async function createSkillPolicy({ home, cwd, skillPolicy, allowed = [] }) {
+export async function createSkillPolicy({ home, cwd, skillPolicy, allowed = [], hostExecutionOnly = false }) {
   requireValue(skillPolicy?.mode === 'strict' && skillPolicy.implicit === 'deny' && Array.isArray(skillPolicy.shadowed_skill_paths) && Array.isArray(skillPolicy.ambient_allow), 'SKILL_POLICY', 'Strict requires an explicit deny policy and path allow/shadow sets');
   const shadows = new Set(skillPolicy.shadowed_skill_paths.map(skillPathKey));
   requireValue(allowed.length <= 64, 'SKILL_ALLOW_LIMIT', 'Too many explicitly allowed Skills');
+  if (hostExecutionOnly) {
+    requireValue(allowed.length === 0 && skillPolicy.ambient_allow.length === 0, 'SKILL_ISOLATION_FAILED', 'Host-only execution cannot import Skills');
+    let applied = false;
+    const audit = { discovered_skills: [], allowed_skills: [], shadowed_skills: [...shadows], disabled_skills: [], uncontrolled_system_skills: [], inventory_hash: digest(canonicalJSON([])), catalog_mode: 'disabled_by_profile' };
+    return {
+      async apply() { applied = true; return structuredClone(audit); },
+      async verify() { requireValue(applied, 'SKILL_POLICY_NOT_APPLIED', 'Apply Skill policy before creating any thread'); },
+      explicitInputs(sourcePaths) {
+        requireValue(Array.isArray(sourcePaths) && sourcePaths.length === 0, 'SKILL_INJECTION_DENIED', 'Host-only execution cannot inject Skills');
+        return [];
+      },
+      tools() { return []; },
+      read() { requireValue(false, 'SKILL_READ_DENIED', 'Host-only execution cannot read Skills'); },
+      audit: () => applied ? structuredClone(audit) : null,
+    };
+  }
   const pins = new Map(); const sources = new Set(); const files = [];
   for (const skill of allowed) {
     const source = skillPathKey(skill.source_path);

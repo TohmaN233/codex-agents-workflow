@@ -1,7 +1,7 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { api, JsonField, Details, Status, FormValidContext, pretty, useLocale, type Json, uid } from './shared';
 import { Canvas } from './canvas';
-import { createRunRefresh, loadRunSnapshot } from './run-refresh.mjs';
+import { createRunRefresh, loadRunPanelSnapshot } from './run-refresh.mjs';
 import { strictSessionPresentation } from './strict-session-view.mjs';
 export const controllers = new Map<string, string>();
 const leases = new Map<string, Json>();
@@ -13,10 +13,11 @@ export function rememberRun(run: Json) {
   }
   return run.run_id as string;
 }
-export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () => Promise<any>) => void, onRun: (id: string) => void }) {
+export function RunPanel({ runId, providers, act, onRun }: { runId: string, providers: Json[], act: (work: () => Promise<any>) => void, onRun: (id: string) => void }) {
   const t = useLocale();
   const [snapshot, setSnapshot] = useState<Json | null>(null); const [pack, setPack] = useState<Json | null>(null);
   const state = snapshot?.state; const next = snapshot?.next ?? {}; const events = snapshot?.events ?? []; const liveSnapshot = snapshot?.live ?? null;
+  const bridgeProposal = snapshot?.bridgeProposal ?? null;
   const [nodeId, setNodeId] = useState(''); const [result, setResult] = useState<Json | null>(null); const [login, setLogin] = useState<Json | null>(null);
   const [nodeDetails, setNodeDetails] = useState<Json | null>(null);
   const [receipt, setReceipt] = useState<Json>({}); const [completion, setCompletion] = useState<Json>({ status: 'succeeded', summary: '', structured_output: {}, artifacts: [], evidence: [], changed_paths: [], outside_paths: [] });
@@ -31,9 +32,7 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
     return labels[value] ? t(...labels[value]) : value;
   };
   async function refresh() {
-    return refreshController.refresh(async (previous: Json | null) => {
-      const batch = await loadRunSnapshot(api, runId, controllers.get(runId), previous);
-      const { state: s, next: n, events: nextEvents } = batch;
+    return refreshController.refresh((previous: Json | null) => loadRunPanelSnapshot(api, runId, controllers.get(runId), previous, async ({ state: s }: Json) => {
       let nextLive = null;
       if (lease && pack?.workflow.skill_policy.mode === 'strict' && ['claimed','running'].includes(s.nodes[nodeId]?.status) && s.nodes[nodeId]?.attempts.at(-1)?.dispatch?.receipt?.executor === 'codex-app-server') {
         try { nextLive = { attempt_id: lease.attempt_id, value: await api('strict_status', args) }; }
@@ -42,8 +41,8 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
           nextLive = { attempt_id: lease.attempt_id, value: { status: 'unavailable', error: (cause as any).detail } };
         }
       }
-      return { state: s, next: n, events: nextEvents, eventAuthority: batch.eventAuthority, live: nextLive };
-    }, setSnapshot);
+      return nextLive;
+    }), setSnapshot);
   }
   useEffect(() => {
     let current = true;
@@ -80,11 +79,16 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
   </div>
   {!token && <div className="notice">{t('此页面只读。可在 Codex 主会话中授权恢复此 Run，或在此接管。接管会使旧控制权和租约失效，并暂停整个 Run 树，不会自动批准或完成节点。子 Run 从父节点领取其控制权。', 'This page is read only. Authorize recovery of this Run in the main Codex conversation, or take control here. Recovery invalidates old control and leases and pauses the entire Run tree; it does not approve or complete nodes. Child Runs claim control from their parent.')}<button onClick={() => act(async () => { const adopted = await api('adopt_run', { run_id: runId, expected_sequence: state.sequence, reason: '用户在本地控制台显式接管', main_actor: 'human-console' }); rememberRun(adopted); setResult(adopted); await refresh(); })}>{t('接管并暂停 Run', 'Take control and pause Run')}</button></div>}
   {state.control_recovery?.errors?.length > 0 && <div className="error-banner" role="alert">{t('恢复或清理尚未完成，继续运行已阻止。', 'Recovery or cleanup is incomplete; continued execution is blocked.')}<Details title={t('待处理错误', 'Pending errors')} value={state.control_recovery.errors}/></div>}
-  <div className="run-body"><Canvas workflow={pack.workflow} runtime={state.nodes} onChange={() => {}} onSelect={(kind,id) => { if (kind === 'node') setNodeId(id); }} readOnly/>
+  <div className="run-body"><Canvas workflow={pack.workflow} runtime={state.nodes} providers={providers} onChange={() => {}} onSelect={(kind,id) => { if (kind === 'node') setNodeId(id); }} readOnly/>
     <aside className="inspector scroll"><h2>{nodeId || t('运行详情', 'Run details')}</h2>{!nodeId && <p>{t('选择节点查看状态、产物、证据及可用操作。', 'Select a node to view its status, artifacts, evidence, and available actions.')}</p>}
+      {state.environment_attention && <section role="status"><h3>{t('节点 0：重新准备依赖','Step 0: prepare dependencies again')}</h3><p>{t('本机依赖已失效，尚未执行的步骤会等待重新登记。可在「执行能力」填写已有安装路径；安装新依赖前需要同意。','A local dependency is unavailable. Pending steps wait for re-registration. Register an existing installation in Execution; installing a dependency requires approval.')}</p><Details title={t('发现结果','Discovery results')} value={state.environment_attention}/><button disabled={!token} onClick={()=>act(async()=>{await api('recheck_runtime_environment',control);await refresh();})}>{t('重新发现并验证','Rediscover and verify')}</button></section>}
+      {!nodeId && (state.runtime_environment ?? state.constraints?.runtime_environment) && <Details title={t('本次运行的依赖位置','Runtime dependency locations')} value={state.runtime_environment ?? state.constraints.runtime_environment}/>}
       <Details title={t('输入、范围与固定版本', 'Inputs, scope, and pinned revision')} value={{ inputs: state.inputs, permissions: state.permissions, revision: pack.revision_hash, finalization: pack.workflow.finalization }}/>
       {next.parent_block && <Details title={t('父 Run 阻塞', 'Parent Run blocked')} value={next.parent_block}/>}
       {(next.pending_approvals ?? next.approvals ?? []).map((approval: Json) => <article className="review-item" key={approval.id}><Details title={t('待批准的节点与范围', 'Node and scope awaiting approval')} value={approval}/>{token && <><button onClick={() => call('approve', { approval_id: approval.id, decision: true })}>{t('批准此范围', 'Approve this scope')}</button><button onClick={() => call('approve', { approval_id: approval.id, decision: false })}>{t('拒绝', 'Reject')}</button></>}</article>)}
+      {bridgeProposal?.kind === 'final_acceptance' && <article className="review-item"><h3>{t('隔离 Main 最终验收', 'Isolated Main final acceptance')}</h3><p>{t('语义提案由 Host 管理的隔离 Main 节点生成；模型没有接触控制令牌、租约或工作流生命周期工具。请审查后明确接受或拒绝。', 'The semantic proposal came from a Host-managed isolated Main node; the model never received controller tokens, leases, or Workflow lifecycle tools. Review it, then explicitly accept or reject it.')}</p><Details title={t('待验收提案', 'Proposal awaiting acceptance')} value={{ proposal: bridgeProposal.proposal }}/><button className="primary" onClick={() => act(async () => { setResult(await api('current_main_accept', { run_id: runId, control_token: token, accepted: true })); await refresh(); })}>{t('接受最终提案', 'Accept final proposal')}</button><button onClick={() => act(async () => { setResult(await api('current_main_accept', { run_id: runId, control_token: token, accepted: false })); await refresh(); })}>{t('拒绝最终提案', 'Reject final proposal')}</button></article>}
+      {bridgeProposal?.kind === 'control_wait' && <article className="review-item"><h3>{t('后台工作流等待人工控制', 'Background Workflow awaiting human control')}</h3><Details title={t('等待原因', 'Waiting outcome')} value={bridgeProposal.outcome}/>{bridgeProposal.outcome?.stop_reason === 'approval' && (bridgeProposal.outcome.approvals ?? []).map((approval: Json) => <div key={approval.id}><button className="primary" onClick={() => act(async () => { setResult(await api('current_main_approve', { run_id: runId, control_token: token, owner: state.main_actor, approval_id: approval.id, decision: true })); await refresh(); })}>{t('批准', 'Approve')} · {approval.node_id ?? approval.id}</button><button onClick={() => act(async () => { setResult(await api('current_main_approve', { run_id: runId, control_token: token, owner: state.main_actor, approval_id: approval.id, decision: false })); await refresh(); })}>{t('拒绝', 'Reject')}</button></div>)}<button onClick={() => act(async () => { setResult(await api('current_main_cancel', { run_id: runId, control_token: token })); await refresh(); })}>{t('取消 Run', 'Cancel Run')}</button></article>}
+      {bridgeProposal?.kind === 'host_main' && <article className="review-item"><h3>{t('Host Main 执行状态', 'Host Main execution status')}</h3><Details title={t('执行状态与诊断', 'Execution status and diagnostics')} value={bridgeProposal}/></article>}
       {(next.integration_gates ?? []).map((gate: Json | string) => { const id = typeof gate === 'string' ? gate : gate.region_id; return <button disabled={!token} key={id} onClick={() => act(async () => { await api('prepare_integration', { ...control, region_id: id }); setMerge({ region_id: id, ...(await api('review_integration', { ...control, region_id: id })) }); await refresh(); })}>{t('审查并行合并', 'Review parallel merge')} · {id}</button>; })}
       {merge && <article className="review-item"><h3>{t('精确合并提案', 'Exact merge proposal')}</h3><pre>{typeof merge.patch === 'string' ? merge.patch : pretty(merge)}</pre><button disabled={!token} onClick={() => call('integrate_parallel', { region_id: merge.region_id, patch_sha256: merge.patch_sha256 ?? merge.proposal?.patch_sha256, accepted: true })}>{t('接受并应用所示补丁', 'Accept and apply the shown patch')}</button></article>}
       {current && <><Status value={current.status}/><Details title={t('节点输出、证据和诊断', 'Node output, evidence, and diagnostics')} value={current}/>
@@ -104,7 +108,7 @@ export function RunPanel({ runId, act, onRun }: { runId: string, act: (work: () 
             {definition.executor.kind === 'subworkflow' && <><button onClick={() => call('collect_subworkflow')}>{t('收集子 Run 验收结果', 'Collect child Run acceptance result')}</button>{attempt.child_run_id && <button onClick={() => act(async () => { const child = await api('child_control', args); rememberRun(child); onRun(child.run_id); })}>{t('打开并管理原子 Run', 'Open and manage atomic Run')}</button>}</>}
             {definition.executor.kind === 'provider' && pack.workflow.skill_policy.mode === 'cooperative' && <><button onClick={() => call('reconcile_connector')}>{t('核对 Connector 身份', 'Verify Connector identity')}</button><button onClick={() => call('collect_connector')}>{t('收集 Connector 结果', 'Collect Connector result')}</button></>}
           </>}
-          {pack.workflow.skill_policy.mode === 'cooperative' && <details><summary>{t('Host / Human 执行结果交接', 'Host / human execution result handoff')}</summary><p>{t('填写真实工具返回的身份、产物及验证证据。此页面不会代替主会话创建、续聊或收集 Codex task；必须使用派发结果中的精确 task ID。', 'Enter the identity, artifacts, and verification evidence returned by the real tool. This page does not create, continue, or collect Codex tasks on behalf of the Main session; use the exact task ID from the dispatch result.')}</p><JsonField label={t('真实派发回执', 'Actual dispatch receipt')} value={receipt} onChange={setReceipt}/><button onClick={() => call('dispatch_receipt', { receipt, request_id: attempt?.dispatch?.request_id })}>{t('记录精确回执', 'Record exact receipt')}</button><JsonField label={t('完成记录（需真实证据）', 'Completion record (real evidence required)')} value={completion} onChange={setCompletion} rows={14}/><label className="check"><input type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)}/>{t('主控制者接受最终结果', 'Main controller accepts the final result')}</label><button onClick={() => call('complete_node', { completion: { ...completion, ...(definition.role === 'finalizer' ? { acceptance: { accepted } } : {}) } })}>{t('提交完成记录', 'Submit completion record')}</button></details>}
+          {pack.workflow.skill_policy.mode === 'cooperative' && definition.executor?.kind !== 'main' && <details><summary>{t('Host / Human 执行结果交接', 'Host / human execution result handoff')}</summary><p>{t('填写真实工具返回的身份、产物及验证证据。此页面不会代替主会话创建、续聊或收集 Codex task；必须使用派发结果中的精确 task ID。', 'Enter the identity, artifacts, and verification evidence returned by the real tool. This page does not create, continue, or collect Codex tasks on behalf of the Main session; use the exact task ID from the dispatch result.')}</p><JsonField label={t('真实派发回执', 'Actual dispatch receipt')} value={receipt} onChange={setReceipt}/><button onClick={() => call('dispatch_receipt', { receipt, request_id: attempt?.dispatch?.request_id })}>{t('记录精确回执', 'Record exact receipt')}</button><JsonField label={t('完成记录（需真实证据）', 'Completion record (real evidence required)')} value={completion} onChange={setCompletion} rows={14}/><label className="check"><input type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)}/>{t('主控制者接受最终结果', 'Main controller accepts the final result')}</label><button onClick={() => call('complete_node', { completion: { ...completion, ...(definition.role === 'finalizer' ? { acceptance: { accepted } } : {}) } })}>{t('提交完成记录', 'Submit completion record')}</button></details>}
         </>}
       </>}
       {token && lease && attempt?.dispatch?.receipt?.connector && <details><summary>{t('远程取消、权限或输入响应', 'Remote cancellation, permission, or input response')}</summary><p>{t('使用最近一次 Connector 状态返回的精确 request_id、选项和远程身份。取消 Run 会先使本地租约失效；远程停止需要确认。', 'Use the exact request_id, options, and remote identity from the latest Connector status response. Cancelling the Run first invalidates the local lease; remote stopping requires confirmation.')}</p><JsonField label={t('Connector 控制请求', 'Connector control request')} value={connectorControl} onChange={setConnectorControl}/><button onClick={() => call('control_connector', { control: connectorControl })}>{t('提交所示控制请求', 'Submit the shown control request')}</button></details>}

@@ -228,12 +228,16 @@ export class CursorCdpConnector {
     }
   }
 
-  async start({ provider, stage, prompt, workspace, taskTypeId, stageId, allowedPaths = [], taskId }) {
+  async start({ provider, stage, prompt, workspace, taskTypeId, stageId, allowedPaths = [], taskId, assertActive, signal }) {
+    const assertAdmission = () => { assertActive?.(); if (signal?.aborted) throw connectorError('CONNECTOR_STOPPED', 'Connector startup was revoked'); };
+    assertAdmission();
     const fullWorkspace = await validateWorkspace(workspace);
+    assertAdmission();
     const readOnly = stage.read_only === true;
     const boundedPaths = readOnly
       ? await validateAllowedPaths(fullWorkspace, allowedPaths)
       : await validateAllowedPaths(fullWorkspace, allowedPaths, { required: true });
+    assertAdmission();
     if (readOnly && boundedPaths.length) {
       throw connectorError('ALLOWED_PATHS_READ_ONLY_CONFLICT', 'read-only tasks must not declare allowed_paths');
     }
@@ -241,6 +245,7 @@ export class CursorCdpConnector {
       throw connectorError('WRITE_CAPABILITY_REQUIRED', `Provider ${provider.id} is not write-capable`);
     }
     const boundedPrompt = accessEnvelope(prompt, fullWorkspace, readOnly, boundedPaths);
+    assertAdmission();
     const task = await this.store.create({
       ...(taskId ? { task_id: taskId } : {}),
       task_type_id: taskTypeId,
@@ -252,7 +257,8 @@ export class CursorCdpConnector {
       allowed_paths: boundedPaths,
       prompt_sha256: createHash('sha256').update(boundedPrompt).digest('hex'),
       baseline_snapshot: null,
-      deadline_at: new Date(Date.now() + provider.config.task_timeout_ms).toISOString(),
+      deadline_at: provider.config.task_timeout_ms > 0
+        ? new Date(Date.now() + provider.config.task_timeout_ms).toISOString() : null,
     });
     let transport;
     let active = null;
@@ -263,17 +269,21 @@ export class CursorCdpConnector {
     let baselineMessageCount = 0;
     let lastSubmitSnapshot = null;
     try {
+      assertAdmission();
       // Reserve the workspace in the durable task store before taking the
       // baseline or touching the remote UI. This closes the check-before-create
       // race shared by all connector backends.
       baseline = await captureWorkspaceSnapshot(fullWorkspace);
+      assertAdmission();
       await this.store.update(task.task_id, { baseline_snapshot: baseline });
+      assertAdmission();
       scopeMonitor = startWorkspaceScopeMonitor(fullWorkspace, {
         readOnly,
         allowedPaths: boundedPaths,
         onViolation: (attempt) => this.#background(active, () => this.#runtimeScopeViolation(active, attempt)),
       });
-      transport = await this.#attach(provider, fullWorkspace, { launch: true });
+      transport = await this.#attach(provider, fullWorkspace, { launch: true, assertActive: assertAdmission });
+      assertAdmission();
       active = {
         taskId: task.task_id,
         provider,
@@ -298,7 +308,9 @@ export class CursorCdpConnector {
       this.active.set(task.task_id, active);
       const deferredIdentity = active.profile.ui_flavor === 'agents_panel';
       const before = deferredIdentity ? null : await this.#waitForHistory(active);
+      assertAdmission();
       const created = JSON.parse(await active.client.evaluate(cursorCreateAgentExpression(fullWorkspace)) || '{}');
+      assertAdmission();
       if (!created.ok) {
         throw connectorError('CURSOR_WORKSPACE_BIND_FAILED',
           `Cursor could not create an Agent in the exact workspace: ${created.state || 'unknown'}`, {
@@ -353,10 +365,14 @@ export class CursorCdpConnector {
         error.confirmedNotSent = true;
         throw error;
       }
+      assertAdmission();
       const filled = await active.client.evaluate(cursorFillExpression(boundedPrompt));
+      assertAdmission();
       if (filled !== 'FILLED') throw connectorError('CURSOR_COMPOSER_FAILED', `Cursor input fill failed: ${filled}`);
       const baselineUi = JSON.parse(await active.client.evaluate(cursorSnapshotExpression(active.agentId)) || '{}');
+      assertAdmission();
       baselineMessageCount = Number(baselineUi.message_count || 0);
+      assertAdmission();
       submissionAttempted = true;
       await active.client.key('Enter', 'Enter', 13);
       let accepted = false;
@@ -500,10 +516,15 @@ export class CursorCdpConnector {
       transport?.client?.close(safeError);
       scopeMonitor?.close();
       this.active.delete(task.task_id);
-      await this.store.update(task.task_id, {
-        state: 'failed',
-        error: publicConnectorError(safeError),
-      }).catch(() => {});
+      try {
+        await this.store.update(task.task_id, {
+          state: 'failed',
+          error: publicConnectorError(safeError),
+        });
+      } catch (cleanupError) {
+        throw Object.assign(new AggregateError([safeError, cleanupError], 'Connector startup and durable cleanup both failed'), { code: 'CONNECTOR_CLEANUP_INCOMPLETE' });
+      }
+      if (signal?.aborted && !submissionAttempted) safeError.cancellation_confirmed = true;
       throw safeError;
     } finally {
       if (this.store.persistenceError && active) await this.#cleanup(active);
@@ -612,19 +633,23 @@ export class CursorCdpConnector {
       deadline_at: task.deadline_at,
       finished_at: task.finished_at,
       terminal_evidence: task.terminal_evidence,
+      execution_cleanup: task.execution_cleanup ?? null,
       scope: task.scope || null,
       result: task.result,
       error: task.error,
     };
   }
 
-  async #attach(provider, workspace, { launch }) {
+  async #attach(provider, workspace, { launch, assertActive = () => {} }) {
+    assertActive();
     const port = provider.config.cdp_port;
     let version;
     let pages;
     try {
       [version, pages] = await Promise.all([httpJson(port, '/json/version'), httpJson(port, '/json/list')]);
+      assertActive();
     } catch {
+      assertActive();
       if (!launch) throw connectorError('CURSOR_CDP_UNAVAILABLE', `Cursor CDP is not available on port ${port}`);
       if (provider.config.launch_if_closed !== true) {
         throw connectorError('CURSOR_NOT_RUNNING',
@@ -634,6 +659,7 @@ export class CursorCdpConnector {
           });
       }
       if (await this.#cursorRunning()) {
+        assertActive();
         throw connectorError('CURSOR_RUNNING_WITHOUT_CDP',
           'Cursor is already running without the required CDP port. The connector will not force-close it.', {
             retryable: true,
@@ -641,8 +667,10 @@ export class CursorCdpConnector {
           });
       }
       const binary = await this.binaryFor(provider);
+      assertActive();
       if (!binary) throw connectorError('CURSOR_BINARY_MISSING',
         `Cursor was not found; set ${provider.config.executable_env || 'CURSOR_EXE'} before starting the MCP server`);
+      assertActive();
       const child = this.spawnImpl(binary, [
         `--remote-debugging-port=${port}`,
         `--remote-allow-origins=http://localhost:${port}`,
@@ -663,6 +691,7 @@ export class CursorCdpConnector {
       });
       const deadline = Date.now() + provider.config.startup_timeout_ms;
       while (Date.now() < deadline) {
+        assertActive();
         if (spawnError) {
           throw connectorError('CURSOR_START_FAILED', `Cursor could not be started: ${redact(spawnError.message)}`);
         }
@@ -676,6 +705,7 @@ export class CursorCdpConnector {
             httpJson(port, '/json/version'),
             httpJson(port, '/json/list'),
           ]);
+          assertActive();
           const hasTarget = Array.isArray(candidatePages)
             && candidatePages.some((page) => page?.type === 'page' && page.webSocketDebuggerUrl);
           if (isCursorIdentity(candidateVersion, candidatePages) && hasTarget) {
@@ -686,10 +716,13 @@ export class CursorCdpConnector {
         } catch {}
         await sleep(250);
       }
+      assertActive();
       if (!version || !pages) throw connectorError('CURSOR_START_TIMEOUT', `Cursor did not expose CDP within ${provider.config.startup_timeout_ms}ms`);
       const attached = await this.#selectTarget(provider, workspace, version, pages);
+      assertActive();
       return { ...attached, process: child, stderrTail: stderr };
     }
+    assertActive();
     return this.#selectTarget(provider, workspace, version, pages);
   }
 
@@ -749,7 +782,14 @@ export class CursorCdpConnector {
     catch (error) {
       this.store.persistenceError ||= error;
       process.stderr.write(`codex-agents-workflow Cursor lifecycle failed (${active?.taskId || 'startup'}): ${redact(error?.message || error)}\n`);
-      if (active) { this.#signal(active.taskId); await this.#cleanup(active); }
+      if (active) {
+        this.#signal(active.taskId);
+        try { await this.#cleanup(active); }
+        catch (cleanupError) {
+          this.store.persistenceError ||= cleanupError;
+          process.stderr.write(`codex-agents-workflow Cursor cleanup failed (${active.taskId}): ${redact(cleanupError?.message || cleanupError)}\n`);
+        }
+      }
     }
   }
 
@@ -952,7 +992,14 @@ export class CursorCdpConnector {
 
   #armInactivityTimeout(active) {
     clearTimeout(active.timeout);
-    const timeoutMs = active.provider.config.task_timeout_ms ?? 600_000;
+    const timeoutMs = active.provider.config.task_timeout_ms ?? 0;
+    if (!(timeoutMs > 0)) {
+      active.timeout = null;
+      void this.store.update(active.taskId, { deadline_at: null }, {
+        guard: current => this.active.get(active.taskId) === active && !active.terminalObservedAt && !TERMINAL.has(current.state),
+      }).catch(error => { this.store.persistenceError ||= error; });
+      return;
+    }
     const deadlineAt = new Date(Date.now() + timeoutMs).toISOString();
     active.timeout = setTimeout(() => this.#background(active, () => this.#timeout(active)), timeoutMs);
     void this.store.update(active.taskId, { deadline_at: deadlineAt }, {
@@ -1067,7 +1114,7 @@ export class CursorCdpConnector {
     });
     const active = {
       taskId: task.task_id,
-      provider: { config: { ...provider.config, task_timeout_ms: 600_000 } },
+      provider: { config: { ...provider.config, task_timeout_ms: 0 } },
       stage: { read_only: task.read_only },
       workspace: task.workspace,
       readOnly: task.read_only,
@@ -1175,8 +1222,10 @@ export class CursorCdpConnector {
     active.intentionalCleanup = true;
     clearTimeout(active.timeout);
     active.scopeMonitor?.close();
-    active.client?.close();
+    await active.client?.close();
     this.active.delete(active.taskId);
+    this.#signal(active.taskId);
+    await this.store.update(active.taskId, { execution_cleanup: { local_quiescent: true, observed_at: new Date().toISOString() } });
   }
 
   async #waitForChange(taskId, observedUpdatedAt, waitMs) {

@@ -86,15 +86,14 @@ pass "plugin and skill prompt lengths"
 
 jq -e '.version == 6 and .global.enabled == true and .global.allow_direct_api == false and (.scenarios | not)' "$config" >/dev/null || fail "default global switches or schema are unsafe"
 jq -e '[.providers[] | select(.kind != "native_agent") | .enabled] | all(. == false)' "$config" >/dev/null || fail "a non-native provider is enabled by default"
-jq -e '.providers[] | select(.id == "native-luna" and .enabled == true)' "$config" >/dev/null || fail "native Luna default missing"
-jq -e '.providers[] | select(.id == "native-terra" and .enabled == true)' "$config" >/dev/null || fail "native Terra default missing"
-jq -e '.providers[] | select(.id == "native-reviewer" and .enabled == true)' "$config" >/dev/null || fail "native reviewer default missing"
+jq -e '[.providers[] | select(.kind == "native_agent") | [.id, .config.model, .config.reasoning_effort]] | sort == ([["native-luna", "gpt-6-luna", "max"], ["native-sol", "gpt-6.1-sol", "high"], ["native-astra", "gpt-6-astra", "medium"]] | sort)' "$config" >/dev/null || fail "native Provider defaults do not match the three model connections"
+jq -e '[.providers[] | select(.kind == "native_agent") | (.enabled == true and .config.agent_type == "default" and .config.role == "advisor")] | all' "$config" >/dev/null || fail "native Providers must use the generic Agent connection"
 jq -e '.providers[] | select(.id == "cursor-local" and .kind == "builtin_connector" and .enabled == false and .requires_user_approval == false and .capabilities.write == true and .config.connector == "cursor_cdp" and .config.transport == "cdp_ui")' "$config" >/dev/null || fail "built-in Cursor default is missing or unsafe"
 jq -e '.providers[] | select(.id == "grok-local" and .kind == "builtin_connector" and .enabled == false and .requires_user_approval == false and .capabilities.write == true and .config.connector == "grok_acp" and .config.transport == "leader_acp_stdio")' "$config" >/dev/null || fail "built-in Grok default is missing or unsafe"
 jq -e '[.providers[].requires_user_approval, .task_types[].stages[].requires_user_approval] | all(. == false)' "$config" >/dev/null || fail "bundled approval gates must default off"
 jq -e '[.task_types[] | select((.id + " " + .name + " " + .description + " " + (.tags | join(" "))) | test("cursor|grok|chatgpt|luna|terra|openai"; "i"))] | length == 0' "$config" >/dev/null || fail "default Task Type metadata is Provider-specific"
 jq -e '.task_types[] | select(.id == "bounded-code-change" and .route == "delegate" and (.stages | length) == 1)' "$config" >/dev/null || fail "bounded change is not the delegate default"
-jq -e '.task_types[] | select(.id == "judgment-heavy-change" and .route == "full" and (.stages | length) == 2)' "$config" >/dev/null || fail "difficult change does not use full workflow"
+jq -e '.task_types[] | select(.id == "judgment-heavy-change" and .route == "delegate" and (.stages | length) == 1)' "$config" >/dev/null || fail "judgment-heavy change must use its single implementation role"
 jq -e 'all(.task_types[]; (.route == "solo" and (.stages|length)==0) or (.route == "delegate" and (.stages|length)==1 and .stages[0].id=="implementation" and .stages[0].role=="implementer") or (.route == "audit" and (.stages|length)==1 and .stages[0].id=="review" and .stages[0].role=="reviewer") or (.route == "full" and (.stages|length)==2 and .stages[0].id=="implementation" and .stages[1].id=="review"))' "$config" >/dev/null || fail "Task Type route topology is invalid"
 if grep -Eqi '"sk-[A-Za-z0-9_-]{20,}"' "$config"; then fail "default config appears to contain a credential value"; fi
 jq -e '.providers[] | select(.kind == "openai_compatible") | .config.api_key_env | test("^[A-Z_][A-Z0-9_]*$")' "$config" >/dev/null || fail "API provider does not use an environment-variable name"
@@ -115,17 +114,8 @@ done
 grep -Fq 'workflow-review' "$web_app" || fail "console omits the independent review workflow switch"
 if grep -Fq 'task-type-route' "$web_app"; then fail "console still exposes an independent route selector"; fi
 grep -Fq 'Report the observed error' "$skill" || fail "control-plane skill hides activation failure"
-grep -Fq 'Delegate is the default' "$plugin_dir/skills/control-plane/references/v6-control-plane.md" || fail "control-plane skill does not default to delegate"
-for phrase in \
-  'Read metadata, not the prompt library' \
-  'Write delivery opens only when all three facts are true' \
-  'Unified built-in connector contract' \
-  'Built-in Cursor connector' \
-  'Built-in Grok connector' \
-  'Use hard-path web advice only after a real signal' \
-  'Auxiliary work substitutes for root work'; do
-  grep -Fq "$phrase" "$plugin_dir/skills/control-plane/references/v6-control-plane.md" || fail "v6 compatibility contract omits: $phrase"
-done
+grep -Fq 'workflow_role_templates' "$plugin_dir/skills/orchestration/SKILL.md" || fail "orchestration skill does not read the Workbench Role catalog"
+grep -Fq 'Never inject Role instructions into a Workflow node' "$plugin_dir/skills/orchestration/SKILL.md" || fail "orchestration skill overlaps Workflow node prompts"
 for phrase in \
   'This is minimization, not a hostile-model secrecy sandbox' \
   'Minimal Cursor connection' \
@@ -146,8 +136,8 @@ grep -Fq 'windows-latest' "$workflow" || fail "CI does not cover Windows"
 grep -Fq 'ubuntu-latest' "$workflow" || fail "CI does not cover Linux"
 grep -Fq 'connector-protocol-' "$workflow" || fail "CI does not expose connector protocol matrix"
 grep -Fq 'macos-latest' "$workflow" || fail "CI does not cover macOS"
-for operation in workflow_start workflow_claim_node workflow_dispatch workflow_complete_node workflow_reattach_connector; do
-  grep -Fq "$operation" "$skill" "$plugin_dir/skills/control-plane/references/recovery.md" || fail "execution instructions omit $operation"
+for operation in workflow_start workflow_native_next workflow_native_spawned_batch workflow_native_followed_up workflow_reattach_connector; do
+  grep -Fq "$operation" "$skill" "$plugin_dir/skills/control-plane/references/native-execution.md" "$plugin_dir/skills/control-plane/references/recovery.md" || fail "execution instructions omit $operation"
 done
 pass "v7 execution, v6 compatibility, connector contracts, and three-platform CI documented"
 

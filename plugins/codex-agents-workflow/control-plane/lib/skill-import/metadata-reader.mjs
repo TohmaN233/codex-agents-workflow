@@ -1,15 +1,21 @@
 import { parseDocument } from '../vendor/yaml.mjs';
 import { canonicalJSON } from '../workflow-revisions.mjs';
+import { normalizeExecutableRequirements } from '../runtime-requirements.mjs';
 
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const name = value => typeof value === 'string' && value.trim() && value.length <= 256;
+export function normalizeImportedExecutableRequirements(values = []) {
+  const normalized = normalizeExecutableRequirements(values);
+  const explicitDescriptors = new Set(values.filter(object).map(item => item.name));
+  return normalized.map(item => !explicitDescriptors.has(item.name) && Object.keys(item).length === 1 ? item.name : item);
+}
 // Optional metadata may be malformed without invalidating the primary Skill.
 // Preserve the resource and an explicit Draft blocker instead of ignoring it.
 export function readDependencyMetadata(snapshot) {
   const requirements = { tools: [], mcp_servers: [], executables: [], environment: [] };
   const tool_policy = { allowed: [] };
   const unresolved = []; const declarations = [];
-  const issue = (code, path, field) => unresolved.push({ code, path, field, origin: 'declared' });
+  const issue = (code, path, field, details = {}) => unresolved.push({ code, path, field, ...details, origin: 'declared' });
   const sources = [{ path: 'source/SKILL.md', data: snapshot.metadata }];
   for (const path of ['source/agents/openai.yaml', 'source/SKILL.json']) {
     if (!snapshot.files[path]) continue;
@@ -33,6 +39,16 @@ export function readDependencyMetadata(snapshot) {
       if (!object(data.requirements)) issue('INVALID_DEPENDENCY_METADATA', path, 'requirements');
       else for (const [kind, values] of Object.entries(data.requirements)) {
         if (!Object.hasOwn(requirements, kind)) { issue('UNSUPPORTED_DECLARED_REQUIREMENT', path, 'requirements.' + kind); continue; }
+        if (kind === 'executables') {
+          if (!Array.isArray(values) || values.length > 128) { issue('INVALID_DEPENDENCY_METADATA', path, 'requirements.executables'); continue; }
+          try {
+            requirements.executables = normalizeImportedExecutableRequirements([...requirements.executables, ...values]);
+            declarations.push({ path, kind, names: values.map(value => typeof value === 'string' ? value : value?.name) });
+          } catch (error) {
+            issue('INVALID_DEPENDENCY_METADATA', path, 'requirements.executables', { message: error.message });
+          }
+          continue;
+        }
         if (!Array.isArray(values) || values.length > 128 || values.some(value => !name(value) || kind === 'environment' && !/^[A-Z_][A-Z0-9_]{0,127}$/.test(value))) {
           issue('INVALID_DEPENDENCY_METADATA', path, 'requirements.' + kind); continue;
         }

@@ -1,18 +1,88 @@
-# Skill → Workflow comparison
+# No Skill / Skill / Workflow 实验报告
 
-The v1.0 host-driven design was evaluated on four implementation-qualified tasks: crystallographic Wyckoff analysis, earthquake plate calculation, lake-warming attribution, and video silence removal. Each of the three primary arms ran three times per task; the full-context Workflow control ran once per task, for 40 judged runs in total.
+## 组别定义
 
-All semantic work in this comparison used `gpt-5.6-terra` at `medium`. Runs used fresh tasks and workspaces. The no-guidance arm saw only the public task, the Skill arm saw the frozen Skill packet, and Workflow arms saw self-contained Workflow-native resources without access to the source Skill. Hidden judges and contamination audits were outside the candidate context.
+| 缩写 | 完整名称 | 实验条件 |
+| --- | --- | --- |
+| `N-main` | No-Skill main-agent baseline | 主 Agent 直接完成任务；获得相同的任务、输入、公共工具和薄封装，但不获得 Skill 内容或 Workflow 图。 |
+| `S-main` | Skill main-agent baseline | 同一类主 Agent 在相同任务条件下，额外获得冻结的原始 Skill 资源。 |
+| `W-main` | Workflow main treatment | 运行转换后的 Workflow 图；每个节点在新的主 Agent 上下文中只获得该节点声明的 Workflow 原生资源。 |
 
-| Arm | Runs | Mean hidden-test score | Strict passes | Mean total tokens |
-| --- | ---: | ---: | ---: | ---: |
-| No guidance (`N-main`) | 12 | 0.3778 | 0/12 | 573,982 |
-| Frozen Skill (`S-main`) | 12 | 0.9722 | 9/12 | 527,807 |
-| Node-scoped Workflow (`W-main`) | 12 | 0.9618 | 8/12 | 301,309 |
-| Full-context Workflow (`W-control`) | 4 | 0.9722 | 3/4 | 419,006 |
+后文的 `N`、`S`、`W` 分别是上述三组的简称；`main` 表示主 Agent 实验组。
 
-Compared with the frozen Skill arm, the node-scoped Workflow arm reduced mean total tokens by **42.9%** while its mean hidden-test score differed by **−0.0104**. Token reductions appeared on every task: **52.1%**, **38.7%**, **38.1%**, and **43.1%** respectively. Compared with preloading the full Workflow, node-scoped projection reduced mean tokens by **28.1%**.
+## 实验范围
 
-The result supports two concrete design choices: Workflow control fields belong to the Host, and semantic nodes should receive only their declared resources. It does not establish that every Skill benefits from conversion, and the Workflow arm did not exactly match the Skill arm on every strict pass. The claim is limited to these four heterogeneous, prequalified tasks.
+报告比较五个案例。四个简单任务直接比较 `N-main`（不用 Skill）、`S-main`（使用 Skill）和 `W-main`（Workflow），每组计入 3 个有效结果；Zenonzard 比较完整 31 卡 Workflow Run 与 Skill 实现。
 
-The frozen protocol and machine-readable aggregate are in [`spikes/plan1-workflow-vs-skill/EXPERIMENT_PROTOCOL.md`](../spikes/plan1-workflow-vs-skill/EXPERIMENT_PROTOCOL.md) and [`formal-comparison-results.json`](../spikes/plan1-workflow-vs-skill/formal-comparison-results.json).
+四个简单任务统一使用 `gpt-5.6-terra` / `medium`。Token 为在线模型总 token，包含缓存输入；结果由隔离隐藏测试判定。Zenonzard 的结果采用逐卡严格语意审查：一张卡只要存在语意、注册或生命周期 bug 即判失败，不给部分分。
+
+## 四个简单任务
+
+### Token
+
+| 任务 | N-main | S-main | W-main | W 对 S | W 对 N |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Wyckoff 晶位分析 | 344,663 | 451,650 | 216,391 | −52.1% | −37.2% |
+| 地震板块计算 | 412,658 | 405,055 | 193,017 | −52.3% | −53.2% |
+| 湖泊升温归因 | 599,826 | 538,002 | 333,052 | −38.1% | −44.5% |
+| 视频静音移除 | 938,783 | 716,519 | 407,378 | −43.1% | −56.6% |
+
+### 隐藏测试结果
+
+每格为“平均得分 / 严格通过次数”。
+
+| 任务 | N-main | S-main | W-main |
+| --- | ---: | ---: | ---: |
+| Wyckoff 晶位分析 | 48.33% / 0/3 | 100.00% / 3/3 | 100.00% / 3/3 |
+| 地震板块计算 | 58.33% / 0/3 | 100.00% / 3/3 | 100.00% / 3/3 |
+| 湖泊升温归因 | 0.00% / 0/3 | 100.00% / 3/3 | 100.00% / 3/3 |
+| 视频静音移除 | 44.44% / 0/3 | 88.89% / 0/3 | 88.89% / 0/3 |
+
+### 汇总
+
+| 指标 | N-main | S-main | W-main |
+| --- | ---: | ---: | ---: |
+| 每次运行平均 Token | 573,982 | 527,807 | 287,459 |
+| 平均隐藏测试得分 | 37.78% | 97.22% | 97.22% |
+| 严格通过 | 0/12 | 9/12 | 9/12 |
+
+W-main 相比 S-main 少 **45.5%** token，平均得分和严格通过数相同。W-main 相比 N-main 少 **49.9%** token，平均得分高 **59.44 个百分点**，严格通过多 9 次。S-main 相比 N-main 少 **8.04%** token，平均得分高 **59.44 个百分点**，严格通过多 9 次。
+
+四个任务中，W-main token 均低于 N-main 和 S-main。W-main 与 S-main 的四项质量结果相同；地震 Workflow 为 8/8，严格通过。视频两者均为 8/9，未严格通过。
+
+## Zenonzard 31 卡
+
+### Token 与 API 等价成本
+
+| 实现 | 模型 | 未缓存输入 | 缓存输入 | 输出 | 总 Token | API 等价成本 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Skill | gpt-6-sol | 261,203 | 27,776,768 | 84,622 | **28,122,593** | **$6.9240** |
+| Workflow | gpt-6-sol | 259,640 | 9,745,664 | 33,421 | **10,038,725** | **$2.8026** |
+| Workflow | gpt-6-luna | 1,490,380 | 21,927,936 | 443,955 | **23,862,271** | **$0.5903** |
+| **Workflow 合计** | — | **1,750,020** | **31,673,600** | **477,376** | **33,900,996** | **$3.3929** |
+
+Workflow 总计 **33,900,996 tokens**，Skill 总计 **28,122,593 tokens**。Workflow 多用 **5,778,403 tokens（+20.55%）**；API 等价成本为 **$3.3929**，比 Skill 的 **$6.9240** 低 **51.00%**。
+
+### 严格语意通过率
+
+| 实现 | 通过卡数 | 通过率 | 未通过卡数 |
+| --- | ---: | ---: | ---: |
+| Workflow Run | **28/31** | **90.32%** | 3 |
+| Skill | **20/31** | **64.52%** | 11 |
+
+Zenonzard Workflow 的严格通过率高 25.80 个百分点，token 多 20.55%，API 等价成本低 51.00%。
+
+## 总结
+
+| 类型 | Token 结果 | 质量结果 |
+| --- | --- | --- |
+| 四个简单任务 | Workflow 相比 Skill −45.5%，相比 No Skill −49.9% | Workflow 与 Skill 均为 97.22%，严格通过均为 9/12；地震为 8/8 |
+| Zenonzard 31 卡 | Workflow +20.55%；API 等价成本 −51.00% | 严格通过率 90.32% 对 64.52% |
+
+四个简单任务中，Workflow token 同时低于 No Skill 与 Skill，质量结果与 Skill 相同。Zenonzard 中，Workflow 的 token 高于 Skill，但严格语意通过率更高、API 等价成本更低。
+
+## 数据来源
+
+- 四任务正式实验：[`formal-comparison-results.json`](../spikes/plan1-workflow-vs-skill/formal-comparison-results.json)
+- Zenonzard Token 与严格审查：[`zenonzard-composed-final-usage.json`](../spikes/plan1-workflow-vs-skill/zenonzard-composed-final-usage.json)
+- Zenonzard 逐卡审查：[`zenonzard-semantic-code-quality-comparison.md`](../spikes/plan1-workflow-vs-skill/zenonzard-semantic-code-quality-comparison.md)

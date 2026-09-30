@@ -69,6 +69,29 @@ export function managedNativeResultSchema(definition) {
   return strictAgentOutputSchema(semanticResultSchema(definition));
 }
 
+export function hostNodeTurnSchema(semanticSchema) {
+  const result = strictAgentOutputSchema(semanticSchema);
+  return { type: 'object', additionalProperties: false,
+    properties: { outcome: { type: 'string', enum: ['completed', 'blocked'] },
+      result: { anyOf: [result, { type: 'null' }] }, block_reason: { type: 'string' } },
+    required: ['outcome', 'result', 'block_reason'] };
+}
+
+export function hostNodeTurnResult(value, semanticSchema) {
+  requireValue(value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'block_reason,outcome,result',
+  'HOST_NODE_TURN_SCHEMA', 'Managed node must return the exact Host outcome envelope');
+  if (value.outcome === 'blocked') {
+    requireValue(value.result === null && typeof value.block_reason === 'string'
+      && value.block_reason.trim().length > 0 && value.block_reason.length <= 2000,
+    'HOST_NODE_TURN_SCHEMA', 'Blocked node needs a concrete reason and no success result');
+    throw Object.assign(new Error(value.block_reason), { code: 'WORKFLOW_NODE_BLOCKED' });
+  }
+  requireValue(value.outcome === 'completed' && value.block_reason === '', 'HOST_NODE_TURN_SCHEMA', 'Completed node cannot carry a blocker');
+  validateData(value.result, semanticSchema);
+  return value.result;
+}
+
 export function createMainHostBinding({ runId, controlToken, owner, definition, lease, finalAcceptance }) {
   return {
     protocol: 'host-main-v1',
@@ -136,16 +159,27 @@ export function hostCompletionArgs(binding, semanticOutput, {
 }
 
 export function hostCompletionEnvelope(definition, args, finalAcceptance) {
+  const completion = hostResultProposalEnvelope(definition, args, { finalAcceptance });
+  if (finalAcceptance) {
+    requireValue(typeof args.accepted === 'boolean', 'FINAL_ACCEPTANCE_REQUIRED', 'The host acceptance form requires a boolean choice');
+    if (definition.outputs_schema?.properties?.accepted) completion.structured_output.accepted = args.accepted;
+    completion.acceptance = { accepted: args.accepted };
+  }
+  return completion;
+}
+
+/**
+ * Build the durable semantic proposal produced by an isolated Main execution.
+ * Authoring's human acceptance is deliberately absent. Ordinary finalizers
+ * retain their semantic accepted field and complete without a human gate.
+ */
+export function hostResultProposalEnvelope(definition, args, { finalAcceptance = false } = {}) {
   const schema = semanticResultSchema(definition, { finalAcceptance });
   validateData(args.output, schema);
   const structured_output = structuredClone(args.output);
   if (definition.decision) {
     structured_output.decision_id = definition.decision.id;
     structured_output.references = [...(definition.decision.required_references ?? [])];
-  }
-  if (finalAcceptance) {
-    requireValue(typeof args.accepted === 'boolean', 'FINAL_ACCEPTANCE_REQUIRED', 'The host acceptance form requires a boolean choice');
-    if (definition.outputs_schema?.properties?.accepted) structured_output.accepted = args.accepted;
   }
   return {
     status: 'succeeded',
@@ -155,6 +189,5 @@ export function hostCompletionEnvelope(definition, args, finalAcceptance) {
     evidence: structuredClone(args.evidence ?? [{ kind: 'host_semantic_submission', node_id: definition.id }]),
     changed_paths: structuredClone(args.changed_paths ?? []),
     outside_paths: structuredClone(args.outside_paths ?? []),
-    ...(finalAcceptance ? { acceptance: { accepted: args.accepted } } : {}),
   };
 }

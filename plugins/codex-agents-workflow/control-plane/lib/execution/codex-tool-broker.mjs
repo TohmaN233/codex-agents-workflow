@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
-import { lstat, readFile, readdir, open, rename, unlink, realpath } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, sep, win32 } from 'node:path';
+import { lstat, readFile, readdir, open, rename, unlink, realpath, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, delimiter, dirname, isAbsolute, join, relative, sep, win32 } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { resourcePath, requireValue, noSymlinks, insideRoot, canonicalNoLinks } from '../workflow-paths.mjs';
+import { resourcePath, requireValue, noSymlinks, ensureDirectory, insideRoot, canonicalNoLinks } from '../workflow-paths.mjs';
 import { pathBoundaries } from '../workflow-bindings.mjs';
 import { digest } from '../workflow-revisions.mjs';
+import { verifyRuntimeEnvironment } from '../runtime-environment.mjs';
 
 const MAX_FILE = 1024 * 1024;
 const key = path => process.platform === 'win32' ? path.toLowerCase() : path;
@@ -17,6 +19,7 @@ const RECOVERABLE_TOOL_ERRORS = new Set([
   'CODEX_TOOL_ARGUMENTS', 'CODEX_TOOL_PATH', 'INVALID_RESOURCE_PATH', 'CODEX_TOOL_PATH_DENIED',
   'CODEX_TOOL_WRITE_DENIED', 'CODEX_TOOL_DIRECTORY', 'CODEX_TOOL_DIRECTORY_LIMIT', 'CODEX_TOOL_FILE',
   'CODEX_TOOL_ENCODING', 'CODEX_RESOURCE_DENIED', 'CODEX_RESOURCE_RANGE', 'CODEX_RESOURCE_RANGE_LIMIT',
+  'CODEX_RESOURCE_CHUNK',
   'CODEX_TOOL_WRITE_ARGUMENTS', 'CODEX_TOOL_WRITE_CONFLICT',
 ]);
 function windowsPathToWsl(path) {
@@ -36,46 +39,259 @@ export function qualifiedExecutionBinding(binding) {
   const programs = Object.entries(binding.programs);
   requireValue(programs.length > 0 && programs.length <= 32 && programs.every(([name, path]) => /^[a-z][a-z0-9_-]{0,31}$/.test(name)
     && typeof path === 'string' && /^\/(?:[^/\0]+\/)*[^/\0]+$/.test(path)), 'CODEX_EXECUTION_BINDING', 'The host execution programs are invalid');
+  const runtimeRoots = binding.runtime_roots ?? ['/usr','/lib','/lib64','/bin','/sbin'];
+  requireValue(Array.isArray(runtimeRoots) && runtimeRoots.length > 0 && runtimeRoots.length <= 32
+    && runtimeRoots.every(path => typeof path === 'string' && /^\/(?:[^/\0]+\/)*[^/\0]+$/.test(path)
+      && !['/mnt','/home','/root','/tmp'].some(blocked => path === blocked || path.startsWith(blocked + '/')))
+    && programs.every(([,program]) => runtimeRoots.some(root => program === root || program.startsWith(root + '/'))),
+  'CODEX_EXECUTION_BINDING', 'Every bound program must live under an explicit non-user runtime dependency root');
   const commandTimeoutMs = binding.command_timeout_ms ?? 300000;
   requireValue(Number.isSafeInteger(commandTimeoutMs) && commandTimeoutMs >= 1000 && commandTimeoutMs <= 600000, 'CODEX_EXECUTION_BINDING', 'The host execution deadline is invalid');
-  return { ...structuredClone(binding), command_timeout_ms: commandTimeoutMs };
+  return { ...structuredClone(binding), runtime_roots: [...new Set(runtimeRoots)].sort(), command_timeout_ms: commandTimeoutMs };
 }
-export function executeBoundProgram(binding, { program, args, cwd }, roots, { signal } = {}) {
+function nativeExecutionBinding(environment) {
+  if (!environment?.tools?.length) return null;
+  requireValue(environment.status === 'ready' && environment.tools.every(item => item.status === 'found'
+    && /^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,99}$/.test(item.name) && typeof item.path === 'string' && isAbsolute(item.path)),
+  'CODEX_EXECUTION_BINDING', 'Discovered task programs must have absolute resolved paths');
+  return { kind: 'native', programs: Object.fromEntries(environment.tools.map(item => [item.name, item.path])), command_timeout_ms: 300000 };
+}
+export async function executeNativeProgram(binding, request, roots, { signal, onHandle, env = process.env, processLauncher = spawn } = {}) {
+  requireValue(binding?.kind === 'native' && Object.hasOwn(binding.programs, request.program)
+    && Array.isArray(request.args) && request.args.length <= 256
+    && request.args.every(value => typeof value === 'string' && value.length <= 8192 && !value.includes('\0'))
+    && ['workspace', 'task_root'].includes(request.cwd) && (request.cwd !== 'task_root' || roots.task_root),
+  'CODEX_EXECUTION_ARGUMENTS', 'Native task program arguments must match the discovered Host binding');
+  requireValue(roots.task_root || !request.args.some(value => value.includes('@TASK_ROOT@')), 'CODEX_EXECUTION_ARGUMENTS',
+    'Task-root path substitution needs a declared task_root input');
+  if (signal?.aborted) throw signal.reason ?? executionError('CODEX_EXECUTION_CANCELLED', 'Native program was cancelled before launch');
+  const program = binding.programs[request.program];
+  const args = request.args.map(value => value.replaceAll('@WORKSPACE@', roots.workspace)
+    .replaceAll('@TASK_ROOT@', roots.task_root ?? ''));
+  const cwd = request.cwd === 'workspace' ? roots.workspace : roots.task_root;
+  const child = processLauncher(program, args, { cwd, env, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let closed = false, stopReason = null, timer, abort, bytes = 0;
+  const stdout = [], stderr = [];
+  let resolveClose, rejectClose;
+  const done = new Promise((resolveDone, rejectDone) => { resolveClose = resolveDone; rejectClose = rejectDone; });
+  const stop = async reason => {
+    if (closed) return;
+    stopReason ??= reason ?? executionError('CODEX_EXECUTION_CANCELLED', 'Native task program was stopped');
+    if (process.platform === 'win32' && Number.isInteger(child.pid)) {
+      const helper = spawn(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'],
+        { shell: false, windowsHide: true, stdio: 'ignore' });
+      await new Promise(resolveStop => { helper.once('error', resolveStop); helper.once('close', resolveStop); });
+    }
+    if (!closed) child.kill('SIGKILL');
+    let stopTimer;
+    try { await Promise.race([done.then(() => undefined, () => undefined), new Promise((_, reject) => {
+      stopTimer = setTimeout(() => reject(executionError('CODEX_EXECUTION_STOP_UNCONFIRMED', 'Native task program did not close after stop')), 5000);
+    })]); }
+    finally { clearTimeout(stopTimer); }
+  };
+  const handle = { done, stop, isQuiescent: () => closed };
+  onHandle?.(handle);
+  const collect = target => chunk => {
+    bytes += chunk.length;
+    if (bytes > 1024 * 1024) { void stop(executionError('CODEX_EXECUTION_OUTPUT', 'Native task program output exceeded 1 MiB')).catch(rejectClose); return; }
+    target.push(chunk);
+  };
+  child.stdout.on('data', collect(stdout)); child.stderr.on('data', collect(stderr));
+  child.once('error', cause => { stopReason ??= Object.assign(new Error(cause.message, {cause}), {
+    code: 'CODEX_EXECUTION_LAUNCH', details: {dependency:request.program,cause_code:cause.code,child_started:Number.isInteger(child.pid)},
+  }); });
+  child.once('close', (code, exitSignal) => {
+    closed = true; clearTimeout(timer); if (signal && abort) signal.removeEventListener('abort', abort);
+    if (stopReason) rejectClose(stopReason);
+    else resolveClose({ exit_code: Number.isInteger(code) ? code : null, signal: exitSignal ?? null,
+      stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8'),
+      output: Buffer.concat([...stdout, ...stderr]).toString('utf8') });
+  });
+  abort = () => { void stop(signal?.reason ?? executionError('CODEX_EXECUTION_CANCELLED', 'Native task program was cancelled')).catch(rejectClose); };
+  if (signal) signal.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  timer = setTimeout(() => { void stop(executionError('CODEX_EXECUTION_TIMEOUT', 'Native task program exceeded its Host deadline')).catch(rejectClose); }, binding.command_timeout_ms);
+  return done;
+}
+function mountParents(paths) {
+  const result=new Set();
+  for(const path of paths) {
+    const parts=path.split('/').filter(Boolean);parts.pop();let current='';
+    for(const part of parts){current+='/'+part;result.add(current);}
+  }
+  return [...result].sort((left,right)=>left.split('/').length-right.split('/').length||left.localeCompare(right));
+}
+async function sandboxMasks(roots,explicitDenied=[]) {
+  const masks=new Map();let seen=0;
+  const visit=async path=>{
+    const entries=await readdir(path,{withFileTypes:true});
+    requireValue((seen+=entries.length)<=200000,'CODEX_EXECUTION_SCOPE','Execution workspace is too large to establish the denied-path mask');
+    for(const entry of entries){
+      const child=join(path,entry.name),lower=entry.name.toLowerCase();
+      if(entry.isSymbolicLink()&&(['.git','.codex','.agents','.skills','skill.md'].includes(lower)))requireValue(false,'CODEX_EXECUTION_SCOPE','A denied runtime path cannot be represented by a symlink');
+      if(entry.isDirectory()&&['.git','.codex','.agents','.skills'].includes(lower)){masks.set(child,'directory');continue;}
+      if(entry.isFile()&&lower==='skill.md'){masks.set(child,'file');continue;}
+      if(entry.isDirectory()&&!entry.isSymbolicLink())await visit(child);
+    }
+  };
+  for(const root of [...new Set(roots)])await visit(root);
+  for(const path of explicitDenied)for(const root of roots)if(within(root,path)){
+    let type='directory';try{type=(await lstat(path)).isDirectory()?'directory':'file';}catch(error){if(error.code==='ENOENT')continue;throw error;}
+    masks.set(path,type);
+  }
+  return [...masks].map(([path,type])=>({path:windowsPathToWsl(path),type}));
+}
+async function requireWritableTreeWithoutLinks(boundary) {
+  await noSymlinks(boundary);
+  const rootInfo=await lstat(boundary);
+  if(rootInfo.isFile()){
+    requireValue(rootInfo.nlink===1,'CODEX_EXECUTION_SCOPE','Writable program files cannot be hard linked');
+    return;
+  }
+  requireValue(rootInfo.isDirectory(),'CODEX_EXECUTION_SCOPE','Writable program boundaries must be regular files or directories');
+  let seen=0;
+  const visit=async directory=>{
+    const entries=await readdir(directory,{withFileTypes:true});
+    requireValue((seen+=entries.length)<=200000,'CODEX_EXECUTION_SCOPE','Writable program scope is too large to verify safely');
+    for(const entry of entries){
+      const child=join(directory,entry.name);
+      requireValue(!entry.isSymbolicLink(),'CODEX_EXECUTION_SCOPE','Writable program scope cannot contain symbolic links');
+      const info=await lstat(child);
+      if(info.isDirectory()){await visit(child);continue;}
+      requireValue(info.isFile()&&info.nlink===1,'CODEX_EXECUTION_SCOPE','Writable program scope cannot contain hard-linked or special files');
+    }
+  };
+  await visit(boundary);
+}
+export function boundProgramArgv(binding, { program, args, cwd }, roots, {masks = [], writable = [], executionId = ''} = {}) {
   requireValue(Object.hasOwn(binding.programs, program) && Array.isArray(args) && args.length <= 256
     && args.every(value => typeof value === 'string' && value.length <= 8192 && !value.includes('\0'))
     && ['workspace', 'task_root'].includes(cwd), 'CODEX_EXECUTION_ARGUMENTS', 'Execution arguments must match the inherited host binding');
   const workspace = windowsPathToWsl(roots.workspace); const taskRoot = windowsPathToWsl(roots.task_root);
+  const writablePaths=[...new Set(writable.map(windowsPathToWsl))];
+  requireValue(writablePaths.every(path=>path===workspace||path.startsWith(workspace+'/')),
+    'CODEX_EXECUTION_SCOPE','Bound program writable paths must stay inside the workspace');
+  const wholeWorkspace=writablePaths.includes(workspace),nestedWritable=wholeWorkspace?[]:writablePaths;
   const directory = cwd === 'workspace' ? workspace : taskRoot;
-  const path = [...new Set(Object.values(binding.programs).map(value => dirname(value))), '/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin'].join(':');
-  const argv = ['-d', binding.distribution, '--', binding.sandbox, '--unshare-net', '--die-with-parent',
-    '--ro-bind', '/', '/', '--bind', workspace, workspace, '--tmpfs', '/tmp', '--proc', '/proc', '--dev', '/dev', '--chdir', directory,
+  const resolvedArgs=args.map(value=>value.replaceAll('@TASK_ROOT@',taskRoot).replaceAll('@WORKSPACE@',workspace));
+  const runtimeRoots=binding.runtime_roots;
+  const path = [...new Set(Object.values(binding.programs).map(value => dirname(value)))].join(':');
+  const parents=[...new Set([...mountParents([...runtimeRoots,workspace,taskRoot,...nestedWritable,...masks.map(item=>item.path)]),...runtimeRoots,workspace,taskRoot])]
+    .sort((left,right)=>left.split('/').length-right.split('/').length||left.localeCompare(right));
+  return ['-d', binding.distribution, '--exec', binding.sandbox, '--unshare-net','--unshare-pid','--as-pid-1','--die-with-parent','--tmpfs','/',
+    ...parents.flatMap(item=>['--dir',item]),...runtimeRoots.flatMap(item=>['--ro-bind-try',item,item]),
+    '--ro-bind', taskRoot, taskRoot, wholeWorkspace?'--bind':'--ro-bind', workspace, workspace,
+    ...nestedWritable.flatMap(path=>['--bind',path,path]),'--proc', '/proc', '--dev', '/dev','--tmpfs','/tmp',
+    ...masks.flatMap(item=>item.type==='directory'?['--tmpfs',item.path]:['--ro-bind','/dev/null',item.path]),'--chdir', directory,
     '--setenv', 'HOME', '/tmp', '--setenv', 'TMPDIR', '/tmp', '--setenv', 'TASK_ROOT', taskRoot,
-    '--setenv', 'WORKSPACE', workspace, '--setenv', 'PATH', path, '--setenv', 'PYTHONNOUSERSITE', '1', binding.programs[program], ...args];
-  return new Promise((resolveResult, reject) => {
-    const child = spawn(binding.launcher, argv, { shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    const stdout = []; const stderr = []; let bytes = 0; let settled = false; let timer; let abort;
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true; clearTimeout(timer);
-      if (signal && abort) signal.removeEventListener('abort', abort);
-      fn(value);
-    };
-    const collect = target => chunk => {
-      bytes += chunk.length;
-      if (bytes > 1024 * 1024) { child.kill(); finish(reject, Object.assign(new Error('Bound program output exceeded 1 MiB'), { code: 'CODEX_EXECUTION_OUTPUT' })); return; }
-      target.push(chunk);
-    };
-    child.stdout.on('data', collect(stdout)); child.stderr.on('data', collect(stderr));
-    child.once('error', error => finish(reject, Object.assign(error, { code: 'CODEX_EXECUTION_LAUNCH' })));
-    child.once('exit', (code, exitSignal) => {
-      const stdoutText = Buffer.concat(stdout).toString('utf8'); const stderrText = Buffer.concat(stderr).toString('utf8');
-      finish(resolveResult, { exit_code: Number.isInteger(code) ? code : null, signal: exitSignal ?? null, stdout: stdoutText, stderr: stderrText, output: stdoutText + stderrText });
-    });
-    abort = () => { child.kill(); finish(reject, Object.assign(new Error('Bound program was cancelled'), { code: 'CODEX_EXECUTION_CANCELLED' })); };
-    if (signal) signal.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) { abort(); return; }
-    timer = setTimeout(() => { child.kill(); finish(reject, Object.assign(new Error('Bound program exceeded its host deadline'), { code: 'CODEX_EXECUTION_TIMEOUT' })); }, binding.command_timeout_ms);
+    ...(executionId?['--setenv','CODEX_EXECUTION_ID',executionId]:[]),
+    '--setenv', 'WORKSPACE', workspace, '--setenv', 'PATH', path, '--setenv', 'PYTHONNOUSERSITE', '1', binding.programs[program], ...resolvedArgs];
+}
+const wait=milliseconds=>new Promise(resolveWait=>setTimeout(resolveWait,milliseconds));
+const executionError=(code,message)=>Object.assign(new Error(message),{code});
+const supervisorScript='identity=$1; token=$2; shift 2; umask 077; printf "%s %s\\n" "$$" "$token" > "$identity"; exec "$@"';
+const stopScript='pid=$1; token=$2; case "$pid" in ""|*[!0-9]*) exit 65;; esac; if [ ! -e "/proc/$pid" ]; then exit 0; fi; /usr/bin/grep -a -F -q -- "$token" "/proc/$pid/cmdline" || exit 66; kill -KILL "$pid" 2>/dev/null || true; i=0; while [ -e "/proc/$pid" ] && [ "$i" -lt 200 ]; do sleep 0.01; i=$((i+1)); done; [ ! -e "/proc/$pid" ]';
+
+async function prepareBoundExecution(binding,request,roots,{masks,writable}){
+  const executionId=randomUUID(),controlRoot=await mkdtemp(join(tmpdir(),'codex-bound-execution-')),identityPath=join(controlRoot,'identity');
+  try{
+    const base=boundProgramArgv(binding,request,roots,{masks,writable,executionId});
+    requireValue(base[0]==='-d'&&base[1]===binding.distribution&&base[2]==='--exec','CODEX_EXECUTION_BINDING','Bound execution launcher arguments are malformed');
+    return {binding,executionId,controlRoot,identityPath,argv:['-d',binding.distribution,'--exec','/bin/sh','-eu','-c',supervisorScript,'codex-bound-supervisor',windowsPathToWsl(identityPath),executionId,...base.slice(3)]};
+  }catch(error){await rm(controlRoot,{recursive:true,force:true});throw error;}
+}
+async function executionIdentity(prepared,isClosed){
+  for(let attempt=0;attempt<200;attempt++){
+    try{
+      const text=await readFile(prepared.identityPath,'utf8'),match=text.trim().match(/^(\d+) ([0-9a-f-]+)$/i);
+      requireValue(match&&match[2]===prepared.executionId,'CODEX_EXECUTION_IDENTITY','Bound execution identity is invalid');
+      return {pid:Number(match[1]),token:match[2]};
+    }catch(error){if(error.code!=='ENOENT')throw error;}
+    if(isClosed())return null;
+    await wait(10);
+  }
+  throw executionError('CODEX_EXECUTION_STOP_UNCONFIRMED','Bound execution did not publish an exact Linux process identity');
+}
+async function stopLinuxExecution(prepared,identity,processLauncher){
+  if(!identity)return;
+  const child=processLauncher(prepared.binding.launcher,['-d',prepared.binding.distribution,'--exec','/bin/sh','-eu','-c',stopScript,'codex-bound-kill',String(identity.pid),identity.token],{shell:false,windowsHide:true,stdio:'ignore'});
+  const code=await new Promise((resolveStop,rejectStop)=>{
+    let settled=false,timer;
+    const finish=callback=>value=>{if(settled)return;settled=true;clearTimeout(timer);callback(value);};
+    child.once('error',finish(rejectStop));child.once('close',finish(resolveStop));
+    timer=setTimeout(()=>{child.kill();finish(rejectStop)(executionError('CODEX_EXECUTION_STOP_UNCONFIRMED','Exact Linux stop helper exceeded its host deadline'));},3000);
   });
+  requireValue(code===0,'CODEX_EXECUTION_STOP_UNCONFIRMED','Exact Linux execution unit could not be confirmed stopped');
+}
+function launchBoundExecution(prepared,{signal,onHandle,processLauncher,removeControl}){
+  const child=processLauncher(prepared.binding.launcher,prepared.argv,{shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const stdout=[],stderr=[];let bytes=0,closed=false,quiescent=false,controlCleaned=false,exitCode=null,exitSignal=null,launchError=null,stopReason=null,stopPromise=null,cleanupPromise=null,timer,abort,doneSettled=false;
+  let closeObserved;const closeSeen=new Promise(resolveClose=>{closeObserved=resolveClose;});
+  let resolveDone,rejectDone;const done=new Promise((resolve,reject)=>{resolveDone=resolve;rejectDone=reject;});
+  const settleDone=(callback,value)=>{if(doneSettled)return;doneSettled=true;clearTimeout(timer);if(signal&&abort)signal.removeEventListener('abort',abort);callback(value);};
+  const stopFailure=error=>Object.assign(new AggregateError([
+    stopReason??launchError??executionError('CODEX_EXECUTION_CANCELLED','Bound execution stopped'),error,
+  ],'Bound execution stopped without a confirmed quiescent Linux unit'),{code:'CODEX_EXECUTION_STOP_UNCONFIRMED'});
+  const cleanupControl=()=>{
+    if(controlCleaned)return Promise.resolve();
+    if(!cleanupPromise)cleanupPromise=removeControl(prepared.controlRoot,{recursive:true,force:true}).then(()=>{controlCleaned=true;}).finally(()=>{if(!controlCleaned)cleanupPromise=null;});
+    return cleanupPromise;
+  };
+  const stop=reason=>{
+    if(reason&&!stopReason)stopReason=reason;
+    if(quiescent)return cleanupControl();
+    if(!stopPromise)stopPromise=(async()=>{
+      if(closed){quiescent=true;await cleanupControl();return;}
+      const identity=await executionIdentity(prepared,()=>closed);
+      try{await stopLinuxExecution(prepared,identity,processLauncher);}catch(error){
+        if(closed){quiescent=true;await cleanupControl();return;}
+        throw error;
+      }
+      if(!closed)child.kill();
+      await Promise.race([closeSeen,wait(2000).then(()=>{throw executionError('CODEX_EXECUTION_STOP_UNCONFIRMED','Windows WSL proxy did not close after the exact Linux execution unit stopped');})]);
+      quiescent=true;await cleanupControl();
+    })().finally(()=>{stopPromise=null;});
+    return stopPromise;
+  };
+  // Process exit and Host control-state cleanup are one externally confirmed
+  // lifecycle. A failed control cleanup keeps this handle retryable even though
+  // the Linux unit itself has already stopped.
+  const handle={done,stop,isQuiescent:()=>quiescent&&controlCleaned};
+  if(onHandle)onHandle(handle);
+  const requestStop=reason=>{void stop(reason).catch(error=>settleDone(rejectDone,stopFailure(error)));};
+  const collect=target=>chunk=>{
+    bytes+=chunk.length;
+    if(bytes>1024*1024){requestStop(executionError('CODEX_EXECUTION_OUTPUT','Bound program output exceeded 1 MiB'));return;}
+    target.push(chunk);
+  };
+  child.stdout.on('data',collect(stdout));child.stderr.on('data',collect(stderr));
+  child.once('error',error=>{launchError=Object.assign(error,{code:'CODEX_EXECUTION_LAUNCH'});requestStop(launchError);});
+  child.once('exit',(code,signalName)=>{exitCode=Number.isInteger(code)?code:null;exitSignal=signalName??null;});
+  child.once('close',()=>{closed=true;quiescent=true;closeObserved();void(async()=>{
+    try{
+      await cleanupControl();
+      if(stopReason)settleDone(rejectDone,stopReason);else if(launchError)settleDone(rejectDone,launchError);else{
+        const stdoutText=Buffer.concat(stdout).toString('utf8'),stderrText=Buffer.concat(stderr).toString('utf8');
+        settleDone(resolveDone,{exit_code:exitCode,signal:exitSignal,stdout:stdoutText,stderr:stderrText,output:stdoutText+stderrText});
+      }
+    }catch(cleanupError){settleDone(rejectDone,Object.assign(new AggregateError([stopReason??launchError??cleanupError,cleanupError],'Bound execution ended but its host control state could not be cleaned'),{code:'CODEX_EXECUTION_CLEANUP'}));}
+  })();});
+  abort=()=>requestStop(signal?.reason instanceof Error?signal.reason:executionError('CODEX_EXECUTION_CANCELLED','Bound program was cancelled'));
+  if(signal)signal.addEventListener('abort',abort,{once:true});
+  if(signal?.aborted)abort();
+  timer=setTimeout(()=>requestStop(executionError('CODEX_EXECUTION_TIMEOUT','Bound program exceeded its host deadline')),prepared.binding.command_timeout_ms);
+  return handle;
+}
+// processLauncher/removeControl are trusted in-process lifecycle-test seams.
+// Workflow data never reaches them; production uses Node's process/filesystem.
+export async function executeBoundProgram(binding,request,roots,{signal,masks=[],writable=[],beforeSpawn,onHandle,processLauncher=spawn,removeControl=rm}={}){
+  const prepared=await prepareBoundExecution(binding,request,roots,{masks,writable});let launched=false;
+  try{
+    if(signal?.aborted)throw signal.reason instanceof Error?signal.reason:executionError('CODEX_EXECUTION_CANCELLED','Bound program was cancelled before launch');
+    if(beforeSpawn)await beforeSpawn();
+    if(signal?.aborted)throw signal.reason instanceof Error?signal.reason:executionError('CODEX_EXECUTION_CANCELLED','Bound program was cancelled before launch');
+    const handle=launchBoundExecution(prepared,{signal,onHandle,processLauncher,removeControl});launched=true;return await handle.done;
+  }finally{if(!launched)await rm(prepared.controlRoot,{recursive:true,force:true});}
 }
 function safeDiagnostic(error) {
   return String(error?.message ?? 'Workspace tool request was rejected')
@@ -90,7 +306,7 @@ function argsShape(args, names) {
 // All file access is performed by this host broker. No shell or arbitrary-path
 // dynamic reader is exposed. This is an application boundary, not an OS ACL.
 export async function createCodexToolBroker({ workspace, access, allowedPaths = [], deniedPaths = [], resources = [],
-  inputRoots = [], executionBinding, authorize, onOperation, recoverToolErrors = false,
+  inputRoots = [], executionBinding, runtimeEnvironment, prepareRuntimeEnvironment, authorize, onOperation, recoverToolErrors = false,
 }) {
   requireValue(['read_only', 'bounded_write'].includes(access) && typeof authorize === 'function' && typeof onOperation === 'function', 'CODEX_BROKER_AUTHORITY', 'The broker requires explicit access, a live lease check and a durable operation sink');
   await noSymlinks(workspace); const root = await realpath(workspace);
@@ -105,8 +321,9 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
     requireValue(!denied.some(value => within(value, path)), 'CODEX_INPUT_ROOTS', 'An input root cannot expose executor-owned or denied state');
     inputs.set(item.name, path);
   }
-  const execution = qualifiedExecutionBinding(executionBinding);
-  if (execution) requireValue(access === 'bounded_write' && inputs.has('task_root'), 'CODEX_EXECUTION_BINDING', 'Inherited task execution requires bounded write access and a task_root input');
+  const qualifiedExecution = qualifiedExecutionBinding(executionBinding);
+  let execution = (access === 'bounded_write' ? qualifiedExecution : null) ?? nativeExecutionBinding(runtimeEnvironment);
+  if (execution?.kind === 'wsl') requireValue(inputs.has('task_root'), 'CODEX_EXECUTION_BINDING', 'Inherited WSL task execution requires a task_root input');
   const pinned = new Map();
   requireValue(resources.length <= 512, 'CODEX_RESOURCE_LIMIT', 'Too many node resources');
   let totalResourceBytes = 0;
@@ -163,11 +380,14 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
       { name: 'list_input', description: 'List one directory beneath a host-authorized read-only task input root. Use root=task_root and path=. to start.', inputSchema: schema({ root: { type: 'string', enum: [...inputs.keys()] }, path: string }) },
       { name: 'read_input', description: 'Read one bounded UTF-8 file beneath a host-authorized read-only task input root.', inputSchema: schema({ root: { type: 'string', enum: [...inputs.keys()] }, path: string }) },
     ] : []),
-    ...(execution ? [{ name: 'run_task_program', description: 'Run one host-bound program in this Run\'s inherited WSL environment. The host owns all platform paths. cwd is a logical root; TASK_ROOT and WORKSPACE are set inside the process. Use write_workspace for text edits, then use this tool for execution and verification.', inputSchema: schema({ program: { type: 'string', enum: Object.keys(execution.programs) }, args: { type: 'array', items: string, maxItems: 256 }, cwd: { type: 'string', enum: ['workspace', 'task_root'] } }) }] : []),
-    ...(pinned.size ? [{ name: 'read_workflow_resource', description: 'Read an immutable resource pinned to this node. Prefer read_workflow_resource_range for large references.', inputSchema: schema({ path: { type: 'string', enum: [...pinned.keys()] } }) },
+    ...(execution ? [{ name: 'run_task_program', description: 'Run one Host-resolved task program without a shell. Use this for CodeGraph, Git inspection and tests. cwd is a logical root; @WORKSPACE@ and, when available, @TASK_ROOT@ expand to exact paths. Inspect the exit code and output before reporting success.', inputSchema: schema({ program: { type: 'string', enum: Object.keys(execution.programs) }, args: { type: 'array', items: string, maxItems: 256 }, cwd: { type: 'string', enum: inputs.has('task_root') ? ['workspace', 'task_root'] : ['workspace'] } }) }] : []),
+    ...(access === 'bounded_write' ? [{ name: 'mkdir_workspace', description: 'Create a workspace directory within this node\'s exact write scope before writing new files.', inputSchema: schema({ path: string }) }] : []),
+    ...(pinned.size ? [{ name: 'read_workflow_resource', description: 'Read a small immutable resource pinned to this node. Large results may exceed the model transport; use read_workflow_resource_chunk for complete sequential reading.', inputSchema: schema({ path: { type: 'string', enum: [...pinned.keys()] } }) },
+      {name:'read_workflow_resource_chunk',description:'Read a transport-safe UTF-8 byte chunk from an immutable pinned resource. Begin at start_byte 0, use max_bytes at most 12000, then follow next_byte exactly until complete is true.',inputSchema:schema({path:{type:'string',enum:[...pinned.keys()]},start_byte:{type:'integer',minimum:0},max_bytes:{type:'integer',minimum:1,maximum:12000}})},
       {name:'read_workflow_resource_range',description:'Read 1–200 numbered lines of an immutable pinned UTF-8 resource. Reports total lines; partial content is not a full-file audit.',inputSchema:schema({path:{type:'string',enum:[...pinned.keys()]},start_line:{type:'integer',minimum:1},end_line:{type:'integer',minimum:1}})}] : []),
+    ...(pinned.size && access === 'bounded_write' ? [{ name: 'materialize_workflow_resource', description: 'Atomically copy an exact pinned UTF-8 Workflow resource into a permitted workspace path without sending its contents through the model. Parent directory must exist; expected_sha256 is null for a new file.', inputSchema: schema({ path: { type: 'string', enum: [...pinned.keys()] }, destination: string, expected_sha256: { type: ['string', 'null'] } }) }] : []),
   ];
-  let queue = Promise.resolve(); let revoked = false;
+  let queue = Promise.resolve(); let revoked = false; const executionAbort=new AbortController();let executionHandle=null;
   async function checkAuthority() {
     requireValue(!revoked, 'CODEX_BROKER_REVOKED', 'Workspace broker was revoked');
     await authorize(); requireValue(!revoked, 'CODEX_BROKER_REVOKED', 'Workspace broker was revoked during authorization');
@@ -175,12 +395,35 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
   async function perform(name, args, callId) {
     requireValue(tools.some(tool => tool.name === name) && typeof callId === 'string' && callId.length <= 256, 'CODEX_TOOL_DENIED', 'Tool is outside this node broker');
     await checkAuthority();
-    argsShape(args, name === 'write_workspace' ? ['path', 'text', 'expected_sha256'] : name === 'run_task_program' ? ['program', 'args', 'cwd'] : name==='read_workflow_resource_range'?['path','start_line','end_line']:['list_input','read_input'].includes(name)?['root','path']:['path']);
+    argsShape(args, name === 'write_workspace' ? ['path', 'text', 'expected_sha256'] : name === 'materialize_workflow_resource' ? ['path', 'destination', 'expected_sha256'] : name === 'run_task_program' ? ['program', 'args', 'cwd'] : name==='read_workflow_resource_range'?['path','start_line','end_line']:name==='read_workflow_resource_chunk'?['path','start_byte','max_bytes']:['list_input','read_input'].includes(name)?['root','path']:['path']);
     if (name === 'run_task_program') {
-      const started = Date.now(); await onOperation({ call_id: callId, tool: name, program: args.program, cwd: args.cwd, phase: 'started' });
-      const result = await executeBoundProgram(execution, args, { workspace: root, task_root: inputs.get('task_root') });
-      await onOperation({ call_id: callId, tool: name, program: args.program, cwd: args.cwd, phase: 'completed', exit_code: result.exit_code, signal: result.signal, duration_ms: Date.now() - started });
-      return textResult(result);
+      requireValue(Array.isArray(args.args) && args.args.length <= 256 && args.args.every(value => typeof value === 'string'
+        && value.length <= 8192 && !value.includes('\0')), 'CODEX_EXECUTION_ARGUMENTS', 'Task program arguments must be bounded strings');
+      if (execution.kind === 'native') {
+        if (prepareRuntimeEnvironment) {
+          const prepared = await prepareRuntimeEnvironment();
+          execution = nativeExecutionBinding(prepared.environment ?? prepared);
+        } else {
+          await verifyRuntimeEnvironment(runtimeEnvironment.requirements ?? {executables:runtimeEnvironment.tools.map(tool=>tool.name)},runtimeEnvironment);
+        }
+        await checkAuthority();
+      }
+      const started = Date.now(); const argvEvidence = { args_sha256: digest(JSON.stringify(args.args)), arg_count: args.args.length };
+      await onOperation({ call_id: callId, tool: name, program: args.program, cwd: args.cwd, ...argvEvidence, phase: 'started' });
+      if (execution.kind === 'wsl') for(const boundary of boundaries)await requireWritableTreeWithoutLinks(boundary);
+      const masks=execution.kind === 'wsl' ? await sandboxMasks([root,inputs.get('task_root')],denied) : [];
+      let launchedHandle=null;
+      try{
+        requireValue(!executionHandle || executionHandle.isQuiescent(), 'CODEX_EXECUTION_BUSY', 'Only one exact task program may own this broker');
+        const options={signal:executionAbort.signal,onHandle:handle=>{requireValue(!executionHandle||executionHandle.isQuiescent(),'CODEX_EXECUTION_BUSY','Only one exact bound execution may own this broker');executionHandle=handle;launchedHandle=handle;}};
+        const roots={workspace:root,task_root:inputs.get('task_root')};
+        const result=execution.kind === 'wsl'
+          ? await executeBoundProgram(execution,args,roots,{...options,masks,writable:boundaries,beforeSpawn:checkAuthority})
+          : await (async()=>{await checkAuthority();return executeNativeProgram(execution,args,roots,{...options,env:{...process.env,PATH:[...new Set(Object.values(execution.programs).map(dirname)),process.env.PATH ?? ''].join(delimiter)}});})();
+        await onOperation({ call_id: callId, tool: name, program: args.program, cwd: args.cwd, ...argvEvidence,
+          phase: 'completed', exit_code: result.exit_code, signal: result.signal, duration_ms: Date.now() - started });
+        return textResult(result);
+      }finally{if(launchedHandle?.isQuiescent()&&executionHandle===launchedHandle)executionHandle=null;}
     }
     if(name==='read_workflow_resource_range') {
       const item=pinned.get(args.path);requireValue(item,'CODEX_RESOURCE_DENIED','Resource is outside the pinned node manifest');
@@ -191,6 +434,17 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
       requireValue(Buffer.byteLength(text)<=32768,'CODEX_RESOURCE_RANGE_LIMIT','Selected lines exceed 32 KiB; select a smaller range');
       await onOperation({call_id:callId,tool:name,path:args.path,phase:'read',sha256:item.sha256,start_line:args.start_line,end_line:end,total_lines:lines.length,bytes:Buffer.byteLength(text)});
       return textResult({path:args.path,sha256:item.sha256,start_line:args.start_line,end_line:end,total_lines:lines.length,text});
+    }
+    if(name==='read_workflow_resource_chunk') {
+      const item=pinned.get(args.path);requireValue(item,'CODEX_RESOURCE_DENIED','Resource is outside the pinned node manifest');
+      decode(item.bytes);
+      requireValue(Number.isInteger(args.start_byte)&&Number.isInteger(args.max_bytes)&&args.start_byte>=0&&args.start_byte<item.bytes.length&&args.max_bytes>=1&&args.max_bytes<=12000&&(args.start_byte===0||(item.bytes[args.start_byte]&0xc0)!==0x80),'CODEX_RESOURCE_CHUNK','Use byte 0 or the exact next_byte from the previous chunk, with max_bytes from 1 through 12000');
+      let end=Math.min(args.start_byte+args.max_bytes,item.bytes.length);
+      while(end>args.start_byte&&end<item.bytes.length&&(item.bytes[end]&0xc0)===0x80)end--;
+      requireValue(end>args.start_byte,'CODEX_RESOURCE_CHUNK','Chunk boundary did not contain one complete UTF-8 character');
+      const bytes=item.bytes.subarray(args.start_byte,end),text=decode(bytes),complete=end===item.bytes.length;
+      await onOperation({call_id:callId,tool:name,path:args.path,phase:'read',sha256:item.sha256,start_byte:args.start_byte,end_byte:end,total_bytes:item.bytes.length,bytes:bytes.length,complete});
+      return textResult({path:args.path,sha256:item.sha256,start_byte:args.start_byte,end_byte:end,total_bytes:item.bytes.length,next_byte:end,complete,text});
     }
     if (name === 'read_workflow_resource') {
       const item = pinned.get(args.path); requireValue(item, 'CODEX_RESOURCE_DENIED', 'Resource is outside the pinned node manifest');
@@ -218,7 +472,20 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
       await onOperation({ call_id: callId, tool: name, root: args.root, path: args.path, phase: 'read', sha256 });
       return textResult({ root: args.root, path: args.path, sha256, text });
     }
-    const path = locate(args.path, name === 'write_workspace', name === 'list_workspace');
+    let source_sha256;
+    if (name === 'materialize_workflow_resource') {
+      const item = pinned.get(args.path);
+      requireValue(item, 'CODEX_RESOURCE_DENIED', 'Resource is outside the pinned node manifest');
+      source_sha256 = item.sha256;
+      args = { path: args.destination, text: decode(item.bytes), expected_sha256: args.expected_sha256 };
+    }
+    const path = locate(args.path, name === 'write_workspace' || name === 'materialize_workflow_resource' || name === 'mkdir_workspace', name === 'list_workspace' || name === 'mkdir_workspace');
+    if (name === 'mkdir_workspace') {
+      await onOperation({ call_id: callId, tool: name, path: args.path, phase: 'intent' }); await checkAuthority();
+      await ensureDirectory(path);
+      await onOperation({ call_id: callId, tool: name, path: args.path, phase: 'committed' });
+      return textResult({ path: args.path });
+    }
     if (name === 'list_workspace') {
       await directory(path);
       const entries = await readdir(path, { withFileTypes: true });
@@ -244,8 +511,13 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
     const parent = dirname(path); await noSymlinks(parent);
     const prior = await regular(path, { allowMissing: true });
     const previous = prior ? digest(await readFile(path)) : null;
+    if (source_sha256 && previous === source_sha256) {
+      await onOperation({ call_id: callId, tool: name, path: args.path, phase: 'unchanged', source_sha256 });
+      return textResult({ path: args.path, sha256: source_sha256, unchanged: true });
+    }
     requireValue(previous === args.expected_sha256, 'CODEX_TOOL_WRITE_CONFLICT', 'Workspace file changed since the caller observed it');
-    const sha256 = digest(args.text); const operation = { call_id: callId, tool: name, path: args.path, before_sha256: previous, after_sha256: sha256 };
+    const sha256 = digest(args.text); const operation = { call_id: callId, tool: name, path: args.path, before_sha256: previous, after_sha256: sha256,
+      ...(source_sha256 ? { source_sha256 } : {}) };
     await onOperation({ ...operation, phase: 'intent' }); await checkAuthority();
     const temporary = join(parent, '.sol-write-' + randomUUID()); let committed = false;
     try {
@@ -266,18 +538,31 @@ export async function createCodexToolBroker({ workspace, access, allowedPaths = 
       throw error;
     }
   }
-  return { tools: () => structuredClone(tools), revoke() { revoked = true; },
+  const revoke=()=>{revoked=true;if(!executionAbort.signal.aborted)executionAbort.abort(executionError('CODEX_EXECUTION_CANCELLED','Bound execution authority was revoked'));};
+  return { tools: () => structuredClone(tools), revoke,
+    isQuiescent(){return !executionHandle||executionHandle.isQuiescent();},
     async quiesce() {
-      revoked = true;
-      // Preserve the failure as an explicit shutdown outcome. The tool caller
-      // also receives its original rejection; this only waits for it to settle.
-      return queue.then(() => ({ quiescent: true, error: null }), error => ({ quiescent: true, error }));
+      revoke();
+      // Retry the exact Linux stop before waiting on the tool queue. A failed
+      // stop rejects that tool promptly but deliberately retains this handle.
+      let queueError=null,stopError=null;
+      if(executionHandle&&!executionHandle.isQuiescent())try{await executionHandle.stop(executionAbort.signal.reason);}catch(error){stopError=error;}
+      if(!stopError)try{await queue;}catch(error){queueError=error;}
+      const quiescent=!executionHandle||executionHandle.isQuiescent();if(quiescent)executionHandle=null;
+      const error=queueError&&stopError?new AggregateError([queueError,stopError],'Bound execution and quiescence both failed'):stopError??queueError;
+      return {quiescent,error};
     },
     call(name, args, callId) {
     const next = queue.then(async () => {
       try { return await perform(name, args, callId); }
       catch (error) {
-        if (!recoverToolErrors || error?.committed || !RECOVERABLE_TOOL_ERRORS.has(error?.code)) throw error;
+        if (name==='run_task_program' && ['ENVIRONMENT_BINDING_STALE','ENVIRONMENT_SETUP_REQUIRED','CODEX_EXECUTION_LAUNCH'].includes(error.code)) {
+          await onOperation({call_id:callId,tool:name,program:String(args?.program??'').slice(0,100),phase:'rejected',code:error.code,diagnostic:safeDiagnostic(error)});
+        }
+        const stoppedOutputLimit = name==='run_task_program' && error?.code==='CODEX_EXECUTION_OUTPUT'
+          && (!executionHandle || executionHandle.isQuiescent());
+        if (!recoverToolErrors || error?.committed || (!RECOVERABLE_TOOL_ERRORS.has(error?.code) && !stoppedOutputLimit)) throw error;
+        if(stoppedOutputLimit) error.message += '; command stopped. Output is unavailable and effects may be partial. Inspect effects and use a narrower query; do not blindly repeat the command.';
         const diagnostic = safeDiagnostic(error);
         const path = typeof args?.path === 'string' ? args.path.slice(0, 1000) : '';
         await onOperation({ call_id: callId, tool: name, ...(typeof args?.root === 'string' ? { root: args.root.slice(0, 1000) } : {}), path, phase: 'rejected', code: error.code, diagnostic });

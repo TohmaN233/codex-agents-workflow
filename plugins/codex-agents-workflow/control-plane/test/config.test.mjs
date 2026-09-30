@@ -14,6 +14,7 @@ import {
   validateConfig,
 } from '../lib/config.mjs';
 import { resolveSelection } from '../lib/control.mjs';
+import { buildProviderAdapter } from '../lib/providers.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 
 async function fixture() {
@@ -22,6 +23,128 @@ async function fixture() {
   const config = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
   return { dir, configPath, config };
 }
+
+test('built-in native Providers contain one selectable entry per real model and effort', async () => {
+  const { config } = await fixture();
+  const providers = Object.fromEntries(config.providers.map(provider => [provider.id, provider]));
+  assert.deepEqual(config.providers.filter(provider => provider.kind === 'native_agent').map(provider => provider.id),
+    ['native-luna', 'native-sol', 'native-astra']);
+  for (const [id, model, effort] of [
+    ['native-luna', 'gpt-6-luna', 'max'],
+    ['native-sol', 'gpt-6.1-sol', 'high'],
+    ['native-astra', 'gpt-6-astra', 'medium'],
+  ]) assert.deepEqual([providers[id].config.model, providers[id].config.reasoning_effort], [model, effort]);
+  for (const id of ['native-luna', 'native-sol', 'native-astra']) {
+    assert.equal(providers[id].config.agent_type, 'default', id);
+    assert.equal(providers[id].config.role, 'advisor', id);
+  }
+  const web = buildProviderAdapter(providers['chatgpt-web-pro'], { access: 'read_only' });
+  assert.deepEqual([web.skill, web.review_route, web.packet_format, web.review_role],
+    ['chatgpt-agent', 'packet.inspect', 'zip', 'reviewer']);
+  assert.equal(providers['grok-local'].config.model, undefined);
+  assert.equal(providers['cursor-local'].config.model, undefined);
+});
+
+test('existing built-in native Providers migrate to truthful model-only identities', async (t) => {
+  const { dir, configPath, config } = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const expected = new Map(config.providers
+    .filter((provider) => provider.kind === 'native_agent')
+    .map((provider) => [provider.id, provider.config.agent_type]));
+  for (const provider of config.providers) {
+    if (expected.has(provider.id)) {
+      provider.config.agent_type = 'default';
+      provider.name = 'Legacy alias';
+      provider.description = 'Dedicated GPT-6 Astra / Medium planner.';
+    }
+  }
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  for (const provider of migrated.providers.filter((provider) => expected.has(provider.id))) {
+    assert.equal(provider.config.agent_type, expected.get(provider.id), provider.id);
+    assert.match(provider.name, /^GPT-6(?:\.1)? (Luna|Sol|Astra) \/ (Max|High|Medium)$/, provider.id);
+  }
+  const persisted = JSON.parse(await readFile(configPath, 'utf8'));
+  for (const provider of persisted.providers.filter((provider) => expected.has(provider.id))) {
+    assert.equal(provider.config.agent_type, expected.get(provider.id), provider.id);
+  }
+});
+
+test('version-7 active config collapses retired purpose aliases into three model Providers', async (t) => {
+  const { dir, configPath, config } = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const luna = config.providers.find(provider => provider.id === 'native-luna');
+  const sol = config.providers.find(provider => provider.id === 'native-sol');
+  for (const retiredId of ['native-terra', 'native-luna-complex', 'native-authoring-astra-low', 'native-astra-solver']) {
+    const retired = structuredClone(luna); retired.id = retiredId;
+    Object.assign(retired.config, { model: 'gpt-6-astra', reasoning_effort: 'low', fresh_context: false });
+    config.providers.unshift(retired);
+  }
+  for (const retiredId of ['native-reviewer-low', 'native-generation-reviewer']) {
+    const retired = structuredClone(sol); retired.id = retiredId;
+    Object.assign(retired.config, { model: 'gpt-6-astra', reasoning_effort: 'low' });
+    config.providers.unshift(retired);
+  }
+  config.version = 7;
+  sol.config.model = 'gpt-6-sol';
+  sol.name = 'GPT-6 Sol / High';
+  config.strict_executor = { main_model: 'gpt-6-sol', main_reasoning_effort: 'medium' };
+  delete config.task_types;
+  config.workflow_store = { schema_version: 1, relative_path: 'workflows-v7' };
+  config.legacy_mapping = {};
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  const ids = migrated.providers.map(provider => provider.id);
+  for (const retired of ['native-terra', 'native-luna-complex', 'native-luna-planner', 'native-luna-solver', 'native-reviewer-low', 'native-generation-reviewer', 'native-authoring-astra-low', 'native-astra-solver']) {
+    assert.equal(ids.includes(retired), false, retired);
+  }
+  assert.equal(new Set(ids).size, ids.length);
+  const providers = Object.fromEntries(migrated.providers.map(provider => [provider.id, provider]));
+  assert.deepEqual([providers['native-luna'].config.model, providers['native-luna'].config.reasoning_effort, providers['native-luna'].config.fresh_context],
+    ['gpt-6-luna', 'max', true]);
+  assert.deepEqual([providers['native-sol'].config.model, providers['native-sol'].config.reasoning_effort], ['gpt-6.1-sol', 'high']);
+  assert.deepEqual([providers['native-astra'].config.model, providers['native-astra'].config.reasoning_effort], ['gpt-6-astra', 'medium']);
+  assert.equal(providers['native-sol'].name, 'GPT-6.1 Sol / High');
+  assert.equal(migrated.strict_executor.main_model, '');
+  assert.equal(migrated.strict_executor.main_reasoning_effort, '');
+  assert.deepEqual(JSON.parse(await readFile(configPath, 'utf8')), migrated);
+});
+
+test('current version-6 task routes migrate retired Provider IDs before validation', async (t) => {
+  const { dir, configPath, config } = await fixture();
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  config.providers.find(provider => provider.id === 'native-luna').id = 'native-terra';
+  for (const taskType of config.task_types) {
+    for (const stage of taskType.stages) {
+      if (stage.provider_id === 'native-luna') stage.provider_id = 'native-terra';
+    }
+  }
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
+  assert.equal(migrated.providers.some(provider => provider.id === 'native-terra'), false);
+  assert.equal(migrated.task_types.flatMap(taskType => taskType.stages)
+    .some(stage => stage.provider_id === 'native-terra'), false);
+  assert(migrated.task_types.flatMap(taskType => taskType.stages)
+    .some(stage => stage.provider_id === 'native-sol'));
+});
+
+test('current config validation rejects retired Provider IDs outside the load migration boundary', async () => {
+  const { config } = await fixture();
+  config.providers.find(provider => provider.id === 'native-luna').id = 'native-terra';
+  assert.throws(() => validateConfig(config), /retired native provider id/);
+});
+
+test('native models are write-capable by default while each node selects its sandbox', async () => {
+  const { config } = await fixture();
+  for (const provider of config.providers.filter(item => item.kind === 'native_agent')) {
+    assert.equal(provider.capabilities.read, true, provider.id);
+    assert.equal(provider.capabilities.write, true, provider.id);
+    assert.equal(buildProviderAdapter(provider, { access: 'read_only' }).requested_sandbox, 'read-only', provider.id);
+    assert.equal(buildProviderAdapter(provider, { access: 'bounded_write' }).requested_sandbox, 'workspace-write', provider.id);
+  }
+  assert.equal(new Set(config.providers.map(provider => provider.name)).size, config.providers.length);
+});
 
 test('default config path is user-global and independent of the project directory', () => {
   const userHome = join(tmpdir(), 'sol-control-user');
@@ -90,6 +213,10 @@ test('bundled defaults use delegate for light work and full for difficult work',
   const { config } = await fixture();
   assert.equal(config.version, 6);
   assert.equal('scenarios' in config, false);
+  assert.ok(config.providers.filter((provider) => provider.kind === 'native_agent')
+    .every((provider) => provider.config.inactivity_timeout_ms === 0));
+  assert.ok(config.providers.filter((provider) => provider.kind === 'builtin_connector')
+    .every((provider) => provider.config.task_timeout_ms === 0));
   const external = config.providers.filter((provider) => provider.kind !== 'native_agent');
   assert.ok(external.length >= 4);
   assert.ok(external.every((provider) => provider.enabled === false));
@@ -105,7 +232,7 @@ test('bundled defaults use delegate for light work and full for difficult work',
   ]);
   const review = config.task_types.find((taskType) => taskType.id === 'cross-review');
   assert.deepEqual(review.stages.map((stage) => [stage.id, stage.role, stage.provider_id]), [
-    ['review', 'reviewer', 'native-reviewer'],
+    ['review', 'reviewer', 'native-sol'],
   ]);
   const analysis = config.task_types.find((taskType) => taskType.id === 'repository-analysis');
   assert.deepEqual(analysis.stages.map((stage) => [stage.role, stage.access]), [
@@ -116,9 +243,14 @@ test('bundled defaults use delegate for light work and full for difficult work',
     ['implementation', 'implementer'], ['review', 'reviewer'],
   ]);
   const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
-  assert.equal(difficult.route, 'full');
-  assert.deepEqual(difficult.stages.map((stage) => stage.id), ['implementation', 'review']);
-  for (const taskType of config.task_types) {
+  assert.equal(difficult.route, 'delegate');
+  assert.deepEqual(difficult.stages.map((stage) => stage.id), ['implementation']);
+  const solver = config.task_types.find((taskType) => taskType.id === 'hard-problem-solver');
+  assert.deepEqual(solver.stages.map((stage) => [stage.provider_id, stage.access]), [['native-astra', 'bounded_write']]);
+  const gptReviewer = config.task_types.find((taskType) => taskType.id === 'hard-path-web-advice');
+  assert.equal(gptReviewer.name, 'GPT reviewer');
+  assert.equal(gptReviewer.stages[0].provider_id, 'chatgpt-web-pro');
+  for (const taskType of config.task_types.filter(taskType => taskType.id !== 'hard-path-web-advice')) {
     const providerSpecificText = `${taskType.id} ${taskType.name} ${taskType.description} ${taskType.tags.join(' ')}`;
     assert.doesNotMatch(providerSpecificText, /cursor|grok|chatgpt|luna|terra|openai/i);
   }
@@ -312,7 +444,7 @@ test('version-2 full route migrates disabled with a separate read-only reviewer'
   assert.equal(taskType.enabled, false);
   assert.deepEqual(taskType.stages.map((stage) => [stage.id, stage.provider_id, stage.access]), [
     ['implementation', 'native-luna', 'bounded_write'],
-    ['review', 'native-reviewer', 'read_only'],
+    ['review', 'native-sol', 'read_only'],
   ]);
 });
 
@@ -331,7 +463,7 @@ test('version-3 customized difficult implementation preserves its route without 
   const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
   assert.equal(migrated.version, 6);
   assert.deepEqual(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change')
-    .stages.map((stage) => [stage.id, stage.provider_id]), [['implementation', 'native-terra']]);
+    .stages.map((stage) => [stage.id, stage.provider_id]), [['implementation', 'native-sol']]);
   assert.match(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change')
     .stages[0].template, /CUSTOM IMPLEMENTATION/);
   assert.equal(migrated.task_types.find((taskType) => taskType.id === 'cross-review')
@@ -375,11 +507,11 @@ test('version-4 customized difficult workflow remains unchanged when it is not t
 test('version-4 migration never injects a reviewer binding absent from a customized provider set', async () => {
   const { configPath, config } = await fixture();
   config.version = 4;
-  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  const reviewer = config.providers.find((provider) => provider.id === 'native-sol');
   reviewer.id = 'my-reviewer';
   for (const taskType of config.task_types) {
     for (const stage of taskType.stages) {
-      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'my-reviewer';
+      if (stage.provider_id === 'native-sol') stage.provider_id = 'my-reviewer';
     }
   }
   const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
@@ -388,17 +520,17 @@ test('version-4 migration never injects a reviewer binding absent from a customi
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
   const migrated = await loadConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
   assert.equal(migrated.task_types.find((taskType) => taskType.id === 'judgment-heavy-change').route, 'delegate');
-  assert.equal(migrated.providers.some((provider) => provider.id === 'native-reviewer'), false);
+  assert.equal(migrated.task_types.find((taskType) => taskType.id === 'cross-review').stages[0].provider_id, 'my-reviewer');
 });
 
 test('version-4 migration does not inject a reviewer incompatible with a customized provider', async () => {
   const { configPath, config } = await fixture();
   config.version = 4;
-  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  const reviewer = config.providers.find((provider) => provider.id === 'native-sol');
   reviewer.config.role = 'implementer';
   for (const taskType of config.task_types) {
     for (const stage of taskType.stages) {
-      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'grok-local';
+      if (stage.provider_id === 'native-sol') stage.provider_id = 'grok-local';
     }
   }
   const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
@@ -414,12 +546,12 @@ test('version-4 migration does not inject a reviewer incompatible with a customi
 test('version-4 migration does not inject a reviewer when the provider kind is customized', async () => {
   const { configPath, config } = await fixture();
   config.version = 4;
-  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  const reviewer = config.providers.find((provider) => provider.id === 'native-sol');
   reviewer.kind = 'builtin_connector';
   reviewer.config = { connector: 'grok_acp', binary_env: 'GROK_BIN', transport: 'leader_acp_stdio' };
   for (const taskType of config.task_types) {
     for (const stage of taskType.stages) {
-      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'grok-local';
+      if (stage.provider_id === 'native-sol') stage.provider_id = 'grok-local';
     }
   }
   const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
@@ -435,11 +567,11 @@ test('version-4 migration does not inject a reviewer when the provider kind is c
 test('version-4 migration does not inject a disabled reviewer provider', async () => {
   const { configPath, config } = await fixture();
   config.version = 4;
-  const reviewer = config.providers.find((provider) => provider.id === 'native-reviewer');
+  const reviewer = config.providers.find((provider) => provider.id === 'native-sol');
   reviewer.enabled = false;
   for (const taskType of config.task_types) {
     for (const stage of taskType.stages) {
-      if (stage.provider_id === 'native-reviewer') stage.provider_id = 'grok-local';
+      if (stage.provider_id === 'native-sol') stage.provider_id = 'grok-local';
     }
   }
   const difficult = config.task_types.find((taskType) => taskType.id === 'judgment-heavy-change');
@@ -494,7 +626,7 @@ test('full resolves implementation then review with pinned providers and no fall
         template: 'Implement {{task}} with {{context}} and {{constraints}}; verify {{verification}}.',
       },
       {
-        id: 'review', role: 'reviewer', provider_id: 'native-reviewer',
+        id: 'review', role: 'reviewer', provider_id: 'native-sol',
         access: 'read_only', requires_user_approval: false,
         template: 'Review {{task}} with {{context}} and {{constraints}}; verify {{verification}}.',
       },
@@ -505,16 +637,16 @@ test('full resolves implementation then review with pinned providers and no fall
     task_type_id: 'full-fixture', task: 'Change and review.', user_approved: true,
   }, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {} });
   assert.deepEqual(result.stages.map((stage) => [stage.stage.id, stage.provider.id]), [
-    ['implementation', 'native-luna'], ['review', 'native-reviewer'],
+    ['implementation', 'native-luna'], ['review', 'native-sol'],
   ]);
 
-  config.providers.find((provider) => provider.id === 'native-reviewer').enabled = false;
+  config.providers.find((provider) => provider.id === 'native-sol').enabled = false;
   await saveConfig(config, { configPath });
   await assert.rejects(
     resolveSelection({ task_type_id: 'full-fixture', task: 'Change and review.', user_approved: true }, {
       configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {},
     }),
-    /provider is disabled: native-reviewer/,
+    /provider is disabled: native-sol/,
   );
 });
 

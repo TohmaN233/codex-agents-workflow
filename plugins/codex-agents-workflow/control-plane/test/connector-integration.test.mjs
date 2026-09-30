@@ -277,13 +277,13 @@ test('Grok bounded write uses ACP permission and accepts only allowed paths', as
   assert.equal(await readFile(join(fx.workspace, 'allowed', 'grok.txt'), 'utf8'), 'grok allowed\n');
 });
 
-test('Grok pre-gates an outside write permission and reports scope_violation evidence', async (t) => {
+test('Grok pre-gates an outside write permission and retains remote uncertainty with scope evidence', async (t) => {
   const fx = await fixture(t);
   const started = await startScenario(fx, 'grok-bounded-change', 'GROK_WRITE_OUTSIDE', {
     allowedPaths: ['allowed/'],
   });
   const done = await fx.registry.status(started.task_id, 5000);
-  assert.equal(done.state, 'scope_violation');
+  assert.equal(done.state, 'needs_attention');
   assert.equal(done.error.code, 'SCOPE_VIOLATION');
   assert.equal(done.terminal_evidence.kind, 'acp_permission_denied');
   assert.equal(done.scope.prevented_attempts[0].path, 'outside-grok.txt');
@@ -770,6 +770,7 @@ test('Cursor real filesystem store failure closes CDP and scope watchers and blo
   active.scopeMonitor.close = () => { closeScope(); scopeClosed = true; };
   active.client.close = () => { closeClient(); closed(); };
   await clientClosed;
+  for (let attempt = 0; attempt < 50 && fx.registry.cursor.active.size; attempt++) await new Promise(resolve => setImmediate(resolve));
   assert.equal(fx.registry.cursor.active.size, 0);
   assert.equal(scopeClosed, true);
   assert(['EISDIR', 'EPERM', 'EACCES'].includes(fx.registry.store.persistenceError?.code));

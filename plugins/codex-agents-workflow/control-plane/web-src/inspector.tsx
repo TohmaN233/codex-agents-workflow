@@ -27,23 +27,41 @@ export function Inspector({ workflow, selection, providers, change, select, inli
         lifecycle,
         source_node: resolved.sourceNodeId,
         provider_id: resolved.providerId,
-      } });
+      }, subagent_count: 'auto', fanout: undefined });
       return;
     }
     patch({ executor: { kind: 'thread', provider_id: node.executor.provider_id, lifecycle } });
   };
   const setAgentExecutor = (kind: string) => {
-    if (kind === 'main') patch({ executor: { kind: 'main' } });
-    else if (kind === 'thread') patch({ executor: { kind: 'thread', provider_id: providerId, lifecycle: 'start' } });
-    else patch({ executor: { kind: 'provider', provider_id: providerId } });
+    if (kind === 'main') patch({ executor: { kind: 'main' }, subagent_count: undefined, fanout: undefined });
+    else if (kind === 'thread') patch({ executor: { kind: 'thread', provider_id: providerId, lifecycle: 'start' }, subagent_count: node.subagent_count ?? 'auto' });
+    else patch({ executor: { kind: 'provider', provider_id: providerId }, subagent_count: node.subagent_count ?? 'auto' });
+  };
+  const supportsSubagentCount = !!node?.executor && node.executor.kind !== 'main' && !(node.executor.kind === 'thread' && node.executor.lifecycle === 'continue');
+  const defaultFanout = (distribution: 'one_per_item' | 'partition') => {
+    const input = Object.keys(node?.input_bindings ?? {})[0] ?? 'items';
+    const properties = node?.outputs_schema?.properties ?? {};
+    const result_output = Object.keys(properties).find(key => properties[key]?.type === 'array') ?? 'results';
+    return { input, item_name: 'item', result_output, distribution, scheduling: 'parallel', join: 'all_required' };
   };
   return <aside className="inspector scroll"><div className="panel-heading"><h2>{selection.kind === 'node' && node ? t('节点属性', 'Node properties') : selection.kind === 'edge' && edge ? t('连接属性', 'Connection properties') : t('Workflow 属性', 'Workflow properties')}</h2><button onClick={() => select('workflow', '')}>{t('全局', 'Global')}</button></div>
     {selection.kind === 'node' && node ? <>
       <div className="muted">{node.id} · {node.type}</div>
       <Field label={t('名称', 'Name')} value={node.name ?? node.id} onChange={name => patch({ name })}/>
       {node.type === 'agent' && <>
-        <Select label={t('执行方式', 'Execution mode')} value={node.executor?.kind ?? 'main'} options={[{value:'main',label:t('Main · 主控制会话', 'Main · control session')},{value:'provider',label:t('Provider · 原生交接', 'Provider · native handoff')},{value:'thread',label:t('Codex task · 独立会话', 'Codex task · independent session')}]} onChange={setAgentExecutor}/>
+        <Select label={t('执行方式', 'Execution mode')} value={node.executor?.kind ?? 'main'} options={[{value:'main',label:t('Main · Host 隔离会话', 'Main · isolated Host session')},{value:'provider',label:t('Provider · 原生交接', 'Provider · native handoff')},{value:'thread',label:t('Codex task · 独立会话', 'Codex task · independent session')}]} onChange={setAgentExecutor}/>
         {node.executor?.kind !== 'main' && <fieldset disabled={node.executor?.kind === 'thread' && node.executor.lifecycle === 'continue'}><ProviderField providers={node.executor?.kind === 'thread' ? providers.filter((provider: Json) => provider.kind === 'native_agent') : providers} main={false} label={node.executor?.kind === 'thread' ? t('Task Provider（续聊时由来源决定）', 'Task provider (determined by source when continuing)') : t('固定 Provider', 'Fixed provider')} value={node.executor?.kind === 'thread' && node.executor.lifecycle === 'continue' ? sourceProviderId : node.executor?.provider_id ?? ''} onChange={id => patch({ executor: { ...node.executor, provider_id: id } })}/></fieldset>}
+        {supportsSubagentCount && <>
+          <Select label={t('子 Agent 数量', 'Sub-Agent count')} value={Number.isInteger(node.subagent_count)?'fixed':'auto'} options={[{value:'auto',label:t('自动（按运行时任务）','Auto (from runtime task)')},{value:'fixed',label:t('固定数量','Fixed count')}]} onChange={mode=>{
+            const distribution=mode==='auto'?'one_per_item':'partition';
+            patch({subagent_count:mode==='auto'?'auto':Number.isInteger(node.subagent_count)?node.subagent_count:2,...(node.fanout?{fanout:{...node.fanout,distribution}}:mode==='fixed'?{fanout:defaultFanout(distribution)}:{})});
+          }}/>
+          {Number.isInteger(node.subagent_count) && <label>{t('固定数量（1–32）','Fixed count (1–32)')}<input type="number" min={1} max={32} value={node.subagent_count} onChange={e=>patch({subagent_count:Number(e.target.value),fanout:node.fanout??defaultFanout('partition')})}/></label>}
+          <small>{t('auto 按输入列表与 batch_size 确定批数；parallel 可用 max_concurrency 限制同时运行数量，serial 在上一批结果入账后才释放下一批。图上的 ×auto 表示运行时批数。','Auto derives batch count from the input list and batch_size; parallel may use max_concurrency to limit active Agents, while serial releases the next batch only after the previous result is journaled. ×auto is a runtime count.')}</small>
+          {!node.fanout && <button type="button" onClick={()=>patch({subagent_count:'auto',fanout:defaultFanout('one_per_item')})}>{t('启用列表 fan-out','Enable list fan-out')}</button>}
+          {node.fanout && <><JsonField label={t('运行时 fanout 合同','Runtime fanout contract')} value={node.fanout} onChange={fanout=>patch({fanout})}/><button type="button" onClick={()=>patch({subagent_count:'auto',fanout:undefined})}>{t('关闭列表 fan-out','Disable list fan-out')}</button></>}
+        </>}
+        {node.executor?.kind === 'thread' && node.executor.lifecycle === 'continue' && <small>{t('续聊复用一个确定的 Codex Task，不提供子 Agent 数量设置。','Continuation reuses one exact Codex task, so sub-Agent count is unavailable.')}</small>}
         <Field label={t('角色', 'Role')} value={node.role} onChange={role => patch({ role })}/>
         {node.executor?.kind === 'thread' && <>
           <Select label={t('Task 生命周期', 'Task lifecycle')} value={node.executor.lifecycle ?? 'start'} options={[{value:'start',label:t('创建独立 Task', 'Create independent task')},...(threadSources.length?[{value:'continue',label:t('续聊已有 Task', 'Continue existing task')}]:[])]} onChange={setThreadLifecycle}/>
@@ -87,7 +105,7 @@ export function Inspector({ workflow, selection, providers, change, select, inli
     </> : <>
       <Field label={t('名称', 'Name')} value={workflow.name} onChange={name => change({ ...workflow, name })}/>
       <Field label={t('说明', 'Description')} value={workflow.description} multiline onChange={description => change({ ...workflow, description })}/>
-      <label className="check"><input type="checkbox" checked={workflow.enabled} onChange={e => change({ ...workflow, enabled: e.target.checked })}/>{t('允许启动此 Workflow', 'Allow this workflow to start')}</label>
+      <label className="check"><input type="checkbox" checked={workflow.enabled} onChange={e => change({ ...workflow, enabled: e.target.checked })}/>{workflow.template_kind==='role'?t('启用此 Role', 'Enable this role'):t('允许启动此 Workflow', 'Allow this workflow to start')}</label>
       <Select label={t('隔离模式', 'Isolation mode')} value={workflow.skill_policy.mode} options={[{value:'strict',label:t('严格','Strict')},{value:'cooperative',label:t('协作','Cooperative')}]} onChange={mode => change({ ...workflow, skill_policy: { ...workflow.skill_policy, mode } })}/>
       <JsonField label={t('完整 Skill 策略', 'Complete Skill policy')} value={workflow.skill_policy} onChange={skill_policy => change({ ...workflow, skill_policy })}/>
       <Select label={t('Main 最终验收节点', 'Main finalization node')} value={workflow.finalization.node_id} options={workflow.nodes.filter((n: Json) => n.executor?.kind === 'main').map((n: Json) => n.id)} onChange={node_id => change({ ...workflow, finalization: { required: true, node_id } })}/>

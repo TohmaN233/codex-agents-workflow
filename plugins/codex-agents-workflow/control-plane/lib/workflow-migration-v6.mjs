@@ -14,7 +14,7 @@ const edge = (source, target) => ({ id: `${source}-${target}`, source, target, o
 export function migrateTaskType(taskType, providers) {
   const workflow = {
     ...createDraft(taskType.id, taskType.name), status: 'ready', enabled: taskType.enabled,
-    description: taskType.description, tags: [...taskType.tags],
+    description: taskType.description, tags: [...taskType.tags], template_kind:'workflow',
     // Legacy native/current-context operation was cooperative. Importing a Skill
     // is a separate operation and requires Strict qualification.
     skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] },

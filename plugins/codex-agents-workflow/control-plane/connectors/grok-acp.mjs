@@ -17,6 +17,24 @@ import {
 } from './scope-guard.mjs';
 
 const RESULT_STATES = new Set(['completed', 'failed', 'cancelled', 'scope_violation', 'abandoned']);
+const STARTUP_STOP_WAIT_MS = 3_000;
+
+export function stopOwnedProcess(child, name, waitMs = STARTUP_STOP_WAIT_MS) {
+  if (!child || typeof child.exitCode === 'number' || typeof child.signalCode === 'string') return Promise.resolve();
+  return new Promise((resolveStop, rejectStop) => {
+    let timer;
+    const done = (error) => {
+      clearTimeout(timer);
+      child.off('exit', onExit); child.off('close', onExit); child.off('error', onError);
+      if (error) rejectStop(error); else resolveStop();
+    };
+    const onExit = () => done();
+    const onError = error => done(error);
+    child.once('exit', onExit); child.once('close', onExit); child.once('error', onError);
+    timer = setTimeout(() => done(connectorError('CONNECTOR_PROCESS_STOP_PENDING', `${name} did not confirm exit within ${waitMs}ms`)), waitMs);
+    try { child.kill(); } catch (error) { done(error); }
+  });
+}
 
 function defaultGrokBinary() {
   return join(homedir(), '.grok', 'bin', process.platform === 'win32' ? 'grok.exe' : 'grok');
@@ -202,12 +220,16 @@ export class GrokAcpConnector {
     };
   }
 
-  async start({ provider, stage, prompt, workspace, taskTypeId, stageId, allowedPaths = [], taskId }) {
+  async start({ provider, stage, prompt, workspace, taskTypeId, stageId, allowedPaths = [], taskId, assertActive, signal, registerCleanup }) {
+    const assertAdmission = () => { assertActive?.(); if (signal?.aborted) throw connectorError('CONNECTOR_STOPPED', 'Connector startup was revoked'); };
+    assertAdmission();
     const fullWorkspace = await validateWorkspace(workspace);
+    assertAdmission();
     const readOnly = stage.read_only === true;
     const boundedPaths = readOnly
       ? await validateAllowedPaths(fullWorkspace, allowedPaths)
       : await validateAllowedPaths(fullWorkspace, allowedPaths, { required: true });
+    assertAdmission();
     if (readOnly && boundedPaths.length > 0) {
       throw connectorError('ALLOWED_PATHS_READ_ONLY_CONFLICT',
         'read-only connector tasks must not declare allowed_paths');
@@ -220,7 +242,9 @@ export class GrokAcpConnector {
     await access(binary).catch(() => {
       throw connectorError('GROK_BINARY_MISSING', `Grok binary not found: ${binary}`);
     });
+    assertAdmission();
     const boundedPrompt = accessEnvelope(prompt, fullWorkspace, readOnly, boundedPaths);
+    assertAdmission();
     const task = await this.store.create({
       ...(taskId ? { task_id: taskId } : {}),
       task_type_id: taskTypeId,
@@ -232,10 +256,10 @@ export class GrokAcpConnector {
       allowed_paths: boundedPaths,
       prompt_sha256: createHash('sha256').update(boundedPrompt).digest('hex'),
       baseline_snapshot: null,
-      deadline_at: new Date(Date.now() + provider.config.task_timeout_ms).toISOString(),
+      deadline_at: provider.config.task_timeout_ms > 0
+        ? new Date(Date.now() + provider.config.task_timeout_ms).toISOString() : null,
     });
     const runtimeRoot = join(dirname(this.configPath), 'grok-runtime');
-    await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
     const leaderSocket = join(runtimeRoot, `leader-${task.task_id}.sock`);
     const stderrTail = [];
     let leader;
@@ -245,6 +269,26 @@ export class GrokAcpConnector {
     let scopeMonitor = null;
     let baseline = null;
     let startupError = null;
+    let promptSubmitted = false;
+    let cleanupJob = null;
+    const cleanupStartup = () => {
+      if (cleanupJob) return cleanupJob;
+      cleanupJob = (async () => {
+        peer?.close(); scopeMonitor?.close();
+        const stopped = await Promise.allSettled([stopOwnedProcess(acp, 'Grok ACP'), stopOwnedProcess(leader, 'Grok leader')]);
+        const errors = stopped.filter(item => item.status === 'rejected').map(item => item.reason);
+        if (errors.length) {
+          await this.store.update(task.task_id, { state: 'needs_attention', error: publicConnectorError(connectorError('CONNECTOR_CLEANUP_INCOMPLETE', 'Grok startup processes did not confirm exit')),
+            startup_cleanup: { local_quiescent: false, prompt_submitted: promptSubmitted } });
+          throw Object.assign(new AggregateError(errors, 'Grok startup process cleanup is unconfirmed'), { code: 'CONNECTOR_CLEANUP_INCOMPLETE' });
+        }
+        await this.store.update(task.task_id, { state: 'failed', error: publicConnectorError(startupError ?? connectorError('CONNECTOR_STOPPED', 'Grok startup stopped')),
+          startup_cleanup: { local_quiescent: true, prompt_submitted: promptSubmitted } });
+        this.active.delete(task.task_id);
+      })().finally(() => { cleanupJob = null; });
+      return cleanupJob;
+    };
+    const runCleanup = registerCleanup?.(cleanupStartup) ?? cleanupStartup;
     const observeProcessError = (processName) => (error) => {
       if (active) {
         void this.#background(active, () => this.#onProcessError(active, processName, error));
@@ -254,16 +298,22 @@ export class GrokAcpConnector {
       }
     };
     try {
+      assertAdmission();
+      await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+      assertAdmission();
       // The task-store reservation is the workspace exclusion transaction. Capture
       // the baseline only after that reservation is durable, so two connectors
       // cannot both pass a check-before-create window.
       baseline = await captureWorkspaceSnapshot(fullWorkspace);
+      assertAdmission();
       await this.store.update(task.task_id, { baseline_snapshot: baseline });
+      assertAdmission();
       scopeMonitor = startWorkspaceScopeMonitor(fullWorkspace, {
         readOnly,
         allowedPaths: boundedPaths,
         onViolation: (attempt) => this.#background(active, () => this.#runtimeScopeViolation(active, attempt)),
       });
+      assertAdmission();
       leader = this.spawnImpl(binary, [
         'agent', 'leader', '--no-exit-on-disconnect', '--relay-on-demand', '--no-auto-update',
         '--leader-socket', leaderSocket,
@@ -279,12 +329,14 @@ export class GrokAcpConnector {
         if (stderrTail.length > 10) stderrTail.shift();
       });
       await new Promise((resolveWait) => setTimeout(resolveWait, 200));
+      assertAdmission();
       if (startupError || leader.exitCode !== null) {
         throw startupError || connectorError('GROK_LEADER_START_FAILED',
           `Grok Leader exited before ACP initialization (code=${leader.exitCode})`, {
             details: { stderr_tail: stderrTail.filter(Boolean).slice(-5) },
           });
       }
+      assertAdmission();
       acp = this.spawnImpl(binary, [
         '--permission-mode', 'default', 'agent', '--leader', '--leader-socket', leaderSocket, 'stdio',
       ], {
@@ -340,10 +392,12 @@ export class GrokAcpConnector {
         protocolVersion: 1,
         clientCapabilities: { elicitation: { form: {} } },
       }, provider.config.startup_timeout_ms);
+      assertAdmission();
       const created = await peer.request('session/new', {
         cwd: fullWorkspace,
         mcpServers: [],
       }, provider.config.startup_timeout_ms);
+      assertAdmission();
       const sessionId = String(created?.sessionId || '');
       if (!sessionId) throw connectorError('ACP_INIT_FAILED', 'Grok ACP did not return a sessionId');
       const runId = randomUUID();
@@ -369,6 +423,7 @@ export class GrokAcpConnector {
           binary,
         },
       });
+      assertAdmission();
       // An exit observed during asynchronous initialization must survive the
       // running-state publication and must prevent prompt submission.
       active.initializing = false;
@@ -378,6 +433,8 @@ export class GrokAcpConnector {
       }
       this.#signal(task.task_id);
       this.#armInactivityTimeout(active, inactivityDeadline);
+      assertAdmission();
+      promptSubmitted = true;
       void this.#background(active, () => peer.request('session/prompt', {
         sessionId,
         prompt: [{ type: 'text', text: boundedPrompt }],
@@ -391,13 +448,10 @@ export class GrokAcpConnector {
         : connectorError('ACP_INIT_FAILED', redactDiagnostic(error?.message || error), {
           details: { stderr_tail: stderrTail.filter(Boolean).slice(-5) },
         });
-      if (peer) peer.close(safeError);
-      scopeMonitor?.close();
-      try { acp?.kill(); } catch {}
-      try { leader?.kill(); } catch {}
-      const publicError = publicConnectorError(safeError);
-      await this.store.update(task.task_id, { state: 'failed', error: publicError }).catch(() => {});
-      this.active.delete(task.task_id);
+      startupError = safeError;
+      try { await runCleanup(); }
+      catch (cleanupError) { throw Object.assign(new AggregateError([safeError, cleanupError], 'Connector startup and owned process cleanup both failed'), { code: 'CONNECTOR_CLEANUP_INCOMPLETE' }); }
+      if (signal?.aborted && !promptSubmitted) safeError.cancellation_confirmed = true;
       throw safeError;
     }
   }
@@ -559,6 +613,8 @@ export class GrokAcpConnector {
       deadline_at: task.deadline_at,
       finished_at: task.finished_at,
       terminal_evidence: task.terminal_evidence,
+      execution_cleanup: task.execution_cleanup ?? null,
+      startup_cleanup: task.startup_cleanup ?? null,
       scope: task.scope || null,
       result: task.result,
       error: task.error,
@@ -611,7 +667,7 @@ export class GrokAcpConnector {
           observed_digest: null,
         }));
         await this.store.update(active.taskId, {
-          state: 'scope_violation',
+          state: 'needs_attention',
           scope,
           pending_request: null,
           terminal_evidence: {
@@ -841,12 +897,17 @@ export class GrokAcpConnector {
   }
 
   #nextInactivityDeadline(active) {
+    if (!(active.provider.config.task_timeout_ms > 0)) return null;
     return new Date(Date.now() + active.provider.config.task_timeout_ms).toISOString();
   }
 
   #armInactivityTimeout(active, deadlineAt = this.#nextInactivityDeadline(active)) {
     clearTimeout(active.timeout);
     const generation = ++active.inactivityGeneration;
+    if (!deadlineAt) {
+      active.timeout = null;
+      return null;
+    }
     active.timeout = setTimeout(
       () => this.#background(active, () => this.#timeout(active, generation)),
       Math.max(0, new Date(deadlineAt).getTime() - Date.now()),
@@ -867,6 +928,10 @@ export class GrokAcpConnector {
       || this.active.get(active.taskId) !== active) return;
     const deadlineAt = this.#armInactivityTimeout(active);
     clearTimeout(active.deadlinePersistTimer);
+    if (!deadlineAt) {
+      active.deadlinePersistTimer = null;
+      return;
+    }
     const generation = active.inactivityGeneration;
     active.deadlinePersistTimer = setTimeout(() => {
       active.deadlinePersistTimer = null;
@@ -968,7 +1033,7 @@ export class GrokAcpConnector {
     });
     const active = {
       taskId: task.task_id,
-      provider: { config: { max_result_chars: 131_072, task_timeout_ms: 600_000 } },
+      provider: { config: { max_result_chars: 131_072, task_timeout_ms: 0 } },
       stage: { read_only: task.read_only },
       workspace: task.workspace,
       baseline: task.baseline_snapshot,
@@ -1072,6 +1137,12 @@ export class GrokAcpConnector {
 
   async #cleanup(active) {
     if (this.active.get(active.taskId) !== active) return;
+    if (active.cleanupJob) return active.cleanupJob;
+    active.cleanupJob = this.#cleanupOwned(active);
+    try { await active.cleanupJob; } finally { active.cleanupJob = null; }
+  }
+
+  async #cleanupOwned(active) {
     active.intentionalCleanup = true;
     clearTimeout(active.timeout);
     clearTimeout(active.deadlinePersistTimer);
@@ -1083,18 +1154,20 @@ export class GrokAcpConnector {
       active.pendingRequest = null;
     }
     active.peer?.close();
-    try { active.acp?.kill(); } catch {}
-    if (active.ownsLeader !== false) {
-      try { active.leader?.kill(); } catch {}
+    const stopped = await Promise.allSettled([
+      stopOwnedProcess(active.acp, 'Grok ACP'),
+      active.ownsLeader === false ? Promise.resolve() : stopOwnedProcess(active.leader, 'Grok leader'),
+    ]);
+    const errors = stopped.filter(item => item.status === 'rejected').map(item => item.reason);
+    if (errors.length) {
+      await this.store.update(active.taskId, { state: 'needs_attention', execution_cleanup: { local_quiescent: false },
+        error: publicConnectorError(connectorError('CONNECTOR_CLEANUP_INCOMPLETE', 'Grok processes did not confirm exit')) });
+      this.#signal(active.taskId);
+      throw Object.assign(new AggregateError(errors, 'Grok process cleanup is unconfirmed'), { code: 'CONNECTOR_CLEANUP_INCOMPLETE' });
     }
-    if (active.ownsLeader !== false) try {
-      const killer = this.spawnImpl(active.binary,
-        ['leader', '--leader-socket', active.leaderSocket, 'kill'], {
-          cwd: active.workspace, stdio: 'ignore', windowsHide: true, env: this.env,
-        });
-      killer.unref?.();
-    } catch {}
     this.active.delete(active.taskId);
+    this.#signal(active.taskId);
+    await this.store.update(active.taskId, { execution_cleanup: { local_quiescent: true, observed_at: new Date().toISOString() } });
   }
 
   async #waitForChange(taskId, observedUpdatedAt, waitMs) {

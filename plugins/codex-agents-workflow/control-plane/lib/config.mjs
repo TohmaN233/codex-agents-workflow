@@ -6,6 +6,12 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { resourcePath } from './workflow-paths.mjs';
 import { canonicalJSON } from './workflow-revisions.mjs';
 import { validateStrictConfig } from './execution/strict-config.mjs';
+import {
+  BUILTIN_NATIVE_AGENT_PROFILES,
+  BUILTIN_NATIVE_PROVIDER_METADATA,
+  RETIRED_NATIVE_PROVIDER_IDS,
+  canonicalNativeProviderId,
+} from './native-provider-identity.mjs';
 
 export const CONFIG_VERSION = 6;
 export const PROVIDER_KINDS = new Set(['native_agent', 'builtin_connector', 'external_mcp', 'mcp_tool', 'web_review', 'openai_compatible']);
@@ -159,7 +165,77 @@ function validateNative(raw) {
     role,
     fresh_context: bool(raw.fresh_context, true),
     requested_sandbox: text(raw.requested_sandbox, 'provider.config.requested_sandbox', { max: 64 }),
+    inactivity_timeout_ms: integer(raw.inactivity_timeout_ms, 0, 0, 86_400_000,
+      'provider.config.inactivity_timeout_ms'),
   };
+}
+
+export function migrateBuiltinNativeAgentRoles(raw) {
+  assert(object(raw), 'config must be an object');
+  const migrated = jsonClone(raw, 'native Provider role migration');
+  const sourceProviders = Array.isArray(migrated.providers) ? migrated.providers : [];
+  const currentIds = new Set(sourceProviders.map((provider) => provider?.id)
+    .filter((providerId) => BUILTIN_NATIVE_AGENT_PROFILES[providerId]));
+  const emittedBuiltinIds = new Set();
+  const providers = [];
+  for (const provider of sourceProviders) {
+    const retiredId = Object.hasOwn(RETIRED_NATIVE_PROVIDER_IDS, provider?.id);
+    const canonicalId = canonicalNativeProviderId(provider?.id);
+    if (retiredId && (currentIds.has(canonicalId) || emittedBuiltinIds.has(canonicalId))) continue;
+    provider.id = canonicalId;
+    const expected = BUILTIN_NATIVE_AGENT_PROFILES[canonicalId];
+    if (expected) {
+      Object.assign(provider, BUILTIN_NATIVE_PROVIDER_METADATA[canonicalId], {
+        kind: 'native_agent',
+        requires_user_approval: typeof provider.requires_user_approval === 'boolean'
+          ? provider.requires_user_approval : false,
+        capabilities: { read: true, write: true, background: false },
+      });
+      provider.config = {
+        ...expected,
+        fresh_context: true,
+        requested_sandbox: 'workspace-write',
+        inactivity_timeout_ms: 0,
+      };
+      emittedBuiltinIds.add(canonicalId);
+    }
+    if (provider?.kind === 'native_agent' && provider.config) provider.config.agent_type = 'default';
+    providers.push(provider);
+  }
+  const builtinTemplate = sourceProviders.find((provider) => provider?.kind === 'native_agent');
+  for (const [providerId, profile] of Object.entries(BUILTIN_NATIVE_AGENT_PROFILES)) {
+    if (emittedBuiltinIds.has(providerId)) continue;
+    const provider = {
+      id: providerId,
+      ...BUILTIN_NATIVE_PROVIDER_METADATA[providerId],
+      kind: 'native_agent',
+      enabled: true,
+      requires_user_approval: false,
+      capabilities: { read: true, write: true, background: false },
+      config: {
+        ...profile,
+        fresh_context: true,
+        requested_sandbox: 'workspace-write',
+        inactivity_timeout_ms: 0,
+      },
+    };
+    if (builtinTemplate?.capabilities && object(builtinTemplate.capabilities)) {
+      provider.capabilities = { ...provider.capabilities, ...builtinTemplate.capabilities, read: true, write: true, background: false };
+    }
+    providers.push(provider);
+  }
+  migrated.providers = providers;
+  if (migrated.strict_executor?.main_model === 'gpt-6-sol'
+    && migrated.strict_executor.main_reasoning_effort === 'medium') {
+    delete migrated.strict_executor.main_model;
+    delete migrated.strict_executor.main_reasoning_effort;
+  }
+  for (const taskType of Array.isArray(migrated.task_types) ? migrated.task_types : []) {
+    for (const stage of Array.isArray(taskType?.stages) ? taskType.stages : []) {
+      if (typeof stage?.provider_id === 'string') stage.provider_id = canonicalNativeProviderId(stage.provider_id);
+    }
+  }
+  return { config: migrated, changed: canonicalJSON(migrated) !== canonicalJSON(raw) };
 }
 
 function validateBuiltinConnector(raw) {
@@ -168,13 +244,13 @@ function validateBuiltinConnector(raw) {
   const connector = text(raw.connector, 'provider.config.connector', { required: true, max: 64 });
   assert(['grok_acp', 'cursor_cdp'].includes(connector),
     'provider.config.connector must be grok_acp or cursor_cdp');
-  const taskTimeoutMax = connector === 'grok_acp' ? 3_600_000 : 900_000;
+  const taskTimeoutMax = 86_400_000;
   const common = {
     connector,
     environment_mode: 'inherit',
     startup_timeout_ms: integer(raw.startup_timeout_ms, 15_000, 1_000, 120_000,
       'provider.config.startup_timeout_ms'),
-    task_timeout_ms: integer(raw.task_timeout_ms, 600_000, 1_000, taskTimeoutMax,
+    task_timeout_ms: integer(raw.task_timeout_ms, 0, 0, taskTimeoutMax,
       'provider.config.task_timeout_ms'),
     max_result_chars: integer(raw.max_result_chars, 131_072, 1_024, 524_288,
       'provider.config.max_result_chars'),
@@ -192,7 +268,7 @@ function validateBuiltinConnector(raw) {
     return {
       ...common,
       max_task_duration_ms: integer(raw.max_task_duration_ms, 21_600_000,
-        common.task_timeout_ms, 86_400_000, 'provider.config.max_task_duration_ms'),
+        Math.max(common.task_timeout_ms, 1_000), 86_400_000, 'provider.config.max_task_duration_ms'),
       binary_env: binaryEnv,
       transport,
     };
@@ -378,6 +454,7 @@ function validateTaskType(raw, index) {
     name: text(raw.name, `task_types[${index}].name`, { required: true, max: 128 }),
     enabled: bool(raw.enabled, true),
     description: text(raw.description, `task_types[${index}].description`, { max: 4000 }),
+    role_instructions: text(raw.role_instructions, `task_types[${index}].role_instructions`, { max: 16000 }),
     route,
     stages,
     tags: Array.isArray(raw.tags)
@@ -430,8 +507,11 @@ export function migrateConfigV2(raw) {
     'cursor-readonly-advice', 'cursor-bounded-change',
   ]);
   const migrationReviewer = migrated.providers.find((provider) =>
-    provider?.kind === 'native_agent' && provider?.config?.role === 'reviewer'
+    ['native-sol', 'native-reviewer'].includes(provider?.id) && provider?.kind === 'native_agent'
       && provider?.capabilities?.read !== false)
+    || migrated.providers.find((provider) =>
+      provider?.kind === 'native_agent' && provider?.config?.role === 'reviewer'
+        && provider?.capabilities?.read !== false)
     || migrated.providers.find((provider) =>
       provider?.capabilities?.read !== false && provider?.capabilities?.write === false);
   const taskTypes = (Array.isArray(migrated.scenarios) ? migrated.scenarios : [])
@@ -476,53 +556,6 @@ export function migrateConfigV2(raw) {
   };
 }
 
-function sameStrings(actual, expected) {
-  return Array.isArray(actual) && Array.isArray(expected)
-    && actual.length === expected.length
-    && actual.every((value, index) => value === expected[index]);
-}
-
-function isLegacyJudgmentHeavyDefault(taskType, bundledTaskType) {
-  if (!object(taskType) || !object(bundledTaskType)) return false;
-  const stage = Array.isArray(taskType.stages) && taskType.stages.length === 1
-    ? taskType.stages[0] : null;
-  const bundledStage = bundledTaskType.stages?.find((item) => item?.id === 'implementation');
-  return taskType.id === 'judgment-heavy-change'
-    && taskType.name === bundledTaskType.name
-    && taskType.enabled === bundledTaskType.enabled
-    && taskType.description === bundledTaskType.description
-    && taskType.route === 'delegate'
-    && sameStrings(taskType.tags, bundledTaskType.tags)
-    && object(stage)
-    && object(bundledStage)
-    && stage.id === 'implementation'
-    && stage.role === 'implementer'
-    && stage.provider_id === bundledStage.provider_id
-    && stage.access === bundledStage.access
-    && stage.requires_user_approval === bundledStage.requires_user_approval
-    && stage.template === bundledStage.template;
-}
-
-function upgradeLegacyDifficultTask(migrated, bundledDefaults) {
-  const bundledTaskType = bundledDefaults.task_types?.find(
-    (taskType) => taskType?.id === 'judgment-heavy-change');
-  assert(bundledTaskType, 'bundled difficult Task Type is missing');
-  const reviewStage = bundledTaskType.stages?.find((stage) => stage?.id === 'review');
-  assert(reviewStage?.role === 'reviewer', 'bundled difficult review Stage is missing');
-  // A customized provider set may have renamed or removed the bundled reviewer.
-  // In that case preserving the user's one-stage route is safer than injecting
-  // a binding that validation cannot resolve.
-  const reviewer = (migrated.providers || []).find((provider) => provider?.id === reviewStage.provider_id);
-  if (!reviewer || reviewer.kind !== 'native_agent' || reviewer.enabled === false || reviewer.capabilities?.read === false) return;
-  if (![reviewStage.role, 'advisor'].includes(reviewer.config?.role)) return;
-  const index = migrated.task_types?.findIndex(
-    (taskType) => taskType?.id === 'judgment-heavy-change') ?? -1;
-  if (index < 0 || !isLegacyJudgmentHeavyDefault(migrated.task_types[index], bundledTaskType)) return;
-  const taskType = migrated.task_types[index];
-  taskType.route = 'full';
-  taskType.stages.push(jsonClone(reviewStage, 'bundled difficult review Stage'));
-}
-
 export function migrateConfigV3(raw, bundledDefaults) {
   assert(object(raw), 'config must be an object');
   assert(raw.version === 3, 'migrateConfigV3 accepts only config.version=3');
@@ -530,7 +563,6 @@ export function migrateConfigV3(raw, bundledDefaults) {
     `bundled defaults must use config.version=${CONFIG_VERSION}`);
   const migrated = jsonClone(raw, 'version-3 config');
   migrated.version = 4;
-  upgradeLegacyDifficultTask(migrated, bundledDefaults);
   return migrated;
 }
 
@@ -541,7 +573,6 @@ export function migrateConfigV4(raw, bundledDefaults) {
     `bundled defaults must use config.version=${CONFIG_VERSION}`);
   const migrated = jsonClone(raw, 'version-4 config');
   migrated.version = 5;
-  upgradeLegacyDifficultTask(migrated, bundledDefaults);
   return migrated;
 }
 
@@ -577,6 +608,8 @@ export function validateConfig(raw) {
   const taskTypes = taskTypesRaw.map(validateTaskType);
   const providerIds = new Set();
   for (const provider of providers) {
+    assert(canonicalNativeProviderId(provider.id) === provider.id,
+      `retired native provider id is not accepted in current config: ${provider.id}`);
     assert(!providerIds.has(provider.id), `duplicate provider id: ${provider.id}`);
     providerIds.add(provider.id);
   }
@@ -679,6 +712,13 @@ async function writeConfigAtomic(validated, configPath) {
   await rename(temporary, configPath);
 }
 
+async function finalizeLoadedConfig(candidate, configPath, forceWrite = false) {
+  const migrated = migrateBuiltinNativeAgentRoles(candidate);
+  const validated = validateConfig(migrated.config);
+  if (forceWrite || migrated.changed) await writeConfigAtomic(validated, configPath);
+  return validated;
+}
+
 export async function loadConfig({ configPath, defaultConfigPath }) {
   await ensureConfigFile({ configPath, defaultConfigPath });
   const file = await assertRegularNoSymlink(configPath, 'control-plane config path');
@@ -687,37 +727,32 @@ export async function loadConfig({ configPath, defaultConfigPath }) {
     const raw = JSON.parse(await readFile(configPath, 'utf8'));
     if (raw?.version === 1) {
       const bundled = JSON.parse(await readFile(defaultConfigPath, 'utf8'));
-      const migrated = validateConfig(migrateConfigV5(migrateConfigV4(
-        migrateConfigV3(migrateConfigV2(migrateConfigV1(raw, bundled)), bundled), bundled)));
-      await writeConfigAtomic(migrated, configPath);
-      return migrated;
+      const migrated = migrateConfigV5(migrateConfigV4(
+        migrateConfigV3(migrateConfigV2(migrateConfigV1(raw, bundled)), bundled), bundled));
+      return finalizeLoadedConfig(migrated, configPath, true);
     }
     if (raw?.version === 2) {
       const bundled = JSON.parse(await readFile(defaultConfigPath, 'utf8'));
-      const migrated = validateConfig(migrateConfigV5(migrateConfigV4(
-        migrateConfigV3(migrateConfigV2(raw), bundled), bundled)));
-      await writeConfigAtomic(migrated, configPath);
-      return migrated;
+      const migrated = migrateConfigV5(migrateConfigV4(
+        migrateConfigV3(migrateConfigV2(raw), bundled), bundled));
+      return finalizeLoadedConfig(migrated, configPath, true);
     }
     if (raw?.version === 3) {
       const bundled = JSON.parse(await readFile(defaultConfigPath, 'utf8'));
-      const migrated = validateConfig(migrateConfigV5(
-        migrateConfigV4(migrateConfigV3(raw, bundled), bundled)));
-      await writeConfigAtomic(migrated, configPath);
-      return migrated;
+      const migrated = migrateConfigV5(
+        migrateConfigV4(migrateConfigV3(raw, bundled), bundled));
+      return finalizeLoadedConfig(migrated, configPath, true);
     }
     if (raw?.version === 4) {
       const bundled = JSON.parse(await readFile(defaultConfigPath, 'utf8'));
-      const migrated = validateConfig(migrateConfigV5(migrateConfigV4(raw, bundled)));
-      await writeConfigAtomic(migrated, configPath);
-      return migrated;
+      const migrated = migrateConfigV5(migrateConfigV4(raw, bundled));
+      return finalizeLoadedConfig(migrated, configPath, true);
     }
     if (raw?.version === 5) {
-      const migrated = validateConfig(migrateConfigV5(raw));
-      await writeConfigAtomic(migrated, configPath);
-      return migrated;
+      const migrated = migrateConfigV5(raw);
+      return finalizeLoadedConfig(migrated, configPath, true);
     }
-    return validateConfig(raw);
+    return finalizeLoadedConfig(raw, configPath);
   } catch (error) {
     if (/config|provider|scenario|task type|stage|control-plane|migration/.test(error.message)) throw error;
     throw new Error(`control-plane config is invalid JSON: ${error.message}`);

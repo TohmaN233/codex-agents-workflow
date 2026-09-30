@@ -11,10 +11,72 @@ import { threadLineage } from './thread-protocol.mjs';
 import { hostToolContracts } from './execution/host-tool-runner.mjs';
 import { validateNodeCost } from './workflow-cost-ledger.mjs';
 import { managedNativeResultSchema } from './execution/host-main-automation.mjs';
+import { normalizeExecutableRequirements } from './runtime-requirements.mjs';
+import { isOperationalMemoryArtifactPath } from './artifact-policy.mjs';
+import { WORKSPACE_SOURCE_LOCATIONS } from './workspace-source-locations.mjs';
+import {firstAgentTranscriptionClause,hostOwnedAgentField} from './agent-transcription-policy.mjs';
 
 const EXECUTED = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
 const SHA = /^[a-f0-9]{64}$/;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+function requiredHostOwnedAgentFields(schema,prefix='',found=[]){
+  if(!object(schema))return found;
+  if(schema.type==='array')return requiredHostOwnedAgentFields(schema.items,prefix+'[]',found);
+  if(schema.type!=='object'||!object(schema.properties))return found;
+  for(const name of schema.required??[]){
+    const path=prefix?`${prefix}.${name}`:name;
+    if(hostOwnedAgentField(name))found.push(path);
+    requiredHostOwnedAgentFields(schema.properties[name],path,found);
+  }
+  return found;
+}
+function schemaAtPointer(pointer,workflow,nodes){
+  const parts=pointerParts(pointer);let schema,index;
+  if(parts[0]==='inputs'){schema=workflow.inputs_schema??{};index=1;}
+  else if(parts[0]==='nodes'&&nodes.has(parts[1])&&parts[2]==='output'){schema=nodes.get(parts[1]).outputs_schema??{};index=3;}
+  else return null;
+  for(;index<parts.length;index++){
+    const part=parts[index];
+    if(schema?.type==='array'&&/^\d+$/.test(part)){schema=schema.items;continue;}
+    if(object(schema?.properties)&&Object.hasOwn(schema.properties,part)){schema=schema.properties[part];continue;}
+    if(object(schema?.additionalProperties)){schema=schema.additionalProperties;continue;}
+    return null;
+  }
+  return schema;
+}
+function arrayRange(schema){
+  if(!object(schema))return {known:false};
+  if(schema.type!==undefined&&schema.type!=='array')return {known:true,array:false};
+  const literal=[];
+  if(Object.hasOwn(schema,'const'))literal.push(schema.const);
+  if(Array.isArray(schema.enum))literal.push(...schema.enum);
+  if(literal.length){
+    if(literal.some(value=>!Array.isArray(value)))return {known:true,array:false};
+    const lengths=literal.map(value=>value.length);return {known:true,array:true,min:Math.min(...lengths),max:Math.max(...lengths)};
+  }
+  if(schema.type==='array')return {known:true,array:true,min:schema.minItems??0,max:schema.maxItems??Infinity};
+  return {known:false};
+}
+function fanoutInputRange(binding,workflow,nodes){
+  if(object(binding)&&Object.hasOwn(binding,'flat_map')){
+    const outer=schemaAtPointer(binding.path,workflow,nodes);
+    const inner=outer?.items?.properties?.[binding.flat_map];
+    if(outer?.type!=='array'||inner?.type!=='array')return {invalid:true};
+    return {known:false,unknown:true};
+  }
+  const ranges=[];let unknown=false;
+  for(const pointer of bindingPointers(binding)){
+    const range=arrayRange(schemaAtPointer(pointer,workflow,nodes));
+    if(range.known&&!range.array)return {invalid:true};
+    if(range.known)ranges.push(range);else unknown=true;
+  }
+  if(object(binding)&&Object.hasOwn(binding,'default')){
+    if(!Array.isArray(binding.default))return {invalid:true};
+    ranges.push({known:true,array:true,min:binding.default.length,max:binding.default.length});
+  }
+  if(!ranges.length)return {known:false,unknown:true};
+  return {known:true,unknown,min:Math.min(...ranges.map(item=>item.min)),max:Math.max(...ranges.map(item=>item.max))};
+}
 
 export function validateWorkflowGraph(workflow, context = {}, stack = []) {
   const errors = []; const blockers = [];
@@ -35,6 +97,43 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     else nodes.set(node.id, node);
     if (!NODE_TYPES.has(node.type)) issue('NODE_TYPE', 'Unsupported node type', { node_id: node.id });
     if (node.outputs_schema !== undefined) try { validateDataSchema(node.outputs_schema); } catch (error) { issue(error.code, error.message, { node_id: node.id }); }
+    if(['agent','skill_ref'].includes(node.type)){
+      const transcription=firstAgentTranscriptionClause(node.prompt_template);
+      if(transcription)issue('AGENT_DETERMINISTIC_TRANSCRIPTION',
+        'Agent instructions require copying pre-existing or Host-owned fields; bind them directly or use a registered Host tool',
+        {node_id:node.id,instruction_clause:transcription.trim().slice(0,512)});
+      for(const [name,schema] of Object.entries(node.outputs_schema?.properties??{})){
+        if(node.output_validators?.[name]===WORKSPACE_SOURCE_LOCATIONS)continue;
+        const copied=requiredHostOwnedAgentFields(schema,name);
+        if((node.outputs_schema.required??[]).includes(name)&&hostOwnedAgentField(name))copied.unshift(name);
+        const inputs=new Set(Object.keys(node.input_bindings??{}));
+        const repeated=copied.filter(path=>path.split(/[.\[\]]+/).some(part=>inputs.has(part)));
+        if(repeated.length)issue('AGENT_DETERMINISTIC_TRANSCRIPTION',
+          `Agent output repeats Host-owned input fields: ${repeated.join(', ')}`,{node_id:node.id,field:`outputs_schema.properties.${name}`});
+      }
+    }
+    if (node.completion_contract !== undefined) {
+      const contract=node.completion_contract,outcome=contract?.outcome,hasOutputs=object(node.outputs_schema)&&Object.keys(node.outputs_schema).length>0;
+      if (!object(contract)||Object.keys(contract).some(key=>!['on_missing','outcome','fail_on_false'].includes(key))||contract.on_missing!=='block'||!['artifact','validated_artifact','decision','review','none'].includes(outcome)) issue('COMPLETION_CONTRACT','Completion contract must declare supported missing-input and outcome semantics',{node_id:node.id});
+      else if (outcome==='none'&&hasOutputs||['artifact','validated_artifact','decision'].includes(outcome)&&!hasOutputs) issue('COMPLETION_CONTRACT','Completion outcome and declared output schema disagree',{node_id:node.id});
+      else if(contract.fail_on_false!==undefined&&(!Array.isArray(contract.fail_on_false)||!contract.fail_on_false.length||new Set(contract.fail_on_false).size!==contract.fail_on_false.length||contract.fail_on_false.some(name=>typeof name!=='string'||node.outputs_schema?.properties?.[name]?.type!=='boolean'||!(node.outputs_schema?.required??[]).includes(name)))) issue('COMPLETION_CONTRACT','False-result guards must name unique required boolean node outputs',{node_id:node.id});
+    }
+    if(node.subagent_count!==undefined){
+      if(node.type!=='agent'||node.executor?.kind==='main'||!(node.subagent_count==='auto'||Number.isInteger(node.subagent_count)&&node.subagent_count>=1&&node.subagent_count<=32))issue('SUBAGENT_COUNT','Sub-Agent count is available only on non-Main Agent nodes and must be auto or an integer from 1 to 32',{node_id:node.id});
+      if(node.executor?.kind==='thread'&&node.executor.lifecycle==='continue'&&(node.subagent_count!=='auto'||node.fanout))issue('SUBAGENT_COUNT','A continued Codex task is one exact conversation and cannot be multiplied',{node_id:node.id});
+      if(Number.isInteger(node.subagent_count)&&node.subagent_count>1&&!node.fanout)issue('SUBAGENT_FANOUT','More than one sub-Agent needs an explicit runtime list fan-out and all-required join contract',{node_id:node.id});
+    }
+    if(node.fanout!==undefined){
+      const contract=node.fanout,properties=node.outputs_schema?.properties??{},result=properties[contract?.result_output],required=node.outputs_schema?.required??[];
+      if(node.type!=='agent'||node.executor?.kind==='main'||node.subagent_count===undefined||!object(contract)||Object.keys(contract).some(key=>!['input','item_name','result_output','distribution','scheduling','join','batch_size','max_concurrency','result_mode','write_paths_field','shared_change_field','item_delivery'].includes(key))||contract.result_mode!==undefined&&contract.result_mode!=='per_item'||contract.result_mode==='per_item'&&(node.executor?.kind!=='provider'||providers.get(node.executor?.provider_id)?.kind!=='native_agent')||contract.item_delivery!==undefined&&contract.item_delivery!=='incremental'||contract.item_delivery==='incremental'&&(contract.result_mode!=='per_item'||contract.distribution!=='partition'||!Number.isInteger(contract.batch_size)||contract.batch_size<2)||contract.write_paths_field!==undefined&&(node.access!=='bounded_write'||typeof contract.write_paths_field!=='string'||!/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(contract.write_paths_field))||contract.shared_change_field!==undefined&&(contract.result_mode!=='per_item'||contract.write_paths_field===undefined||typeof contract.shared_change_field!=='string'||!/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(contract.shared_change_field))||typeof contract.input!=='string'||!Object.hasOwn(node.input_bindings??{},contract.input)||typeof contract.item_name!=='string'||!contract.item_name||typeof contract.result_output!=='string'||result?.type!=='array'||!result.items||Object.keys(properties).length!==1||required.length!==1||required[0]!==contract.result_output||!['one_per_item','partition'].includes(contract.distribution)||!['parallel','serial'].includes(contract.scheduling)||contract.max_concurrency!==undefined&&(!Number.isInteger(contract.max_concurrency)||contract.max_concurrency<1||contract.max_concurrency>32||contract.scheduling!=='parallel'||providers.get(node.executor?.provider_id)?.kind!=='native_agent')||contract.scheduling==='serial'&&providers.get(node.executor?.provider_id)?.kind!=='native_agent'||contract.join!=='all_required'||contract.distribution==='one_per_item'&&(node.subagent_count!=='auto'||contract.batch_size!==undefined)||contract.distribution==='partition'&&!(Number.isInteger(node.subagent_count)&&contract.batch_size===undefined||node.subagent_count==='auto'&&Number.isInteger(contract.batch_size)&&contract.batch_size>=1&&contract.batch_size<=32))issue('SUBAGENT_FANOUT','Fan-out needs a non-Main Agent, one declared list result output, native serial or parallel scheduling, auto one-per-item, fixed partition count, or auto partition with a 1–32 item batch size; incremental item delivery requires per-item admission and a partition batch of at least two items; a capped parallel fan-out needs a native Agent and max_concurrency 1–32; per-item write paths need a bounded-write node and a portable item field name; shared-change handoff requires path-isolated per-item results',{node_id:node.id});
+      if(node.access==='bounded_write'&&contract?.scheduling==='parallel'&&contract.max_concurrency!==1&&contract.write_paths_field===undefined)issue('SUBAGENT_WRITE_ISOLATION','Concurrent write fan-out requires Host-owned per-item write paths; use write_paths_field or cap the node at one active writer',{node_id:node.id});
+    }
+    if(node.required_artifacts!==undefined){
+      const entries=node.required_artifacts;
+      if(!Array.isArray(entries)||entries.length>64||new Set(entries.map(item=>item?.requirement_id)).size!==entries.length||entries.some(item=>!object(item)||Object.keys(item).some(key=>!['requirement_id','path'].includes(key))||typeof item.requirement_id!=='string'||!/^[A-Za-z][A-Za-z0-9_-]{0,127}$/.test(item.requirement_id)||typeof item.path!=='string'||!item.path||item.path.length>1024||/^(?:[A-Za-z]:[\\/]|[\\/])/.test(item.path)||item.path.split(/[\\/]/).some(part=>part==='..')))issue('REQUIRED_ARTIFACTS','Required artifacts need unique requirement IDs and safe relative exact paths',{node_id:node.id});
+      else if(entries.some(item=>isOperationalMemoryArtifactPath(item.path)))issue('OPERATIONAL_MEMORY_ARTIFACT','Project-memory and checkpoint documents cannot be product artifacts or completion gates',{node_id:node.id});
+      else if(entries.length&&node.access!=='bounded_write')issue('REQUIRED_ARTIFACT_ACCESS','A node responsible for required artifact paths needs bounded write access',{node_id:node.id});
+    }
     if (['agent', 'skill_ref'].includes(node.type) && node.executor?.kind === 'provider' && providers.get(node.executor.provider_id)?.kind === 'native_agent') try {
       managedNativeResultSchema(node);
     } catch (error) { issue(error.code ?? 'AGENT_OUTPUT_SCHEMA', error.message, { node_id: node.id }); }
@@ -76,6 +175,24 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
   if (order.length !== nodes.size) issue('GRAPH_CYCLE', 'Workflow graphs must be acyclic');
   const reachable = starts.length === 1 ? visit(starts[0].id) : new Set();
   const toEnd = new Set(ends.flatMap(node => [...visit(node.id, incoming)]));
+  const hostOwnedIdentityField=name=>typeof name==='string'&&/(?:^|_)(?:id|ids|path|paths|sha256|hash|hashes|checksum|checksums|token|tokens|index|indices|revision|receipt|receipts|timestamp|timestamps|uuid|uuids|nonce|nonces|seed|seeds|encoding|encoded)$/.test(name);
+  const hostOwnedPacketPointer=(pointer,requiredFields=[],visiting=new Set())=>{
+    const parts=pointerParts(pointer);
+    if(parts[0]==='inputs')return true;
+    if(parts[0]!=='nodes'||parts[2]!=='output')return false;
+    const producer=nodes.get(parts[1]);
+    if(producer?.type!=='tool'||producer.executor?.kind!=='tool'||visiting.has(producer.id))return false;
+    const next=new Set(visiting);next.add(producer.id);
+    const contract=toolContracts.get(producer.executor.tool),outputName=parts[3];
+    const declared=(contract?.host_owned_item_fields??[]).find(item=>item.output===outputName);
+    if(requiredFields.length&&declared&&requiredFields.every(field=>declared.fields.includes(field))){
+      return declared.from_inputs.every(name=>{
+        const binding=producer.input_bindings?.[name],sources=bindingPointers(binding);
+        return sources.length>0&&sources.every(source=>hostOwnedPacketPointer(source,[],next));
+      });
+    }
+    return Object.values(producer.input_bindings??{}).every(binding=>bindingPointers(binding).every(source=>hostOwnedPacketPointer(source,[],next)));
+  };
   for (const node of nodes.values()) {
     const location = { node_id: node.id };
     if (node.skill_policy !== undefined) try { effectiveSkillPolicy(workflow.skill_policy, node.skill_policy); } catch (error) { issue(error.code, error.message, location); }
@@ -91,7 +208,6 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     if (EXECUTED.has(node.type)) {
       const runBoundAccess = object(node.access) && node.access.binding === 'run.access' && Object.keys(node.access).length === 1 && ['main', 'subworkflow'].includes(node.executor?.kind);
       if (!['read_only', 'bounded_write'].includes(node.access) && !runBoundAccess) issue('NODE_ACCESS', 'Executed nodes need a fixed access mode or main-agent Run access binding', location);
-      if (node.role === 'reviewer' && node.access !== 'read_only') issue('REVIEWER_ACCESS', 'Reviewers must be read-only', location);
       if (node.access === 'bounded_write' || runBoundAccess) {
         try {
           if (!(object(node.path_scope) && node.path_scope.binding === 'run.allowed_paths' && Object.keys(node.path_scope).length === 1)) {
@@ -133,7 +249,9 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (node.type === 'tool' && executor?.kind === 'tool') {
         if (typeof executor.tool !== 'string' || !executor.tool.trim() || executor.tool.length > 256) issue('TOOL_ID', 'Tool nodes must name an exact host tool', location);
         else if (!toolContracts.has(executor.tool)) issue('TOOL_CONTRACT', 'Tool node needs an exact pinned host-tool contract', location);
-        else if (!(context.host_tools ?? []).includes(executor.tool)) issue('TOOL_UNAVAILABLE', 'Named host tool is unavailable', location, blockers);
+        else if (!(context.host_tools ?? []).includes(executor.tool)
+          && !(context.host_tools ?? []).includes(toolContracts.get(executor.tool).identity.name))
+          issue('TOOL_UNAVAILABLE', 'Named host tool is unavailable', location, blockers);
       }
       if (node.type === 'human_gate' && executor?.kind !== 'human') issue('HUMAN_EXECUTOR', 'Human gates require a human executor', location);
       if ((node.type === 'subworkflow') !== (executor?.kind === 'subworkflow')) issue('SUBWORKFLOW_EXECUTOR', 'SubWorkflow nodes require their dedicated executor', location);
@@ -167,13 +285,77 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     }
     if (node.input_bindings !== undefined && !object(node.input_bindings)) issue('BINDING_SCHEMA', 'Input bindings must be a map of JSON Pointers or bounded selectors', location);
     else for (const binding of Object.values(node.input_bindings ?? {})) {
-      try { for (const pointer of bindingPointers(binding)) checkPointer(pointer); }
+      try {
+        for (const pointer of bindingPointers(binding)) checkPointer(pointer);
+        if(object(binding)&&(binding.flat_map||binding.pluck)){
+          const source=schemaAtPointer(binding.path,workflow,nodes);
+          const field=binding.flat_map??binding.pluck;
+          if(source?.type!=='array'||!object(source.items?.properties?.[field])||binding.flat_map&&source.items.properties[field].type!=='array')
+            issue('BINDING_PROJECTION_SCHEMA','Projected binding needs an array of records with the declared field'+(binding.flat_map?' containing arrays':''),location);
+        }
+        if(object(binding)&&binding.every_true){
+          const source=schemaAtPointer(binding.path,workflow,nodes);
+          if(source?.type!=='array'||source.items?.properties?.[binding.every_true]?.type!=='boolean')
+            issue('BINDING_PROJECTION_SCHEMA','every_true needs an array of records with the declared boolean field',location);
+        }
+        if(object(binding)&&binding.zip){
+          const source=schemaAtPointer(binding.path,workflow,nodes),paired=schemaAtPointer(binding.zip,workflow,nodes);
+          if(source?.type!=='array'||paired?.type!=='array'||binding.count_field&&source.items?.properties?.[binding.count_field]?.type!=='array'||binding.count_field&&paired.items?.type!=='array')
+            issue('BINDING_PROJECTION_SCHEMA','zip needs two arrays and matching declared partition schemas',location);
+        }
+      }
       catch (error) { issue(error.code ?? 'BINDING_SCHEMA', error.message, location); }
     }
+    if(node.fanout!==undefined){
+      let policy=null;try{policy=effectiveSkillPolicy(workflow.skill_policy,node.skill_policy);}catch{}
+      if(policy?.mode==='strict')issue('STRICT_FANOUT_UNSUPPORTED','Strict execution cannot run native sub-Agent fan-out; select a Cooperative native Provider',location);
+      const binding=node.input_bindings?.[node.fanout.input];
+      if(binding!==undefined){
+        if(node.fanout.write_paths_field){
+          const pointers=bindingPointers(binding),source=pointers.length===1?schemaAtPointer(pointers[0],workflow,nodes):null;
+          const paths=source?.items?.properties?.[node.fanout.write_paths_field];
+          if(source&&source.type==='array'&&(paths?.type!=='array'||paths.items?.type!=='string'||!(source.items.required??[]).includes(node.fanout.write_paths_field)))
+            issue('SUBAGENT_ITEM_WRITE_PATHS_SCHEMA','write_paths_field must name a required string-list field on every declared fan-out item',location);
+          const identityFields=[...new Set([node.fanout.write_paths_field,...((source?.items?.required??[]).filter(hostOwnedIdentityField))])];
+          if(!pointers.length||!pointers.every(pointer=>hostOwnedPacketPointer(pointer,identityFields)))
+            issue('SUBAGENT_ITEM_SOURCE','Per-item write packets must come from Workflow inputs or Host tools that do not depend on Agent output',location);
+        }
+        let range;try{range=fanoutInputRange(binding,workflow,nodes);}catch{range={unknown:true};}
+        if(range.invalid)issue('SUBAGENT_FANOUT_INPUT_SCHEMA','Fan-out input binding can resolve to a declared non-array value',location);
+        else{
+          const result=node.outputs_schema?.properties?.[node.fanout.result_output],resultMin=result?.minItems??0,resultMax=result?.maxItems??Infinity;
+          const runnableMin=range.known?Math.max(range.min,1):1,runnableMax=range.known?range.max:Infinity;
+          if(range.known&&runnableMin>runnableMax)issue('SUBAGENT_FANOUT_CARDINALITY','The declared fan-out input cannot produce a nonempty runtime list',location);
+          if(Number.isInteger(node.subagent_count)){
+            const count=node.subagent_count;
+            if(range.known&&(count<runnableMin||count>runnableMax))issue('SUBAGENT_FANOUT_CARDINALITY',`Fixed fan-out count ${count} cannot match any declared runtime input cardinality`,location);
+            if(count<resultMin||count>resultMax)issue('SUBAGENT_FANOUT_CARDINALITY',`Fixed fan-out count ${count} cannot satisfy the declared result-list bounds`,location);
+          }else if(node.subagent_count==='auto'&&range.known){
+            const batchSize=node.fanout.batch_size??1;
+            if(node.fanout.scheduling==='parallel'&&!node.fanout.max_concurrency&&Math.ceil(runnableMin/batchSize)>32)issue('SUBAGENT_FANOUT_CARDINALITY','The declared input requires more than 32 concurrent sub-Agents; cap concurrency or use larger partitions',location);
+            if(Math.max(Math.ceil(runnableMin/batchSize),resultMin)>Math.min(Math.ceil(runnableMax/batchSize),resultMax))issue('SUBAGENT_FANOUT_CARDINALITY','Automatic fan-out input and result schemas have no common runtime Agent count',location);
+          }
+        }
+        if(node.fanout.shared_change_field){
+          const result=node.outputs_schema?.properties?.[node.fanout.result_output],field=node.fanout.shared_change_field,item=result?.items;
+          if(item?.type!=='object'||!object(item.properties?.[field])||!(item.required??[]).includes(field))
+            issue('SUBAGENT_SHARED_CHANGE_SCHEMA','shared_change_field must name a required field on every per-item result',location);
+          const base=`/nodes/${node.id}/output/${node.fanout.result_output}`;
+          const consumesShared=binding=>typeof binding==='string'?binding===base:object(binding)&&binding.path===base&&(!binding.pluck||binding.pluck===field);
+          const consumers=[...nodes.values()].filter(candidate=>candidate.id!==node.id&&candidate.access==='bounded_write'&&Object.values(candidate.input_bindings??{}).some(consumesShared));
+          const descendants=visit(node.id);
+          if(consumers.length!==1||!descendants.has(consumers[0]?.id))
+            issue('SUBAGENT_SHARED_CHANGE_HANDOFF','Path-isolated workers that declare shared changes need exactly one downstream bounded-write owner of the joined results or shared field',location);
+          else{
+            const consumer=consumers[0],guards=consumer.completion_contract?.fail_on_false??[];
+            const guarded=guards.some(name=>consumer.outputs_schema?.properties?.[name]?.type==='boolean'&&(consumer.outputs_schema?.required??[]).includes(name));
+            if(!guarded)issue('SUBAGENT_SHARED_CHANGE_COMPLETION','The downstream shared-write owner must expose a required boolean success result guarded by completion_contract.fail_on_false',location);
+          }
+        }
+      }
+    }
     if (node.context_projection !== undefined) {
-      const projection = node.context_projection;
-      if (!object(projection) || Object.keys(projection).some(key => !['legacy_ancestor_results', 'legacy_workflow_inputs', 'compatibility_reason'].includes(key)) || (projection.legacy_ancestor_results !== true && projection.legacy_workflow_inputs !== true) || typeof projection.compatibility_reason !== 'string' || !projection.compatibility_reason.trim() || projection.compatibility_reason.length > 512) issue('CONTEXT_PROJECTION', 'Legacy context is opt-in and needs an explicit bounded reason', location);
-      else if (workflow.context_projection_version === 2) issue('LEGACY_CONTEXT_PROJECTION', 'Declared-only Workflows cannot re-enable broad legacy context', location);
+      issue('LEGACY_CONTEXT_PROJECTION', 'Node-level broad context projection is retired; declare exact input_bindings and resources', location);
     }
     if (node.cost !== undefined) {
       try { validateNodeCost(node.cost); } catch (error) { issue(error.code, error.message, location); }
@@ -259,9 +441,11 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     issue('AI_INFERENCE_UNREVIEWED', 'Inferred control flow requires explicit per-item review', { item_kind: kind, item_id: item.id }, blockers);
   for (const node of workflow.nodes) if (node?.origin?.kind === 'inlined_skill' && node.origin.reviewed !== true)
     issue('INLINE_SKILL_UNREVIEWED', 'Inline conversion requires review against its copied source', { node_id: node.id }, blockers);
-  if (workflow.finalization?.required !== true || !finalizer || finalizer.type !== 'agent') issue('FINALIZER_MISSING', 'A final acceptance agent is required');
+  if (workflow.finalization?.required !== true || !finalizer || !['agent','tool'].includes(finalizer.type)) issue('FINALIZER_MISSING', 'A final acceptance Agent or deterministic Host tool is required');
   else {
-    if (finalizer.executor?.kind !== 'main') issue('FINALIZER_AUTHORITY', 'Final acceptance belongs to the main agent', { node_id: finalizer.id });
+    if (finalizer.type==='agent'&&finalizer.executor?.kind !== 'main') issue('FINALIZER_AUTHORITY', 'Agent final acceptance belongs to the main agent', { node_id: finalizer.id });
+    if (finalizer.type==='tool'&&!(finalizer.executor?.kind==='tool'&&Array.isArray(finalizer.completion_contract?.fail_on_false)&&finalizer.completion_contract.fail_on_false.length))
+      issue('FINALIZER_DETERMINISTIC','A Host-tool finalizer must have a nonempty required-boolean fail_on_false contract',{node_id:finalizer.id});
     if (starts.length === 1 && ends.some(node => visit(starts[0].id, out, finalizer.id).has(node.id))) issue('FINALIZER_BYPASS', 'Every path to an end must pass final acceptance', { node_id: finalizer.id });
     if (out.get(finalizer.id).some(edge => nodes.get(edge.target)?.type !== 'end')) issue('FINALIZER_ORDER', 'Only termination may follow final acceptance', { node_id: finalizer.id });
   }
@@ -277,6 +461,12 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
   if (!object(workflow.requirements)) issue('REQUIREMENTS_SCHEMA', 'Requirements must be an object');
   else for (const kind of ['providers', 'tools', 'mcp_servers', 'executables', ...(workflow.requirements.environment !== undefined ? ['environment'] : [])]) {
     const required = workflow.requirements[kind];
+    if (kind === 'executables') {
+      if (!Array.isArray(required)) { issue('REQUIREMENTS_SCHEMA', 'Requirements executables must be an array'); continue; }
+      try { normalizeExecutableRequirements(required); }
+      catch (error) { issue(error.code ?? 'REQUIREMENTS_SCHEMA', error.message); }
+      continue;
+    }
     if (!Array.isArray(required) || required.some(id => typeof id !== 'string' || !id)) { issue('REQUIREMENTS_SCHEMA', `Requirements ${kind} must be a string array`); continue; }
     for (const id of required) {
       if (kind === 'providers') {
@@ -293,6 +483,14 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       if (imported.mode === 'ai_expanded') {
         if (!['fully_compiled','agent_assisted','unsupported'].includes(imported.conversion_level) || imported.conversion_contract_version !== 3 || !Array.isArray(imported.requirement_coverage)) issue('CONVERSION_STATUS', 'Expanded imports need the current versioned conversion level and requirement coverage');
         else if (imported.conversion_level === 'unsupported') issue('CONVERSION_UNSUPPORTED', 'Required source behavior has no faithful runtime representation', { requirement_coverage: imported.requirement_coverage.filter(item => item.status === 'unsupported') }, blockers);
+      }
+      for (const [field, entries] of [['requirement_coverage', imported.requirement_coverage], ['source_dispositions', imported.source_dispositions]]) {
+        if (entries === undefined) continue;
+        if (!Array.isArray(entries)) { issue('IMPORT_NODE_REFERENCE', `${field} must be an array when present`, { field }); continue; }
+        for (const [index, entry] of entries.entries()) {
+          const missing = Array.isArray(entry?.node_ids) ? entry.node_ids.filter(id => !nodes.has(id)) : [];
+          if (missing.length) issue('IMPORT_NODE_REFERENCE', `${field} references nodes absent from the Workflow graph`, { field, index, missing_node_ids: missing });
+        }
       }
     }
   }

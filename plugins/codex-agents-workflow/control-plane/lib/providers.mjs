@@ -32,7 +32,7 @@ export function buildProviderAdapter(provider, stage, { env = process.env, allow
       role: provider.config.role,
       expected_model: provider.config.model,
       expected_reasoning_effort: provider.config.reasoning_effort,
-      requested_sandbox: provider.config.requested_sandbox || null,
+      requested_sandbox: stage.access === 'read_only' ? 'read-only' : 'workspace-write',
     };
   }
 
@@ -79,6 +79,9 @@ export function buildProviderAdapter(provider, stage, { env = process.env, allow
       skill: provider.config.skill,
       source_repository: provider.config.source_repository || null,
       review_path: provider.config.path,
+      review_route: 'packet.inspect',
+      packet_format: 'zip',
+      review_role: 'reviewer',
       reviewer: provider.config.reviewer,
       model_label: provider.config.model_label || null,
       ambient_repository_access: false,
@@ -191,6 +194,8 @@ async function readBoundedBody(response, signal) {
 export async function invokeOpenAICompatible(provider, prompt, {
   env = process.env,
   fetchImpl = globalThis.fetch,
+  signal,
+  assertActive,
 } = {}) {
   if (provider.kind !== 'openai_compatible') {
     throw new Error('direct invocation supports only openai_compatible providers');
@@ -220,7 +225,11 @@ export async function invokeOpenAICompatible(provider, prompt, {
     [config.max_tokens_field]: config.max_output_tokens,
   };
 
+  assertActive?.();
+  if (signal?.aborted) throw Object.assign(new Error('Provider request was cancelled before submission'), { code: 'DIRECT_API_CANCELLED' });
   const controller = new AbortController();
+  const abortExternal = () => controller.abort(signal.reason ?? new Error('Run cancelled'));
+  signal?.addEventListener('abort', abortExternal, { once: true });
   const timeout = setTimeout(() => controller.abort(), config.timeout_ms);
   let response;
   try {
@@ -251,6 +260,10 @@ export async function invokeOpenAICompatible(provider, prompt, {
       provider_response_id: payload.id || null,
     };
   } catch (error) {
+    if (signal?.aborted) {
+      try { await response?.body?.cancel?.('Run cancelled provider request'); } catch {}
+      throw Object.assign(new Error('Provider request was cancelled with its Run'), { code: 'DIRECT_API_CANCELLED' });
+    }
     if (controller.signal.aborted || error?.name === 'AbortError') {
       try { await response?.body?.cancel?.('provider request timed out'); } catch {}
       throw new Error(`provider request timed out after ${config.timeout_ms}ms`);
@@ -259,5 +272,6 @@ export async function invokeOpenAICompatible(provider, prompt, {
     throw error;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort', abortExternal);
   }
 }

@@ -10,6 +10,8 @@ import { loadConfig } from '../lib/config.mjs';
 import { WorkflowService } from '../lib/workflow-service.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';
+import { hostResultProposalEnvelope } from '../lib/execution/host-main-automation.mjs';
+import { readOwnedAuthority } from '../lib/execution/owned-workflow-authority.mjs';
 
 const serverPath = join(dirname(dirname(fileURLToPath(import.meta.url))), 'server.mjs');
 
@@ -91,7 +93,7 @@ test('a user-authorized main conversation recovers control without the lost toke
   const rpc = await client.request({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'workflow_recover_control', arguments: request } });
   assert.equal(rpc.result.isError, undefined);
   const recovered = JSON.parse(rpc.result.content[0].text);
-  assert.notEqual(recovered.control_token, f.run.control_token);
+  assert.equal(recovered.control_token, undefined, 'The model-facing recovery response must not expose Host authority');
   assert.equal(recovered.status, 'paused');
   assert.deepEqual(recovered.recovery_errors, []);
   assert.equal(recovered.control_recovery.channel, 'conversation_mcp');
@@ -99,8 +101,11 @@ test('a user-authorized main conversation recovers control without the lost toke
   assert.equal(recovered.control_recovery.generation, 1);
   assert.notEqual(recovered.status, 'succeeded');
 
-  const after = await restarted.call('get', { run_id: f.run.run_id });
   const afterRuntime = (await restarted.open()).runtime;
+  const recoveredAuthority=await readOwnedAuthority(afterRuntime,f.run.run_id);
+  const recoveredControlToken=recoveredAuthority.control_token;
+  assert.notEqual(recoveredControlToken,f.run.control_token);
+  const after = await restarted.call('get', { run_id: f.run.run_id });
   const afterRecord = await afterRuntime.runs.read(f.run.run_id);
   assert.deepEqual(after.permissions, before.permissions);
   assert.deepEqual(afterRecord.pins, beforeRecord.pins);
@@ -108,31 +113,38 @@ test('a user-authorized main conversation recovers control without the lost toke
   const journal = await readFile(join(afterRuntime.runs.directory(f.run.run_id), 'events.jsonl'), 'utf8');
   assert.match(journal, /conversation_mcp/);
   assert(journal.includes(statement));
-  assert.equal(journal.includes(recovered.control_token), false, 'The journal stores only the new control hash');
+  assert.equal(journal.includes(recoveredControlToken), false, 'The journal stores only the new control hash');
 
   await assert.rejects(restarted.call('approve', { run_id: f.run.run_id, control_token: f.run.control_token, approval_id: approvalId, decision: true }), { code: 'RUN_AUTHORITY' });
   const recoveredSequence = after.sequence;
   await assert.rejects(restarted.call('recover_control', request), { code: 'RUN_SEQUENCE_CONFLICT' });
   assert.equal((await restarted.call('get', { run_id: f.run.run_id })).sequence, recoveredSequence);
 
-  const resumed = await restarted.call('resume', { run_id: f.run.run_id, control_token: recovered.control_token });
+  const resumed = await restarted.call('resume', { run_id: f.run.run_id, control_token: recoveredControlToken });
   assert.equal(resumed.status, 'blocked');
   assert.equal(resumed.approvals[approvalId].status, 'pending');
-  await restarted.call('approve', { run_id: f.run.run_id, control_token: recovered.control_token, approval_id: approvalId, decision: true });
+  await restarted.call('approve', { run_id: f.run.run_id, control_token: recoveredControlToken, approval_id: approvalId, decision: true });
   const implementation = await restarted.call('claim_node', {
-    run_id: f.run.run_id, control_token: recovered.control_token, node_id: 'implementation', owner: 'worker', request_id: 'recovered-delivery',
+    run_id: f.run.run_id, control_token: recoveredControlToken, node_id: 'implementation', owner: 'worker', request_id: 'recovered-delivery',
   });
-  const deliveryArgs = { run_id: f.run.run_id, ...implementation, control_token: recovered.control_token };
+  const deliveryArgs = { run_id: f.run.run_id, ...implementation, control_token: recoveredControlToken };
   const handoff = await restarted.call('dispatch', deliveryArgs);
   await restarted.call('dispatch_receipt', { ...deliveryArgs, request_id: handoff.request_id, receipt: { agent_id: 'recovered-delivery' } });
   const delivered = await restarted.call('complete_node', { ...deliveryArgs, completion: completion({ delivered: true }) });
   assert.equal(delivered.status, 'blocked');
   const finalApprovalId = Object.keys(delivered.approvals).find(id => id !== approvalId);
   assert.equal(delivered.approvals[finalApprovalId].status, 'pending');
-  await restarted.call('approve', { run_id: f.run.run_id, control_token: recovered.control_token, approval_id: finalApprovalId, decision: true });
-  const finalizer = await restarted.call('claim_node', {
-    run_id: f.run.run_id, control_token: recovered.control_token, node_id: 'final-acceptance', owner: 'conversation-main', request_id: 'recovered-final-acceptance',
-  });
-  const finished = await restarted.call('complete_node', { run_id: f.run.run_id, ...finalizer, completion: { ...completion({ accepted: true, evidence: 'completed after recovered approval' }), acceptance: { accepted: true } } });
+  await restarted.call('approve', { run_id: f.run.run_id, control_token: recoveredControlToken, approval_id: finalApprovalId, decision: true });
+  const finalClaim={control_token:recoveredControlToken,node_id:'final-acceptance',owner:'conversation-main',request_id:'recovered-final-acceptance'};
+  await assert.rejects(restarted.call('claim_node',{run_id:f.run.run_id,...finalClaim}),{code:'HOST_MAIN_LIFECYCLE_REQUIRED'});
+  const finalizer = await afterRuntime.claimHostMain(f.run.run_id,finalClaim);
+  const finalArgs={control_token:recoveredControlToken,node_id:finalizer.node_id,attempt_id:finalizer.attempt_id,lease_token:finalizer.lease_token},request_id=`dispatch-${finalizer.attempt_id}`;
+  await afterRuntime.recordHostMainDispatchIntent(f.run.run_id,{...finalArgs,request_id,envelope_hash:'f'.repeat(64)});
+  await afterRuntime.recordHostMainDispatchReceipt(f.run.run_id,{...finalArgs,request_id,receipt:{invocation_id:`host-main-${finalizer.attempt_id}`,executor:'codex-app-server-host-main',executable_sha256:'a'.repeat(64),model:'fixture-main',effort:'medium',main_actor:'conversation-main',session_id:`logical-main-${f.run.run_id}`,call_chain_id:`workflow-run-${f.run.run_id}`}});
+  const finalRecord=await afterRuntime.runs.read(f.run.run_id),definition=finalRecord.pins.root.workflow.nodes.find(node=>node.id==='final-acceptance');
+  const proposal=hostResultProposalEnvelope(definition,{output:{evidence:'completed after recovered approval'},summary:'Recovered controller completed the persisted task',artifacts:[],evidence:[{check:'recovery-test-completion',passed:true}],changed_paths:[],outside_paths:[]},{finalAcceptance:true});
+  const saved=await afterRuntime.runs.saveExecutorResult(f.run.run_id,finalizer.attempt_id,proposal);
+  await afterRuntime.recordExecutorEvent(f.run.run_id,{...finalArgs,event:{kind:'result_proposed',metadata:{...saved,final_acceptance_required:true}}});
+  const finished = await afterRuntime.completeHostMainResult(f.run.run_id,finalArgs,{accepted:true});
   assert.equal(finished.status, 'succeeded');
 });

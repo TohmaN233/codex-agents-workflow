@@ -31,3 +31,32 @@ test('missing, expired and malformed host auth fail explicitly without browser o
   const broker = createHostAuthBroker({ binary: '/test', cwd: '/test', clientFactory: () => ({ initialized() {}, async call(method) { return method === 'initialize' ? {} : { authMethod: null, authToken: null }; }, async close() { closed = true; } }) });
   await assert.rejects(broker.credentials(), { code: 'HOST_AUTH_UNAVAILABLE' }); assert.equal(closed, true);
 });
+
+test('separate brokers share one in-flight host auth startup', async () => {
+  let opened = 0; let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const clientFactory = () => {
+    opened++;
+    return { initialized() {}, async call(method) { if (method === 'initialize') return {}; await gate; return status(); }, async close() {} };
+  };
+  const options = { binary: '/singleflight-binary', cwd: '/owned', env: { CODEX_HOME: '/singleflight-host-home' }, now: () => 1000000, clientFactory };
+  const brokers = Array.from({ length: 16 }, () => createHostAuthBroker(options));
+  const pending = Promise.all(brokers.map(broker => broker.credentials()));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(opened, 1, 'parallel Runs must not start one global-state App Server each');
+  release();
+  assert.equal((await pending).length, 16);
+});
+
+test('host auth retries only transient sqlite startup failure', async () => {
+  let opened = 0;
+  const broker = createHostAuthBroker({ binary: '/sqlite-retry-binary', cwd: '/owned', env: { CODEX_HOME: '/sqlite-retry-home' }, now: () => 1000000,
+    clientFactory() {
+      opened++;
+      if (opened < 3) throw Object.assign(new Error('sqlite startup unavailable'), { code: 'CODEX_STATE_RUNTIME_INIT' });
+      return { initialized() {}, async call(method) { return method === 'initialize' ? {} : status(); }, async close() {} };
+    }
+  });
+  assert.equal((await broker.credentials()).chatgptAccountId, 'test-account');
+  assert.equal(opened, 3);
+});

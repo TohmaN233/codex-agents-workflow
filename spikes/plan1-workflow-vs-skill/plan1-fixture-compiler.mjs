@@ -22,59 +22,60 @@ const candidateOutput = Object.freeze({
   additionalProperties: false,
 });
 
-const nativeLunaProvider = Object.freeze({
-  id: 'native-luna', kind: 'native_agent', enabled: true,
-  capabilities: { read: true, write: true },
-  config: { model: 'gpt-5.6-luna', reasoning_effort: 'max', role: 'implementer', fresh_context: true },
-});
+const PLAN1_QUALIFIED_RUNTIME = 'Executable locations belong to the Run, not this Workflow. Use the host-provided run_task_program tool with logical program names python, ffmpeg, and ffprobe as required by this task. The host resolves and qualifies their concrete paths when starting the Run; do not invent, hardcode, discover, or substitute an interpreter path inside this Workflow. The tool exposes TASK_ROOT and WORKSPACE and owns path translation and execution isolation. If a required program is not bound for this Run, report the missing binding with the tool evidence instead of installing packages or silently using another environment.';
 
 export const PLAN1_WORKFLOW_SPECS = Object.freeze({
   'crystallographic-wyckoff-position-analysis': {
     name: 'Plan 1 — crystallographic Wyckoff analysis',
     executables: ['python'],
     resource_documents: {
+      'workflow/runtime.md': 'This authoring node has host-scoped resource, public-input, and workspace text tools; it does not have a shell or a Python execution tool. Read the three declared Workflow resources through read_workflow_resource, inspect public CIF inputs through list_input/read_input when needed, and create solution.py through write_workspace. The later host-owned public-validation node checks the artifact. Do not install packages or block merely because this authoring node cannot execute Python.',
       'workflow/task-contract.md': 'This is an implementation task: write solution.py even when pymatgen is not installed in the current authoring environment. Local runtime dependency absence limits validation but is not a blocker for authoring the deliverable. Use the public task contract exactly: expose analyze_wyckoff_position_multiplicities_and_coordinates(filepath), return multiplicity and representative-coordinate dictionaries, and never hardcode fixture answers. Block only when required public task inputs or the contract cannot be read, the declared workspace cannot be written, or the artifact cannot be produced.',
       'workflow/method.md': 'Author solution.py to parse each CIF with pymatgen at invocation time. Use SpacegroupAnalyzer.get_symmetry_dataset().wyckoffs to obtain one Wyckoff letter per input site. Count every site label for multiplicities, retain the first input-site fractional coordinate for each letter, and rationalize each coordinate with Fraction.limit_denominator(12) without normalizing an exact coordinate value of 1 to 0. Return coordinate strings and preserve the task schema. If pymatgen is unavailable while authoring, do not install it and do not block: perform dependency-independent checks such as Python compilation and required-symbol inspection, and record that runtime validation was unavailable.',
     },
     stages: [{
       id: 'author-analyzer', label: 'Author the Wyckoff analyzer', access: 'bounded_write',
       resources: [
+        'workflow/runtime.md',
         'workflow/task-contract.md',
         'workflow/method.md',
       ],
-      prompt_template: 'Implement the fixed crystallographic task in the declared workspace as solution.py. Use only the declared Workflow-native task contract and method resources. This is code authoring, not a requirement to execute pymatgen during the node: if pymatgen is absent locally, still write the complete implementation, do not install anything, and run dependency-independent checks. Parse each supplied CIF at invocation time with pymatgen, obtain one Wyckoff letter per input site from get_symmetry_dataset().wyckoffs, count every site label for multiplicities, retain the first input-site coordinate for each letter, and rationalize each coordinate with denominator at most 12 while preserving an exact coordinate value of 1. Preserve the exact entry function and output keys from workflow/task-contract.md; never hardcode sample answers. Return decision=candidate_ready after producing the artifact. Return decision=blocked only if a required public task input or contract cannot be read, the declared workspace cannot be written, or solution.py cannot be produced; missing local runtime dependencies alone are never a blocker for this implementation task.',
+      prompt_template: 'Implement the fixed crystallographic task in the declared workspace as solution.py. First call read_workflow_resource for workflow/runtime.md, workflow/task-contract.md, and workflow/method.md; use list_input/read_input for the authorized public task root as needed. Then call write_workspace with path solution.py and expected_sha256 null to create the implementation. No Python execution is required in this authoring node: the later host-owned public-validation node checks the artifact. Parse each supplied CIF at invocation time with pymatgen, obtain one Wyckoff letter per input site from get_symmetry_dataset().wyckoffs, count every site label for multiplicities, retain the first input-site coordinate for each letter, and rationalize each coordinate with denominator at most 12 while preserving an exact coordinate value of 1. Preserve the exact entry function and output keys from workflow/task-contract.md; never hardcode sample answers. Return decision=candidate_ready after producing solution.py. Return decision=blocked only after an actual required resource/input read or workspace write fails and prevents producing solution.py; missing local runtime dependencies alone are never a blocker for this implementation task.',
     }],
   },
   'earthquake-plate-calculation': {
     name: 'Plan 1 — Pacific plate earthquake distance',
-    executables: ['python'],
+    executables: [{ name: 'python', python_modules: ['geopandas'] }],
     resource_documents: {
+      'workflow/runtime.md': PLAN1_QUALIFIED_RUNTIME,
       'workflow/task-contract.md': 'Write answer.json with exactly id, place, time, magnitude, latitude, longitude, and distance_km. Time is UTC ISO-8601 and distance_km is rounded to two decimals.',
       'workflow/method.md': 'Load all three public GeoJSON inputs with GeoPandas. Select the Pacific plate by code PA, keep earthquakes spatially within that polygon, keep boundary features whose PlateA or PlateB is PA, project points and boundaries to EPSG:4087, calculate point-to-boundary distances in projected metres, select the maximum, and serialize the associated earthquake metadata. Do not use degree or Haversine distances.',
     },
     stages: [{
       id: 'analyze-earthquakes', label: 'Analyze earthquakes and write answer', access: 'bounded_write',
-      resources: ['workflow/task-contract.md', 'workflow/method.md'],
-      prompt_template: 'Complete the fixed geospatial task in the declared workspace and write answer.json. Apply the declared Workflow-native method: load the three frozen GeoJSON inputs, identify the Pacific plate by code PA, retain earthquakes within it, retain boundaries whose PlateA or PlateB is PA, project points and boundaries to EPSG:4087 before distance, select the maximum distance, convert milliseconds to the required UTC ISO-8601 form, and round distance_km to two decimals. Do not use manual degree or Haversine distances and do not hardcode the result. Return decision=candidate_ready after producing the artifact; return decision=blocked if execution cannot complete.',
+      resources: ['workflow/runtime.md', 'workflow/task-contract.md', 'workflow/method.md'],
+      prompt_template: 'Complete the fixed geospatial task in the declared workspace and write answer.json. Use the host-bound logical python program described in workflow/runtime.md; do not choose a machine-specific interpreter or install dependencies. Apply the declared Workflow-native method: load the three frozen GeoJSON inputs, identify the Pacific plate by code PA, retain earthquakes within it, retain boundaries whose PlateA or PlateB is PA, project points and boundaries to EPSG:4087 before distance, select the maximum distance, convert milliseconds to the required UTC ISO-8601 form, and round distance_km to two decimals. Do not use manual degree or Haversine distances and do not hardcode the result. Return decision=candidate_ready after producing the artifact; return decision=blocked if execution cannot complete.',
     }],
   },
   'lake-warming-attribution': {
     name: 'Plan 1 — lake warming attribution',
-    executables: ['python'],
+    executables: [{ name: 'python', python_modules: ['pandas', 'numpy', 'sklearn', 'pymannkendall', 'factor_analyzer'] }],
     resource_documents: {
+      'workflow/runtime.md': PLAN1_QUALIFIED_RUNTIME,
       'workflow/task-contract.md': 'Write output/trend_result.csv with columns slope,p-value and output/dominant_factor.csv with columns variable,contribution and one dominant-factor row.',
       'workflow/trend-method.md': "For this environmental time series, follow the source Skill's preferred non-parametric method: order WaterTemperature by Year and run pymannkendall.original_test(values). Report the returned Sen slope and Mann-Kendall p-value, each rounded to two decimal places. Do not substitute scipy.stats.linregress for the significance test.",
-      'workflow/attribution-method.md': "Merge the public temperature, climate, land-cover, hydrology tables on Year. Derive NetRadiation = Shortwave + Longwave. Use predictors AirTempLake, NetRadiation, Precip, Inflow, Outflow, WindSpeedLake, DevelopedArea, AgricultureArea; standardize them together; then use factor_analyzer.FactorAnalyzer(n_factors=4, rotation='varimax') for one global decomposition. Map factors to Heat, Flow, Wind, Human from their loadings. Fit LinearRegression on all factor scores, calculate each contribution as R2_full - R2_without_factor, multiply each contribution by 100, choose the largest mapped category, and round that percentage to the nearest integer. Contributions need not sum to R2: do not normalize them to total 100, and do not replace factor_analyzer.FactorAnalyzer with sklearn.decomposition.FactorAnalysis.",
+      'workflow/attribution-method.md': "Merge the public temperature, climate, land-cover, hydrology tables on Year. Derive NetRadiation = Shortwave + Longwave. Use predictors AirTempLake, NetRadiation, Precip, Inflow, Outflow, WindSpeedLake, DevelopedArea, AgricultureArea; standardize them together; then use factor_analyzer.FactorAnalyzer(n_factors=4, rotation='varimax') for one global decomposition. Interpret each factor's largest absolute loadings using this complete physical grouping: Heat = AirTempLake + NetRadiation; Flow = Precip + Inflow + Outflow; Wind = WindSpeedLake; Human = DevelopedArea + AgricultureArea. Name factors from those loadings, not their component index; when a factor has mixed loadings, explain the physical classification rather than silently assuming component order. Fit LinearRegression on all factor scores, calculate each contribution as R2_full - R2_without_factor, multiply each contribution by 100, choose the largest mapped category, and round that percentage to the nearest integer. Contributions need not sum to R2: do not normalize them to total 100, and do not replace factor_analyzer.FactorAnalyzer with sklearn.decomposition.FactorAnalysis.",
     },
     stages: [
       {
         id: 'trend-analysis', label: 'Compute the warming trend', access: 'bounded_write',
-        resources: ['workflow/task-contract.md', 'workflow/trend-method.md'],
+        resources: ['workflow/runtime.md', 'workflow/task-contract.md', 'workflow/trend-method.md'],
         prompt_template: "Using only the frozen CSV inputs and the declared Workflow-native trend method, compute the requested environmental trend and write output/trend_result.csv with exactly slope and p-value columns. Use pymannkendall.original_test on WaterTemperature ordered by Year; report its Sen slope and Mann-Kendall p-value rounded to two decimal places. Do not infer any reference answer. Return decision=candidate_ready after producing the artifact; return decision=blocked if the declared inputs are unusable.",
       },
       {
         id: 'driver-attribution', label: 'Attribute the dominant warming driver', access: 'bounded_write',
         resources: [
+          'workflow/runtime.md',
           'workflow/task-contract.md',
           'workflow/attribution-method.md',
         ],
@@ -84,14 +85,21 @@ export const PLAN1_WORKFLOW_SPECS = Object.freeze({
   },
   'video-silence-remover': {
     name: 'Plan 1 — video silence remover',
-    executables: ['python', 'ffmpeg', 'ffprobe'],
+    // Only imports from the manifest-listed public tools are runtime gates.
+    executables: [{ name: 'python', python_modules: ['numpy', 'scipy'] }, 'ffmpeg', 'ffprobe'],
     resource_documents: {
+      'workflow/runtime.md': PLAN1_QUALIFIED_RUNTIME,
       'workflow/task-contract.md': 'Remove the opening and long pauses from the public input video. Write compressed_video.mp4 and compression_report.json with original_duration_seconds, compressed_duration_seconds, removed_duration_seconds, compression_percentage, and segments_removed.',
       'workflow/method.md': 'Use the common public_tools scripts in this order: extract mono 16 kHz audio; compute one-second RMS energy; detect the initial opening; detect local dynamic pauses of at least two seconds; combine removal segments; render with ffmpeg; and generate the report. Choose only documented parameters and preserve teaching content.',
     },
     stages: [{
       id: 'select-removal-policy', label: 'Select parameters and execute the public media pipeline', access: 'bounded_write',
+      required_artifacts: [
+        { requirement_id: 'compressed-video', path: 'compressed_video.mp4' },
+        { requirement_id: 'compression-report', path: 'compression_report.json' },
+      ],
       resources: [
+        'workflow/runtime.md',
         'workflow/task-contract.md',
         'workflow/method.md',
       ],
@@ -126,14 +134,14 @@ export function buildNativeToolchainManifest({ platform, wrapper_contract, wrapp
 
 function fixedInputSchema(task) {
   return { type: 'object', properties: {
-    task_id: { const: task.task_id }, task_root: { const: task.task_root }, workspace: { type: 'string', minLength: 1, maxLength: 4096 },
+    task_id: { const: task.task_id }, task_root: { type: 'string', minLength: 1, maxLength: 4096 },
     preflight_action: { const: 'input_preflight' }, helper_action: { const: 'common_helper' }, public_validation_action: { const: 'public_validation' },
     task_instruction: { type: 'string', minLength: 1, maxLength: 32768 },
-  }, required: ['task_id', 'task_root', 'workspace', 'preflight_action', 'helper_action', 'public_validation_action', 'task_instruction'], additionalProperties: false };
+  }, required: ['task_id', 'task_root', 'preflight_action', 'helper_action', 'public_validation_action', 'task_instruction'], additionalProperties: false };
 }
 
 function wrapperInput(actionPointer, extra = {}) {
-  return { task_id: '/inputs/task_id', task_root: '/inputs/task_root', workspace: '/inputs/workspace', action: actionPointer, ...extra };
+  return { task_id: '/inputs/task_id', task_root: '/inputs/task_root', action: actionPointer, ...extra };
 }
 
 function taskWorkflow(task, wrappers) {
@@ -141,16 +149,17 @@ function taskWorkflow(task, wrappers) {
   requireValue(object(spec), 'PLAN1_WORKFLOW_SPEC', `Missing task-specific Workflow spec for ${task.task_id}`);
   const readWrapper = wrappers.find(wrapper => wrapper.permissions.write_paths.length === 0) ?? wrappers[0];
   const writeWrapper = wrappers.find(wrapper => wrapper.permissions.write_paths.length > 0) ?? readWrapper;
-  const workflow = { ...createDraft(`plan1-${task.task_id}`, spec.name), status: 'ready', description: 'Generated task-specific pre-comparison Workflow. Task-execution semantic nodes run in isolated Native Luna / Max child sessions while final acceptance stays in the Terra / Medium main controller; deterministic public operations use the arm-neutral common host wrapper. Oracle and hidden judging are excluded.', tags: ['plan1', 'pre-comparison', 'native', 'heterogeneous-models', 'luna-max-workers', 'terra-medium-main'], inputs_schema: fixedInputSchema(task), outputs_schema: {}, host_tools: wrappers, requirements: { providers: ['native-luna'], tools: [...wrappers.map(wrapper => wrapper.id), 'read_workflow_resource'], mcp_servers: [], executables: [] }, skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] }, finalization: { required: true, node_id: 'final' } };
+  const workflow = { ...createDraft(`plan1-${task.task_id}`, spec.name), status: 'ready', description: 'Generated task-specific pre-comparison Workflow. Every semantic Agent node runs in the configured Main Agent with node-scoped Workflow resources; deterministic public operations use the arm-neutral common host wrapper. Oracle and hidden judging are excluded.', tags: ['plan1', 'pre-comparison', 'native', 'all-main-agent', 'configured-main'], inputs_schema: fixedInputSchema(task), outputs_schema: {}, host_tools: wrappers, requirements: { providers: [], tools: [...wrappers.map(wrapper => wrapper.id), 'read_workflow_resource'], mcp_servers: [], executables: structuredClone(spec.executables) }, skill_policy: { mode: 'cooperative', implicit: 'deny', ambient_allow: [], shadowed_skill_paths: [] }, finalization: { required: true, node_id: 'final' } };
   const semanticNodes = spec.stages.map((stage, index) => ({
-    id: stage.id, type: 'agent', executor: { kind: 'provider', provider_id: 'native-luna' }, role: 'implementer', access: stage.access,
+    id: stage.id, type: 'agent', executor: { kind: 'main' }, role: 'implementer', access: stage.access,
     ...(stage.access === 'bounded_write' ? { path_scope: ['.'] } : {}),
     approval: { required: false }, retry: { max_attempts: 1 },
     input_bindings: {
-      task_id: '/inputs/task_id', task_root: '/inputs/task_root', workspace: '/inputs/workspace', task_instruction: '/inputs/task_instruction', preflight: '/nodes/preflight/output',
+      task_id: '/inputs/task_id', task_root: '/inputs/task_root', task_instruction: '/inputs/task_instruction', preflight: '/nodes/preflight/output',
       ...(index > 0 ? { prior_stage: `/nodes/${spec.stages[index - 1].id}/output` } : {}),
     },
     label: stage.label, prompt_template: stage.prompt_template, resources: [...stage.resources],
+    ...(stage.required_artifacts ? { required_artifacts: structuredClone(stage.required_artifacts) } : {}),
     outputs_schema: structuredClone(candidateOutput),
     decision: { id: `${stage.id}-disposition`, options: ['candidate_ready', 'blocked'], required_references: [...stage.resources] },
   }));
@@ -178,7 +187,7 @@ export function compilePlan1Fixtures(manifests, nativeToolchain) {
   requireValue(taskSet(tasks.map(task => task.task_id)), 'PLAN1_SOURCE_MANIFEST', 'The fixture compiler accepts only the frozen sampled four-task source manifest');
   const workflows = tasks.map(task => taskWorkflow(task, toolchain.wrapper_contracts));
   for (const workflow of workflows) {
-    const checked = validateWorkflowGraph(workflow, { host_tools: toolchain.wrapper_contracts.map(wrapper => wrapper.id), providers: [nativeLunaProvider] });
+    const checked = validateWorkflowGraph(workflow, { host_tools: toolchain.wrapper_contracts.map(wrapper => wrapper.id), providers: [] });
     requireValue(checked.valid, 'PLAN1_COMPILED_WORKFLOW_INVALID', `Generated workflow ${workflow.id} is invalid: ${checked.errors.map(error => error.code).join(',')}`);
   }
   const wrapper = toolchain.wrapper_contract_sha256;

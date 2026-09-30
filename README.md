@@ -1,204 +1,194 @@
 # Codex Agents Workflow
 
-**把一个复杂任务，变成可以配置模型、并行执行、暂停确认和重复使用的工作流。**
+**把流程从一段越来越长的提示词，变成可执行、可审查、可恢复的运行时。**
 
-这是 **sol-subagent-control 的升级版**：从控制子 Agent 的分工，发展为带可视化工作台的 Workflow 插件。你可以把已有 Skill 转成流程图，为不同节点指定模型与推理强度，让主 Agent 按依赖调度子 Agent，或创建、续聊独立的 Codex task，最后检查成果。
+流程型 Skill 很擅长告诉 Agent“应该怎么做”，但它仍然是一份进入模型上下文的说明。任务一长，主会话会同时背着用户对话、完整 Skill、所有中间结果和错误历史继续工作。即使把步骤交给子 Agent，主 Agent 如果反复轮询进度、转抄结果和处理重试，它自己的 token 也未必下降。
 
-[中文](README.md) · [English](README.en.md) · [中文操作教程](docs/TUTORIAL.zh-CN.md) · [English guide](docs/TUTORIAL.md)
+Codex Agents Workflow 把这些职责拆开：Workflow 描述语义步骤和依赖；Host 负责调度、机械字段、状态、事件等待和恢复；每个 Agent 节点只获得当前步骤所需的材料。它不是“多叫几个 Agent”的包装，而是一套控制上下文和执行边界的本地工作流运行时。
 
-## 为什么做这个
+[中文](README.md) · [English](README.en.md) · [操作教程](docs/TUTORIAL.zh-CN.md) · [完整实验报告](docs/EXPERIMENT_RESULTS.md)
 
-Astra 很强，也很贵。整理材料、执行明确的修改、批量处理和最终判断，没有必要全部交给同一个高成本模型。
+![新版流程库：Role 与 Workflow 分开展示](docs/assets/tutorial/workbench-library.png)
 
-工作流让你把分工固定下来：常规步骤交给较轻的模型，复杂分析交给更强的模型，重要检查保留独立审阅；主 Agent 负责理解目标、协调、处理用户反馈和验收。各个子任务在自己的上下文里工作，主会话收集必要的结果与证据，减少大量中间过程挤占主 Agent 的上下文。
+## 为什么流程型 Skill 需要运行时
 
-让合适的模型完成各自的步骤，可以控制整套任务的成本，也减少主会话需要携带的中间上下文。
+当任务只有一个明确动作时，Skill 通常已经足够。问题出现在有依赖、并行、返修、等待和长期状态的流程里：
 
-| 工作 | 可以怎样分配 |
-| --- | --- |
-| 明确范围的实现、素材整理、常规验证 | 配置一个适合常规工作的子 Agent |
-| 跨文件判断、复杂方案、困难分析 | 为该节点配置更强的模型 |
-| 独立检查 | 使用单独的只读审阅节点 |
-| 需要你做决定的步骤 | 加入用户确认节点 |
-| 需要持续修改同一份方案的工作 | 创建 Codex task，后续节点继续同一个 task |
-| 总体协调与最终验收 | 留给当前主 Agent；它的模型由 Codex 本身决定 |
+- **提示词不会自动隔离上下文。** 后续步骤经常重新看到与自己无关的历史、素材和中间输出。
+- **子 Agent 不会自动节约 Main token。** 早期运行中，Main 为了等子 Agent 完成而持续轮询；“已经委派”并不等于“Main 已停止消耗”。
+- **交接容易变成复制工作。** Agent 重读相同文件、把大段结果传回 Main，或手抄 ID、路径、哈希和绑定字段。
+- **提示词约束不是确定性交付。** 路径解析、依赖检查、schema、权限、结果文件和恢复点应该由程序处理。
 
-模型不是按这些描述写死的。你在工作台选择具体配置，新的运行固定这些绑定，不会因某个模型失败就悄悄换成另一个。
+这个插件把上述问题放进 Host：Main 在没有新事件时不继续推理；Host 持有最长一小时的事件等待，并在 Run 完成、失败、需要处理、子 Agent 返回或 handoff 出现时立即继续。Agent 不需要用短间隔轮询来“看看做完没有”。
 
-### 四项任务的对比结果
+## 实验证据
 
-在 40 次隔离、隐藏判分运行中，节点级 Workflow（`W-main`）相比直接加载冻结 Skill（`S-main`）平均总 token 降低 **42.9%**；隐藏测试均分为 **0.9618 vs 0.9722**。四项任务分别降低 **52.1% / 38.7% / 38.1% / 43.1%**。与完整预载 Workflow（`W-control`）相比，节点级投影再降低 **28.1%**。这是四个已确认可实施任务上的证据，不是对所有 Skill 的普遍保证。[查看实验结果与边界](docs/EXPERIMENT_RESULTS.md)。
+这些是两个具体案例，不是“Workflow 对任何任务都一定省 token”的承诺。Token 包含缓存输入；详细分组、判分方法和数据文件见[实验报告](docs/EXPERIMENT_RESULTS.md)。
 
-## 能做什么
+### 实验一：四个简单任务，全部语义节点都使用 Main
 
-- **可视化编排**：编辑步骤、连线、条件、并行分支和人工确认点。
-- **两种内置创作工作流**：`skill2workflow` 从 Skill 快照转换，`build_workflow` 从 brief 创建；二者共享同一个紧凑语义契约、Host 编译器和一次语义差量修复边界。
-- **Host 负责机械字段**：模型只描述活动、数据依赖、控制组和来源处置；节点/边 ID、根、绑定、JSON Schema、执行者、权限、证书与包字段由 Host 确定生成。
-- **可安装的 Workflow 包**：把固定修订导出为带内容哈希、资源清单和依赖清单的包，再从本地 JSON 或 HTTPS 安装；安装不会自动安装依赖，也不会启动运行。
-- **每个节点分别配置模型**：原生子 Agent 可设置模型与推理强度；可接入 Cursor、Grok 等已配置的执行端。
-- **Thread 控制**：主会话可以创建独立 Codex task，等待完成，再把新材料交给原 task 继续工作。
-- **运行记录与验收**：查看节点状态、审批、输出和错误；每次运行固定版本，编辑流程不会改写已有运行。
-- **中英切换**：模型设置与流程工作台共用 中文 / English 选择，保留未保存草稿。你自己填写的名称、提示词和模型 ID 不会被翻译。
+Wyckoff 晶位分析、地震板块计算、湖泊升温归因和视频静音移除分别比较了：
 
-工作台用来配置和查看，**实际使用时也可以直接在 Codex 里用自然语言调用工作流**。
+- `N-main`：Main 直接执行，没有 Skill，也没有 Workflow。
+- `S-main`：Main 加载冻结 Skill 后执行。
+- `W-main`：转换后的 Workflow 执行；每个 Main 节点使用新的节点上下文，只投影该节点声明的资源。
 
-## 先装起来
+所有组都使用 `gpt-5.6-terra / medium`；`W-main` 没有换用便宜子模型。40 个有效隔离结果中，主要三组各有 12 次运行。
 
-需要支持插件与相关任务工具的 Codex、Node.js 20+ 和 Git。Cursor / Grok 是可选接入；没有安装它们也可以先使用原生 Codex 子 Agent。
 
-下面用本地克隆安装，便于找到启动脚本和示例：
+| 组别                  | 每次运行平均 Token | 平均隐藏测试得分   | 严格通过     |
+| ------------------- | ------------ | ---------- | -------- |
+| No Skill (`N-main`) | 573,982      | 37.78%     | 0/12     |
+| Skill (`S-main`)    | 527,807      | 97.22%     | 9/12     |
+| Workflow (`W-main`) | **287,459**  | **97.22%** | **9/12** |
+
+
+在质量结果相同的情况下，`W-main` 比 `S-main` 少 **45.5%** token，比 `N-main` 少 **49.9%**。
+
+这个实验没有靠子 Agent 获得优势。节约来自 **Main 节点之间的上下文隔离**：仍然是 Main 模型做判断，但每一步不再继承整段父会话和其他节点的原始材料。
+
+### 实验二：Zenonzard 31 卡，使用多 Agent 完成长流程
+
+Zenonzard 是更接近真实项目的代码实现任务。Workflow 使用 Sol 与 Luna 分工，并对 31 张卡执行逐卡严格语意审查。
+
+
+| 实现       | 总 Token    | API 等价成本    | 严格语意通过            |
+| -------- | ---------- | ----------- | ----------------- |
+| Skill    | 28,122,593 | $6.9240     | 20/31（64.52%）     |
+| Workflow | 33,900,996 | **$3.3929** | **28/31（90.32%）** |
+
+
+Workflow 的总 token **增加了 20.55%**，严格通过率提高 **25.80 个百分点**；按实验记录的模型价格计算，API 等价成本降低 **51.00%**。
+
+ Luna 节点反复读取项目和任务材料产生了可见开销导致使用subagents时只看总token是更高的。但是在工作流设计下的主agent静默等待的情况下，指派subagents能确实减少主agent的token开销，使得整体成本明显下降，同时质量可能由于上下文隔离和固定性节点衔接而上升。
+
+## 它怎样工作
+
+```mermaid
+flowchart LR
+    U[用户任务] --> M[控制 Main]
+    M --> H[Host 调度与事件等待]
+    H --> A[节点 A<br/>新上下文]
+    H --> B[节点 B<br/>新上下文]
+    H --> C[节点 C<br/>新上下文]
+    A --> F[(本地产物与结构化结果)]
+    B --> F
+    C --> F
+    F --> H
+    H --> M
+```
+
+
+
+
+
+### 1. 节点级上下文隔离
+
+无论节点由 Main 还是原生子 Agent 执行，它只收到声明的输入、资源、工具、工作目录和前置结果引用。它不会自动继承父聊天、环境 Skill 目录或其他节点的原始对话。隔离无关内容不等于削弱 Codex 的基本读写、看图或代码能力；任务需要的能力必须随节点正常提供。
+
+### 2. Host 负责机械工作
+
+Agent 输出语义决定。Host 生成和校验 ID、路径、哈希、节点绑定、结果 schema、依赖清单、任务包和恢复信息。模型不需要手抄随机字段，也不会因为一个字符错误重新生成整个流程。
+
+### 3. Main 静默等待事件
+
+委派完成后，Main 把等待交给 Host。Host 使用最长一小时的事件等待；可处理事件出现时立即唤醒执行链。超时只会续接同一个等待，不会让 Main 每隔几十秒读取一次状态。
+
+### 4. 结果落盘，交接只传引用
+
+执行节点直接把代码和产物写入指定工作区，返回简短状态与文件位置。大文件、完整日志和批量结果不通过 Agent 消息反复搬运。
+
+### 5. 保留成功，只返修失败单元
+
+并行节点分别记录输入、尝试、产物和结果。某个分片失败时，成功分片继续保留；重试只接收失败项及其证据。
+
+### 6. Role 会在普通任务中自动工作
+
+Role 是工作台保存的一种“怎么叫帮手”的设置：它说明适合做什么、使用哪个 Provider、允许改什么，以及交给这个帮手的工作要求。插件加载后，Main 遇到适合委派的普通任务会自动选择已启用的 Role，用户不需要先说“使用某个 Role”，也不需要启动 Workflow。
+
+Main 发出任务后会先完成仍可独立推进的工作；下一步依赖帮手结果时，它进入最长一小时的事件等待。帮手完成、失败或需要输入会立即唤醒 Main。Main 随后检查真实改动和验证结果，再决定是否接收。这套自动选择、继续独立工作、静默等待和验收行为由插件提供。
+
+Workflow 与 Role 分开。主 Agent 沿用启动聊天当前使用的模型和思考强度；独立从工作台启动时沿用 Codex 设置，不设插件固定主模型。Workflow 节点只固定 Provider、节点任务、输入和权限。生成 Workflow 时可以参考不同工作的模型适用范围来选择 Provider；运行节点时不会再注入 Role 指令，也不会因为后来编辑或关闭某个 Role 而改变或阻塞已经生成的 Workflow。
+
+### 7. Thread：需要时延续同一个 Codex task
+
+这里的 Thread 指 Codex 中独立可见的 task / chat，不是操作系统线程，也不是普通的一次性原生子 Agent。Thread 节点必须使用原生 Codex Provider。
+
+`start` 节点创建一个新 task，并记录返回的准确 `thread_id`。后续 `continue` 节点必须引用一个已经成功完成的上游 Thread 节点；运行时使用 `send_message_to_thread` 把新材料交给同一个 task，再通过 `wait_threads` 和 `read_thread` 接收与该次交接匹配的完成结果。恢复 Run 时也会重新连接这个准确的 task，不会选择“最近的”会话或创建替代 task。
+
+Thread 适合后续阶段确实需要同一会话内部状态的流程，例如先调查，等其他分支提供新证据后，再让原 task 继续推理。它会保留更多上下文，也会在侧边栏产生长期可见的 task，因此默认 Workflow 不使用它。普通步骤继续使用原生 Agent 和本地产物引用；自定义或生成的 Workflow 可以在需要时选择 Thread 的 `start` / `continue` 生命周期。
+
+## 工作台
+
+工作台把 Role 与 Workflow 分开：Role 是可直接分配的单 Agent 行为配置；Workflow 是包含依赖、并行、工具和确认点的任务图。模型、权限、资源、版本、运行记录和安装包都能在同一处检查。
+
+![新版 Workflow 画布与属性面板](docs/assets/tutorial/workbench-editor.png)
+
+安装只提供两个基础 Workflow：
+
+- **Skill to Workflow**：把固定 Skill 快照转换为可编辑 Workflow。
+- **Build Workflow**：从 brief 创建可审查、可发布的 Workflow。
+
+作者自己在开发时测试的workflow位于[可选示例目录](plugins/codex-agents-workflow/examples/workflows/README.md)，想尝试的话可安装，也可以作为生成新 Workflow 的参考。
+
+## 快速开始
+
+需要支持插件的 Codex、Node.js 20+ 与 Git。
 
 ```sh
 git clone https://github.com/TohmaN233/codex-agents-workflow.git
 cd codex-agents-workflow
 codex plugin marketplace add .
 codex plugin add codex-agents-workflow@codex-agents-workflow
-node plugins/codex-agents-workflow/scripts/install-agents.mjs
 ```
 
-安装后打开一个新的 Codex task，让它加载插件的 Skills 和工具。
-
-### 打开工作台
-
-最简单的方式，直接告诉 Codex：
+安装后新建一个 Codex task，然后直接说：
 
 ```text
 使用 $codex-agents-workflow:workflow-control-plane，打开工作台。
 ```
 
-也可以从刚才克隆的仓库手动打开。Windows 双击：
-
-```text
-plugins\codex-agents-workflow\scripts\open-control-console.cmd
-```
-
-或在仓库目录运行：
+也可以手动启动本地控制台：
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd
 ```
 
-macOS / Linux 从仓库根目录运行：
-
 ```sh
 sh plugins/codex-agents-workflow/scripts/open-control-console.sh
 ```
 
-Windows 启动器打开已安装的插件；`.sh` 脚本启动当前克隆目录中的工作台。需要 Node.js 20+，启动后保持终端进程运行。
+常见入口：
 
-![在工作台中给执行节点选择模型](docs/assets/tutorial/workbench-node-model.png)
+1. **已有 Skill**：点击“从 Skill 导入”，固定来源版本，生成草稿，审查后发布。
+2. **从需求开始**：打开 Build Workflow，输入 brief，再编辑 Host 编译出的流程图。
+3. **安装示例**：点击“安装 Workflow”，选择 `examples/workflows` 下的 `*.workflow-package.json`。
+4. **直接运行**：在 Codex 中说明要使用的已发布 Workflow 和任务目标；需要人工确认时，Run 会停在明确的确认点。
 
-## 第一步：配置模型，再点自动生成
 
-**工作台里的模型配置必须可用，才能直接点击按钮生成 Workflow。** 当前主会话正在使用某个模型，不代表工作台已经配置好了生成器和审核器。
 
-1. 打开右上方 **Provider 设置**。启用需要的原生模型配置，填写模型 ID、推理强度和读写能力，再保存。
-2. 导入 Skill 后，进入 **导入审查 → 高级选项：执行设置、路由规则与导入诊断**。
-3. 选择 **默认生成执行者（已注册模型配置）** 和 **审核执行者（已注册模型配置）**。这里当前使用已注册的原生模型配置；Cursor / Grok 不充当这一自动转换按钮的生成器。
-4. 检查 `skill2workflow` 路由规则：为规划、普通执行、复杂执行等职责配置合适的 Provider。生成模型只负责转换，不会自动成为所有执行节点的模型。
-5. 返回上方，点击 **自动生成 Workflow**。页面会显示语义规划、Host 编译、审核和必要时唯一一次的语义差量修复。格式、ID、绑定等机械错误不会让模型反复重写整个流程。默认复用当前 Codex 登录；缺少登录、模型或能力时，会显示需要处理的原因。
+## 默认发布配置
 
-启用一个 Provider 或保存配置本身不会开始模型调用。点击生成、启动运行或明确要求 Codex 执行之后，才进入对应任务。
 
-## 示例一：把 Skill 转成工作流
+| 项目                           | 默认状态                             |
+| ---------------------------- | -------------------------------- |
+| 原生 Codex Provider            | 开启                               |
+| 外部 Provider                  | 关闭                               |
+| Cross-review Role            | 关闭，可单独启用                         |
+| GPT reviewer Role            | 关闭；复用 `chatgpt-web-pro` Provider |
+| 内置 Workflow                  | Skill to Workflow、Build Workflow |
+| Math / Zenonzard / video-use | 可选安装                             |
 
-以开源视频剪辑 Skill [browser-use/video-use](https://github.com/browser-use/video-use) 为例。先按源仓库说明安装，再把它导入工作台。它的 [SKILL.md](https://github.com/browser-use/video-use/blob/main/SKILL.md) 定义了检查素材、提出方案、询问用户、制作预览和最终交付的步骤。
 
-1. 在流程库点击 **从 Skill 导入**。
-2. 扫描默认 Codex 目录，或填写自己存放 Skill 的文件夹。
-3. 找到目标，点击 **导入此版本**。插件保留这个版本的指令与资源快照，源 Skill 不会被修改。
-4. 按上一节配置生成与审核模型，再点击 **自动生成 Workflow**。
-5. 检查生成的步骤、依赖、用户确认点和逐项审核清单。确认后保存为可编辑草稿，在画布里调整每个节点。
-6. 保存并发布；发布成功只表示流程可用于启动，**不会立刻执行剪辑**。
 
-![Skill 转工作流：自动生成及审核进度](docs/assets/tutorial/skill2workflow-generation.png)
 
-生成和审核过程中可以查看进度；完成后回到画布编辑节点。
+## 边界
 
-![video-use 转换后的确认、制作和验证流程](docs/assets/tutorial/workbench-video.png)
+- 四个简单任务和 Zenonzard 都是案例研究，不能推出所有 Workflow 都节约 token。
+- 复杂多 Agent Workflow 可能为了质量、并行或更低价格而使用更多 token。
+- Thread 只用于确实需要跨阶段保留同一会话状态的流程。普通工作默认使用原生 Agent 和本地产物交接。
 
-转换的价值是把 Skill 里的执行顺序变成明确的依赖，把“先问用户再制作”变成一个会停下来的节点，并把适合并行的独立工作分开。模型提交紧凑语义计划，Host 确定生成流程结构和运行字段；发布前仍需人工确认规则保真以及实际工具和资源是否具备。
-
-不想操作页面时，也可以直接告诉 Codex：
-
-```text
-使用 $codex-agents-workflow:workflow-control-plane。
-把我指定目录里的 video-use Skill 导入并转换为 Workflow。
-按工作台已保存的模型配置分配节点，保留原 Skill 的确认步骤。
-先给我看生成的草稿，暂时不要执行视频任务。
-```
-
-## 示例二：在 Codex 中直接执行 video-use
-
-本例使用 [browser-use/video-use](https://github.com/browser-use/video-use) 转换后的工作流。源 Skill 单独安装，不随本插件打包；你也可以使用自己的写作、翻译、研究或代码处理 Skill。
-
-```text
-使用 $codex-agents-workflow:workflow-control-plane。
-调用已发布的 video-use Workflow，为 YN Translation Workshop 剪辑介绍视频。
-素材在 D:/demo/recordings，需求写在该目录的 剪辑需求.txt。
-按 Workflow 配置的节点执行，需要我确认方案或预览时停下来问我。
-```
-
-下面三张图来自[实际使用会话](https://chatgpt.com/s/cx_6aa1e1db569c8191a4f7f2c394d53d4c)。它展示了“调用工作流 → 委派 → 用户确认 → 返回预览”的过程。
-
-### 1. 按工作流委派
-
-主 Agent 找到 `video-use`，把素材检查交给流程指定的 Terra 节点，同时向用户补齐声音偏好。
-
-![主 Agent 按 Workflow 委派素材检查](docs/assets/tutorial/video-workflow-delegation.png)
-
-### 2. 到确认点就询问用户
-
-整理出剪辑方案后，工作流停在制作前的确认步骤，得到同意再继续。
-
-![方案确认后继续制作](docs/assets/tutorial/video-workflow-approval.png)
-
-### 3. 返回预览，等待定稿确认
-
-制作完成后返回完整版和四支短片，用户可以查看预览、提出修改或确认定稿。
-
-![工作流返回五支视频预览并询问是否定稿](docs/assets/tutorial/video-workflow-preview.png)
-
-## 示例三：数学研究，什么时候值得保留一个 task
-
-内置 **Mathematical Research Hybrid** 示例先并行开展文献、工具、类比和反例调查，再并行试探不同路线。独立工作使用一次性子 Agent。主 Agent 根据结果提议一次性总结或持续研究，用户批准方案后才进入相应分支；持续研究会创建并续聊一个保存研究状态的 Codex task。想调整建议时，先在会话中反馈，再确认修改后的方案。
-
-![数学研究中的并行路线探索和节点模型设置](docs/assets/tutorial/workbench-math.png)
-
-流程库已经有此定义时，可以直接调用：
-
-```text
-使用 Mathematical Research Hybrid，研究我下面给出的命题。
-先明确假设与可能的反例，独立调查不同证明路线。
-是否需要持续研究 task，由我看过路线后决定。
-最后区分已证明内容、实验观察和仍未解决的问题。
-```
-
-也可以让 Codex 添加这个内置数学示例，再在工作台调整各节点的模型与研究指令。
-
-## 新增的 Thread 控制是什么
-
-这里的 thread 指 **Codex 中独立可见的 task / 会话**，不是操作系统线程。
-
-普通子 Agent 适合“给定材料，做完这一步，返回结果”。独立 task 适合“先准备，等另一个分支完成后，再带着新信息继续同一份工作”。例如提示词准备和图片准备先并行，提示词就绪后续聊原来的图片 task，而不是再创建一个丢失上下文的新 task。
-
-工作流记录 task 身份，后续节点继续同一个 task。你可以在 Codex 里看到和继续这些任务，主 Agent 负责分支交接与最终验收。
-
-## 配置、更新与更多细节
-
-模型配置保存在用户级目录：默认 `~/.codex/codex-agents-workflow/control-plane.json`；设置了 `CODEX_HOME` 时使用该目录。工作流与运行数据在同一用户配置体系下管理，不需要把自己的流程库提交到 GitHub。
-
-README 中的模型组合与流程是使用示例。工作台按你的配置执行；模型可用性取决于实际 Codex 账号、版本和已连接的客户端。
-
-- [完整中文教程：启动、生成、执行和排错](docs/TUTORIAL.zh-CN.md)
-- [English guide](docs/TUTORIAL.md)
-- [连接器契约](plugins/codex-agents-workflow/skills/control-plane/references/provider-contracts.md)
-
-## 会话中断后如何继续
-
-保留原运行 ID，直接告诉 Codex：“我授权你恢复这个运行的控制权，核对已有任务和产物后继续。”主会话就能接手，不必复制控制凭据。工作台也有“接管并暂停 Run”按钮。
-
-恢复后从原有任务和产物继续，已经完成的步骤不必重复执行。
+进一步阅读：[完整实验数据](docs/EXPERIMENT_RESULTS.md) · [中文教程](docs/TUTORIAL.zh-CN.md) · [Provider 契约](plugins/codex-agents-workflow/skills/control-plane/references/provider-contracts.md)
 
 ## License
 

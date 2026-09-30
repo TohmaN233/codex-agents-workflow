@@ -6,7 +6,10 @@ cancellation-pending evidence; it does not prove remote termination. Connector
 permission/input replies use `workflow_control_connector` and exact returned request
 IDs/options with actual authorization. Host native/MCP tasks need exact host control.
 
-Read `workflow_get`, `workflow_events` and the original `workflow_run_definition`.
+Start with the exact node and error returned by `workflow_wait`. Read
+`workflow_events` for missing event history, `workflow_get` for needed attempt
+state, and `workflow_run_definition` when the pinned definition is relevant.
+These are on-demand diagnostic views, not a mandatory three-call reading sequence.
 Never recover by selecting the latest task or starting a replacement Run. After
 restart, `workflow_resume(after_restart: true)` fences stale leases. An interrupted
 unsubmitted claim uses `workflow_recover_claim`; a verified remote connector uses
@@ -26,7 +29,11 @@ covers this Run. This is host attestation, not independent proof of human identi
 Keep the returned controller token in the main agent, never in worker prompts.
 The authenticated console's explicit tree adoption remains an alternative. Both
 paths fence old control and leases, pause the same pinned tree, and preserve pending
-approvals and outputs. Recovery does not approve or complete any node. Partial
+approvals and outputs. Recovery waits for the previous detached Host owner to
+confirm local shutdown. After reconciliation, `workflow_resume` restarts that same
+Run's detached Host owner with the recovered controller capability; a Run that is
+already `running` but has a confirmed `authority_revoked` Host stop is re-owned
+without another state transition. Recovery does not approve or complete any node. Partial
 recovery errors prevent resume. Use `workflow_retry_node`
 only after failure/effect reconciliation and within the pinned retry budget. Inspect
 owned orphan/worktree evidence before supported cleanup. Preserve every uncertain

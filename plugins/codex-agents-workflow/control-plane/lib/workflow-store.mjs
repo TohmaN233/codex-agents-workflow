@@ -5,6 +5,7 @@ import { ensureDirectory, noSymlinks, packDirectory, insideRoot, requireValue, w
 import { canonicalJSON, digest, LIMITS, prepareResources, revisionHash, validateManifest } from './workflow-revisions.mjs';
 import { validateWorkflowShape } from './workflow-schema.mjs';
 import { validateWorkflowGraph } from './workflow-validator.mjs';
+import { requireWorkflowSnapshotIntegrity } from './workflow-ready-validation.mjs';
 
 export async function syncDirectory(path) {
   // Windows does not provide portable directory fsync through Node. File fsync and
@@ -27,6 +28,42 @@ async function readBounded(path, max) {
   const data = await readFile(path);
   requireValue(data.length <= max, 'WORKFLOW_FILE_LIMIT', 'Store file grew during read');
   return data;
+}
+
+async function purgePackHistory(pack, keepRevision, keepObjects) {
+  const revisions = join(pack, 'revisions'); const objects = join(pack, 'objects');
+  for (const entry of await readdir(revisions, { withFileTypes: true })) {
+    requireValue(entry.isFile() && !entry.isSymbolicLink() && /^[a-f0-9]{64}\.json$/.test(entry.name), 'REVISION_HISTORY_ENTRY', 'Unexpected revision history entry during source purge');
+    if (entry.name !== `${keepRevision}.json`) await unlink(join(revisions, entry.name));
+  }
+  for (const entry of await readdir(objects, { withFileTypes: true })) {
+    requireValue(entry.isFile() && !entry.isSymbolicLink() && /^[a-f0-9]{64}$/.test(entry.name), 'RESOURCE_OBJECT_ENTRY', 'Unexpected resource object during source purge');
+    if (!keepObjects.has(entry.name)) await unlink(join(objects, entry.name));
+  }
+  await syncDirectory(revisions); await syncDirectory(objects);
+}
+
+async function replaceJSON(path,value){
+  const temporary=path+'.tmp-'+randomUUID();
+  await writeExclusive(temporary,canonicalJSON(value));
+  try{await rename(temporary,path);await syncDirectory(dirname(path));}
+  catch(error){try{await unlink(temporary);}catch(cleanup){if(cleanup.code!=='ENOENT')throw new AggregateError([error,cleanup],'Durable record update and cleanup failed');}throw error;}
+}
+
+async function optionalJSON(path,max=1024*1024){
+  try{return JSON.parse(await readBounded(path,max));}
+  catch(error){if(error.code==='ENOENT')return null;throw error;}
+}
+
+async function finishHistoryPurge(pack,journal){
+  const head=JSON.parse(await readBounded(join(pack,'workflow.json'),LIMITS.definition));
+  requireValue(head.revision_hash===journal.revision_hash,'WORKFLOW_PURGE_IDENTITY','History purge belongs to a different Workflow head');
+  if(journal.state==='complete')return journal;
+  requireValue(journal.schema_version===1&&journal.state==='prepared'&&Array.isArray(journal.keep_objects),'WORKFLOW_PURGE_STATE','History purge record is invalid');
+  await purgePackHistory(pack,journal.revision_hash,new Set(journal.keep_objects));
+  const completed={schema_version:1,state:'complete',revision_hash:journal.revision_hash,completed_at:new Date().toISOString()};
+  await replaceJSON(join(pack,'history-purge.json'),completed);
+  return completed;
 }
 
 export class WorkflowStore {
@@ -195,9 +232,10 @@ export class WorkflowStore {
     // New packs opt into declared-only context.  Absent is deliberately
     // retained as the versioned marker for immutable pre-Plan-1 revisions.
     const next = JSON.parse(canonicalJSON({ ...workflow, context_projection_version: workflow.context_projection_version ?? 2, revision: 1 }));
-    this.validate(next);
     const { manifest, blobs } = prepareResources(resources);
     const snapshot = JSON.parse(canonicalJSON({ workflow: next, resources: manifest, provenance, import_report }));
+    this.validate(next);
+    requireWorkflowSnapshotIntegrity(snapshot);
     return this.withWriter(async () => {
       const destination = packDirectory(this.root, next.id);
       try { await lstat(destination); throw Object.assign(new Error('Workflow already exists'), { code: 'WORKFLOW_EXISTS' }); }
@@ -225,14 +263,56 @@ export class WorkflowStore {
     });
   }
 
-  async save(id, workflow, { expected_revision, resources, provenance, import_report } = {}) {
+  async install(document, { resources = {}, installation } = {}) {
+    document = JSON.parse(canonicalJSON(document));
+    const { revision_hash, ...snapshot } = document;
+    requireValue(/^[a-f0-9]{64}$/.test(revision_hash) && revisionHash(snapshot) === revision_hash,
+      'WORKFLOW_PACKAGE_REVISION', 'Installed Workflow snapshot must retain its exact immutable revision identity');
+    const prepared = prepareResources(resources);
+    requireValue(canonicalJSON(prepared.manifest) === canonicalJSON(snapshot.resources),
+      'WORKFLOW_PACKAGE_MANIFEST', 'Installed Workflow resources differ from the immutable snapshot manifest');
+    requireValue(installation && typeof installation === 'object' && !Array.isArray(installation)
+      && Object.keys(installation).every(key => ['source', 'package_version', 'package_sha256', 'installed_at'].includes(key))
+      && (installation.source === null || typeof installation.source === 'string' && installation.source.length <= 8192)
+      && typeof installation.package_version === 'string' && /^[a-f0-9]{64}$/.test(installation.package_sha256)
+      && typeof installation.installed_at === 'string', 'WORKFLOW_INSTALLATION', 'Local installation metadata is invalid');
+    this.validate(snapshot.workflow);
+    requireWorkflowSnapshotIntegrity(snapshot);
+    return this.withWriter(async () => {
+      const destination = packDirectory(this.root, snapshot.workflow.id);
+      try { await lstat(destination); throw Object.assign(new Error('Workflow already exists'), { code: 'WORKFLOW_EXISTS' }); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const temporary = insideRoot(this.root, join(this.root, '.pending', randomUUID()));
+      await noSymlinks(dirname(temporary)); await mkdir(temporary);
+      try {
+        await mkdir(join(temporary, 'objects')); await mkdir(join(temporary, 'revisions'));
+        const installed = await this.persistSnapshot(temporary, snapshot, prepared.blobs);
+        requireValue(installed.revision_hash === revision_hash, 'WORKFLOW_PACKAGE_REVISION', 'Installed Workflow revision changed while staging');
+        await writeExclusive(join(temporary, 'workflow.json'), canonicalJSON(installed));
+        await writeExclusive(join(temporary, 'installation.json'), canonicalJSON(installation));
+        await syncDirectory(temporary); await rename(temporary, destination); await syncDirectory(this.root);
+        return {...installed,installation:JSON.parse(canonicalJSON(installation))};
+      } catch (error) {
+        try { await noSymlinks(temporary); await rm(insideRoot(this.root, temporary), { recursive: true, maxRetries: 3, retryDelay: 50 }); }
+        catch (cleanupError) { if (cleanupError.code !== 'ENOENT') throw new AggregateError([error, cleanupError], 'Install and staging cleanup failed'); }
+        throw error;
+      }
+    });
+  }
+
+  async save(id, workflow, options = {}) {
+    requireValue(options && typeof options==='object' && !Array.isArray(options)
+      && Object.keys(options).every(key=>['expected_revision','resources','provenance','import_report','history_purge'].includes(key)),
+    'WORKFLOW_SAVE_OPTIONS','Workflow save options contain an unknown or retired field');
+    const { expected_revision, resources, history_purge = 'none' }=options;
+    let { provenance, import_report }=options;
     workflow = JSON.parse(canonicalJSON(workflow));
     if (provenance !== undefined) provenance = JSON.parse(canonicalJSON(provenance));
     if (import_report !== undefined) import_report = JSON.parse(canonicalJSON(import_report));
     const preparedResources = resources === undefined ? undefined : prepareResources(resources);
+    requireValue(['none', 'deferred'].includes(history_purge), 'WORKFLOW_PURGE_HISTORY', 'History purge must be absent or deferred to the guarded cleanup coordinator');
     requireValue(expected_revision, 'REVISION_REQUIRED', 'Save requires the previously read revision hash');
     requireValue(workflow.id === id, 'WORKFLOW_ID_MISMATCH', 'Save cannot change Workflow ID');
-    this.validate(workflow);
     return this.withWriter(async () => {
       const previous = await this.snapshot(id);
       requireValue(previous.revision_hash === expected_revision, 'REVISION_CONFLICT', 'Workflow changed since it was read');
@@ -241,11 +321,18 @@ export class WorkflowStore {
         workflow: { ...workflow, revision: previous.workflow.revision + 1 }, resources: resourceData.manifest,
         provenance: provenance ?? previous.provenance, import_report: import_report ?? previous.import_report,
       };
+      this.validate(snapshot.workflow);
+      requireWorkflowSnapshotIntegrity(snapshot, { previous });
       const pack = packDirectory(this.root, id);
       const document = await this.persistSnapshot(pack, snapshot, resourceData.blobs);
       const temporary = join(pack, 'workflow.json.tmp-' + randomUUID());
       try {
         await writeExclusive(temporary, canonicalJSON(document));
+        let purgeRecord=null;
+        if(history_purge!=='none'){
+          purgeRecord={schema_version:1,state:'prepared',revision_hash:document.revision_hash,keep_objects:document.resources.map(item=>item.sha256).sort(),prepared_at:new Date().toISOString()};
+          await replaceJSON(join(pack,'history-purge.json'),purgeRecord);
+        }
         await noSymlinks(join(pack, 'workflow.json'));
         await rename(temporary, join(pack, 'workflow.json'));
         await syncDirectory(pack);
@@ -254,6 +341,42 @@ export class WorkflowStore {
         try { await unlink(temporary); } catch (cleanupError) { if (cleanupError.code !== 'ENOENT') throw new AggregateError([error, cleanupError], 'Save and temporary-file cleanup failed'); }
         throw error;
       }
+    });
+  }
+
+  async resumeHistoryPurge(id,expectedRevision,{beforePurge=async()=>{}}={}){
+    requireValue(typeof beforePurge==='function','WORKFLOW_PURGE_GUARD','History purge requires a callable guard');
+    return this.withWriter(async()=>{
+      const pack=packDirectory(this.root,id),journal=await optionalJSON(join(pack,'history-purge.json'));
+      requireValue(journal&&journal.revision_hash===expectedRevision,'WORKFLOW_PURGE_IDENTITY','No matching source-history purge transaction exists');
+      await beforePurge();
+      return finishHistoryPurge(pack,journal);
+    });
+  }
+
+  async readAuthoringCleanup(id,runId){
+    workflowId(runId);return optionalJSON(join(packDirectory(this.root,id),'authoring-cleanup',`${runId}.json`));
+  }
+
+  async beginAuthoringCleanup(id,record){
+    workflowId(record?.identity?.run_id);
+    return this.withWriter(async()=>{
+      const directory=join(packDirectory(this.root,id),'authoring-cleanup');await ensureDirectory(directory);
+      const path=join(directory,`${record.identity.run_id}.json`),existing=await optionalJSON(path);
+      if(existing){requireValue(canonicalJSON(existing.identity)===canonicalJSON(record.identity),'AUTHORING_CLEANUP_IDENTITY','Cleanup retry belongs to a different accepted deployment');return existing;}
+      const created={schema_version:1,status:'pending',identity:structuredClone(record.identity),targets:structuredClone(record.targets),steps:{library:false,workspace:false,job:false,run:false},created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+      await replaceJSON(path,created);return created;
+    });
+  }
+
+  async markAuthoringCleanup(id,runId,identity,step){
+    requireValue(['library','workspace','job','run'].includes(step),'AUTHORING_CLEANUP_STEP','Unknown authoring cleanup step');
+    return this.withWriter(async()=>{
+      const path=join(packDirectory(this.root,id),'authoring-cleanup',`${workflowId(runId)}.json`),current=await optionalJSON(path);
+      requireValue(current&&canonicalJSON(current.identity)===canonicalJSON(identity),'AUTHORING_CLEANUP_IDENTITY','Cleanup record identity changed');
+      current.steps[step]=true;current.updated_at=new Date().toISOString();
+      if(Object.values(current.steps).every(Boolean)){current.status='complete';current.completed_at=current.updated_at;}
+      await replaceJSON(path,current);return current;
     });
   }
 
@@ -286,6 +409,30 @@ export class WorkflowStore {
       await rename(packDirectory(this.root, id), trash);
       await syncDirectory(this.root); await syncDirectory(dirname(trash));
       return { id, deleted: true, retained_at: trash };
+    });
+  }
+
+  // Authoring job Packs contain private conversion inputs and therefore cannot
+  // use the recoverable library delete path.  Callers must pin both the exact
+  // revision and provenance class before this irreversible removal is allowed.
+  async purge(id, expected_revision, { expected_provenance_kind, allow_missing = false } = {}) {
+    requireValue(typeof allow_missing === 'boolean', 'WORKFLOW_PURGE_POLICY', 'Purge missing policy must be explicit');
+    return this.withWriter(async () => {
+      let previous;
+      try { previous = await this.snapshot(id); }
+      catch (error) {
+        if (allow_missing && error.code === 'ENOENT') return { id, purged: false, missing: true };
+        throw error;
+      }
+      requireValue(expected_revision === previous.revision_hash, 'REVISION_CONFLICT', 'Permanent purge requires the current revision hash');
+      if (expected_provenance_kind !== undefined) requireValue(previous.provenance?.kind === expected_provenance_kind,
+        'WORKFLOW_PURGE_PROVENANCE', 'Permanent purge provenance does not match the authorized artifact class');
+      const pack = packDirectory(this.root, id); await noSymlinks(pack);
+      const info = await lstat(pack);
+      requireValue(info.isDirectory() && !info.isSymbolicLink(), 'WORKFLOW_PURGE_TARGET', 'Permanent purge target must be one exact Pack directory');
+      await rm(insideRoot(this.root, pack), { recursive: true, maxRetries: 3, retryDelay: 100 });
+      await syncDirectory(this.root);
+      return { id, purged: true, revision_hash: previous.revision_hash };
     });
   }
 }

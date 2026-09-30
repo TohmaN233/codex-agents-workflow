@@ -9,10 +9,10 @@
   "providers": [
     {
       "id": "native-luna",
-      "name": "Native Luna / Max",
+      "name": "GPT-6 Luna / Max",
       "kind": "native_agent",
       "enabled": true,
-      "description": "适合需求明确、范围较小的实现、批量处理和常规验证；优先用于可独立验收的低复杂度子任务。",
+      "description": "Native Codex model connection for routine bounded implementation Roles.",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -21,19 +21,20 @@
       },
       "config": {
         "agent_type": "default",
-        "model": "gpt-5.6-luna",
+        "model": "gpt-6-luna",
         "reasoning_effort": "max",
-        "role": "implementer",
+        "role": "advisor",
         "fresh_context": true,
-        "requested_sandbox": "workspace-write"
+        "requested_sandbox": "workspace-write",
+        "inactivity_timeout_ms": 0
       }
     },
     {
-      "id": "native-terra",
-      "name": "Native Terra / High",
+      "id": "native-sol",
+      "name": "GPT-6.1 Sol / High",
       "kind": "native_agent",
       "enabled": true,
-      "description": "适合复杂实现、深入分析和需要跨文件判断的子任务；用于普通实现模型难以可靠处理的工作。",
+      "description": "Native Codex model connection for complex implementation, repository analysis, and independent review Roles.",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -42,32 +43,34 @@
       },
       "config": {
         "agent_type": "default",
-        "model": "gpt-5.6-terra",
+        "model": "gpt-6.1-sol",
         "reasoning_effort": "high",
-        "role": "implementer",
+        "role": "advisor",
         "fresh_context": true,
-        "requested_sandbox": "workspace-write"
+        "requested_sandbox": "workspace-write",
+        "inactivity_timeout_ms": 0
       }
     },
     {
-      "id": "native-reviewer",
-      "name": "Fresh native Astra / Medium reviewer",
+      "id": "native-astra",
+      "name": "GPT-6 Astra / Medium",
       "kind": "native_agent",
       "enabled": true,
-      "description": "适合高复杂度推理、架构风险分析与独立最终审阅；只读隔离是否生效需以运行证据为准。",
+      "description": "Native Codex model connection for planning, brainstorming, and focused problem-solving Roles.",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
-        "write": false,
+        "write": true,
         "background": false
       },
       "config": {
         "agent_type": "default",
         "model": "gpt-6-astra",
         "reasoning_effort": "medium",
-        "role": "reviewer",
+        "role": "advisor",
         "fresh_context": true,
-        "requested_sandbox": "read-only"
+        "requested_sandbox": "workspace-write",
+        "inactivity_timeout_ms": 0
       }
     },
     {
@@ -91,7 +94,7 @@
         "ui_profile": "agents_v2_2026_08",
         "startup_timeout_ms": 30000,
         "command_timeout_ms": 30000,
-        "task_timeout_ms": 600000,
+        "task_timeout_ms": 0,
         "max_result_chars": 131072,
         "single_active_run": true
       }
@@ -114,7 +117,7 @@
         "transport": "leader_acp_stdio",
         "environment_mode": "inherit",
         "startup_timeout_ms": 15000,
-        "task_timeout_ms": 600000,
+        "task_timeout_ms": 0,
         "max_task_duration_ms": 21600000,
         "max_result_chars": 131072,
         "single_active_run": true
@@ -122,10 +125,10 @@
     },
     {
       "id": "chatgpt-web-pro",
-      "name": "ChatGPT web packet reviewer",
+      "name": "ChatGPT web Pro packet reviewer",
       "kind": "web_review",
       "enabled": false,
-      "description": "Optional external advice for genuine planning dead ends or high-blast-radius uncertainty. The model and thinking level are selected only in the web session. Packet-only and advisory.",
+      "description": "Optional ZIP Packet reviewer via the chatgpt-agent packet.inspect route for genuine planning dead ends or high-blast-radius uncertainty. The model and thinking level are selected only in the ChatGPT web session. Advisory only.",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -133,10 +136,10 @@
         "background": false
       },
       "config": {
-        "skill": "chatgpt-review-agent",
-        "source_repository": "https://github.com/TohmaN233/chatgpt-review-agent-skill",
+        "skill": "chatgpt-agent",
+        "source_repository": "",
         "path": "packet",
-        "reviewer": "ChatGPT web reviewer",
+        "reviewer": "ChatGPT web Pro packet reviewer",
         "model_label": ""
       }
     },
@@ -164,27 +167,6 @@
         "system_prompt": "You are an advisory subagent. Return evidence-based analysis only. Do not claim file access, tool execution, or implementation.",
         "headers": {}
       }
-    },
-    {
-      "id": "native-generation-reviewer",
-      "name": "Skill2Workflow Sol / High reviewer",
-      "kind": "native_agent",
-      "enabled": true,
-      "description": "适合常规代码与工作流的独立一致性检查、发现遗漏和提出具体修复意见。",
-      "requires_user_approval": false,
-      "capabilities": {
-        "read": true,
-        "write": false,
-        "background": false
-      },
-      "config": {
-        "agent_type": "default",
-        "model": "gpt-5.6-sol",
-        "reasoning_effort": "high",
-        "role": "reviewer",
-        "fresh_context": true,
-        "requested_sandbox": "read-only"
-      }
     }
   ],
   "task_types": [
@@ -193,6 +175,7 @@
       "name": "Bounded code change",
       "enabled": true,
       "description": "Implement a complete, fixed-interface change in the smallest owned path set.",
+      "role_instructions": "Execute the supplied bounded implementation inside the settled design. Preserve stated interfaces, ownership boundaries and concurrent edits. Use available tools, complete the requested verification and report concrete evidence. Surface material ambiguity instead of widening scope or redesigning architecture.",
       "route": "delegate",
       "tags": [
         "implementation",
@@ -212,10 +195,11 @@
     },
     {
       "id": "judgment-heavy-change",
-      "name": "Judgment-heavy bounded change",
+      "name": "Heavy bounded change",
       "enabled": true,
       "description": "Implement a bounded change whose local details require deeper judgment or carry a wider blast radius.",
-      "route": "full",
+      "role_instructions": "Execute the supplied judgment-heavy but bounded implementation inside the settled architecture. Resolve local technical uncertainty, preserve interfaces and concurrent edits, document material decisions and run risk-proportionate verification. Return a concrete blocker if safe ownership or acceptance boundaries cannot be established.",
+      "route": "delegate",
       "tags": [
         "implementation",
         "high-risk",
@@ -225,26 +209,19 @@
         {
           "id": "implementation",
           "role": "implementer",
-          "provider_id": "native-terra",
+          "provider_id": "native-sol",
           "access": "bounded_write",
           "requires_user_approval": false,
-          "template": "ROLE\nPerform a judgment-heavy but still bounded implementation task. Resolve local technical uncertainty inside the settled architecture; do not change product direction without returning a blocker.\n\nTASK TYPE\n{{task_type_id}}\n\nOBJECTIVE\n{{task}}\n\nEVIDENCE AND CONTEXT\n{{context}}\n\nFIXED CONSTRAINTS, OWNERSHIP, AND BLAST-RADIUS BOUNDARY\n{{constraints}}\nPreserve concurrent edits and document every material judgment call. Stop if safe ownership or an acceptance boundary cannot be established.\n\nVERIFICATION\n{{verification}}\nUse risk-proportionate checks and inspect the complete change set.\n\nRETURN\nSTATUS: complete | partial | blocked\nCHANGES: file-by-file summary\nVERIFIED: exact commands and evidence\nJUDGMENT CALLS: choices made and why\nRESIDUAL RISK: most important remaining risk\nGAPS: unresolved items or none"
-        },
-        {
-          "id": "review",
-          "role": "reviewer",
-          "provider_id": "native-reviewer",
-          "access": "read_only",
-          "requires_user_approval": false,
-          "template": "ROLE\nIndependently review the difficult implementation. Remain read-only and do not fix your own findings.\n\nSTATED GOAL\n{{task}}\n\nIMPLEMENTATION RESULT AND CONTEXT\n{{context}}\n\nCONSTRAINTS AND ACCEPTANCE BOUNDARY\n{{constraints}}\n\nPRIMARY VERIFICATION EVIDENCE\n{{verification}}\n\nRETURN\nVERDICT: ship | fix-first | rethink\nBLOCKING FINDINGS: precise locations and required fixes, or none\nNON-BLOCKING RISKS: concise list, or none\nMISSING EVIDENCE: checks still required, or none\nRESIDUAL RISK: most important remaining risk, or none"
+          "template": "ROLE\nPerform a judgment-heavy but still bounded implementation task as the sole worker. Resolve local technical uncertainty inside the settled architecture; do not change product direction without returning a blocker. Independent review is a separate Role, never an automatic next stage.\n\nTASK TYPE\n{{task_type_id}}\n\nOBJECTIVE\n{{task}}\n\nEVIDENCE AND CONTEXT\n{{context}}\n\nFIXED CONSTRAINTS, OWNERSHIP, AND BLAST-RADIUS BOUNDARY\n{{constraints}}\nPreserve concurrent edits and document every material judgment call. Stop if safe ownership or an acceptance boundary cannot be established.\n\nVERIFICATION\n{{verification}}\nUse risk-proportionate checks and inspect the complete change set.\n\nRETURN\nSTATUS: complete | partial | blocked\nCHANGES: file-by-file summary\nVERIFIED: exact commands and evidence\nJUDGMENT CALLS: choices made and why\nRESIDUAL RISK: most important remaining risk\nGAPS: unresolved items or none"
         }
       ]
     },
     {
       "id": "cross-review",
       "name": "Cross-review",
-      "enabled": true,
+      "enabled": false,
       "description": "Fresh findings-first review of an accumulated change or plan. The reviewer remains read-only and never fixes its own findings.",
+      "role_instructions": "Act as a fresh independent reviewer. Remain read-only and do not implement fixes. Judge correctness, completeness, regressions, interface preservation, test evidence and material risk. Report precise evidence-backed findings and one clear verdict.",
       "route": "audit",
       "tags": [
         "review",
@@ -255,10 +232,29 @@
         {
           "id": "review",
           "role": "reviewer",
-          "provider_id": "native-reviewer",
+          "provider_id": "native-sol",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nAct as a fresh final reviewer. Remain strictly read-only. Do not edit files, implement fixes, or broaden scope.\n\nSTATED GOAL\n{{task}}\n\nACCUMULATED CHANGE SET OR REVIEW PACKET\n{{context}}\n\nINTERFACES AND CONSTRAINTS\n{{constraints}}\n\nPRIMARY VERIFICATION EVIDENCE\n{{verification}}\n\nREVIEW\nJudge correctness, completeness, regressions, scope discipline, interface preservation, test adequacy, and material risk. Findings must cite precise evidence.\n\nRETURN\nVERDICT: ship | fix-first | rethink\nREASON: decisive evidence-based reason\nBLOCKING FINDINGS: precise locations and required fixes, or none\nNON-BLOCKING RISKS: concise list, or none\nSMALLEST NEXT CHECK: one discriminating validation step\nRESIDUAL RISK: most important remaining risk, or none"
+        }
+      ]
+    },
+    {
+      "id": "review-and-repair",
+      "name": "Review and repair",
+      "enabled": true,
+      "description": "Inspect a bounded change, repair only evidenced defects, and verify the corrected result in one write-capable responsibility.",
+      "role_instructions": "Review the supplied bounded change and repair only concrete defects found during that review. Preserve valid work, interfaces, ownership boundaries and concurrent edits. Verify every correction and return the remaining findings and one clear verdict. Do not rewrite successful work or widen scope.",
+      "route": "audit",
+      "tags": ["review", "repair", "bounded-write"],
+      "stages": [
+        {
+          "id": "review",
+          "role": "reviewer",
+          "provider_id": "native-sol",
+          "access": "bounded_write",
+          "requires_user_approval": false,
+          "template": "ROLE\nReview the supplied bounded change and repair only evidenced defects. Preserve valid work and verify each correction.\n\nTASK\n{{task}}\n\nCONTEXT\n{{context}}\n\nCONSTRAINTS\n{{constraints}}\n\nVERIFICATION\n{{verification}}"
         }
       ]
     },
@@ -267,6 +263,7 @@
       "name": "Bounded brainstorm",
       "enabled": true,
       "description": "Generate alternatives and discriminating checks without taking architecture authority away from the primary agent.",
+      "role_instructions": "Act as a read-only idea partner. Generate materially different options, identify their failure modes and unknowns, and propose the smallest discriminating check. Leave architecture choice and final acceptance with the primary agent, and never present speculation as observed evidence.",
       "route": "delegate",
       "tags": [
         "advice",
@@ -277,7 +274,7 @@
         {
           "id": "implementation",
           "role": "implementer",
-          "provider_id": "native-terra",
+          "provider_id": "native-astra",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nAct as a read-only idea partner. Explore alternatives, but leave architecture choice and acceptance with the primary agent.\n\nQUESTION\n{{task}}\n\nKNOWN CONTEXT\n{{context}}\n\nFIXED DECISIONS AND EXCLUDED SCOPE\n{{constraints}}\n\nWHAT WOULD COUNT AS PROGRESS\n{{verification}}\n\nRETURN\n1. Three materially different candidate approaches\n2. Strongest argument against each\n3. Unknowns that actually change the decision\n4. Smallest discriminating experiment or source check\n5. Recommended direction with calibrated confidence\nDo not present speculation as observed evidence."
@@ -289,6 +286,7 @@
       "name": "Repository analysis",
       "enabled": true,
       "description": "Inspect a repository, trace relevant code paths, and return evidence without modifying files.",
+      "role_instructions": "Inspect the repository as a read-only analysis worker. Trace relevant symbols, call paths and interfaces with precise evidence. Do not edit files or claim unverified behavior. Separate observed facts from remaining unknowns and identify the smallest useful follow-up check.",
       "route": "delegate",
       "tags": [
         "analysis",
@@ -300,10 +298,33 @@
         {
           "id": "implementation",
           "role": "implementer",
-          "provider_id": "native-terra",
+          "provider_id": "native-sol",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nInspect the repository as a read-only analysis worker. Trace the relevant code and interfaces, but do not edit files or claim implementation.\n\nQUESTION OR INVESTIGATION\n{{task}}\n\nKNOWN CONTEXT\n{{context}}\n\nSCOPE AND CONSTRAINTS\n{{constraints}}\n\nREQUESTED CHECKS\n{{verification}}\n\nRETURN\nFINDINGS: evidence-backed conclusions with precise file or symbol locations\nCALL PATHS: relevant control and data flow\nUNKNOWN OR UNVERIFIED: facts that still need proof\nSMALLEST NEXT CHECK: one discriminating follow-up\nDo not present inference as observed fact."
+        }
+      ]
+    },
+    {
+      "id": "hard-problem-solver",
+      "name": "Hard problem solver",
+      "enabled": true,
+      "description": "Investigate an evidenced repeated blocker with a fresh isolated agent; return a discriminating solution or proof of obstruction without expanding the task.",
+      "role_instructions": "Investigate the supplied evidenced blocker in a fresh bounded context. Find the underlying obstruction and the smallest sound route through it without restarting successful work or expanding scope. Make authorized focused changes only inside the stated ownership boundary and report concrete verification.",
+      "route": "delegate",
+      "tags": [
+        "solver",
+        "escalation",
+        "repeated-blocker"
+      ],
+      "stages": [
+        {
+          "id": "implementation",
+          "role": "implementer",
+          "provider_id": "native-astra",
+          "access": "bounded_write",
+          "requires_user_approval": false,
+          "template": "ROLE\nAct as a focused solver only after repeated, concrete blockers have been observed. Find the underlying obstruction and the smallest sound route through it. Do not enlarge the product scope or restart already successful work.\n\nBLOCKED OBJECTIVE\n{{task}}\n\nATTEMPTS AND OBSERVED EVIDENCE\n{{context}}\n\nOWNED PATHS AND FIXED CONSTRAINTS\n{{constraints}}\nPreserve concurrent edits. Write only within explicitly owned paths when a focused fix is part of this assignment; otherwise remain analytical.\n\nDISCRIMINATING CHECK\n{{verification}}\n\nRETURN\nROOT CAUSE: evidence and uncertainty\nSOLUTION: smallest justified change or exact next action\nVERIFIED: checks and actual results\nREMAINING BLOCKER: precise unsolved condition, or none"
         }
       ]
     },
@@ -331,7 +352,7 @@
         {
           "id": "review",
           "role": "reviewer",
-          "provider_id": "native-reviewer",
+          "provider_id": "native-sol",
           "access": "read_only",
           "requires_user_approval": false,
           "template": "ROLE\nIndependently review the completed implementation. Remain read-only and do not fix your own findings.\n\nSTATED GOAL\n{{task}}\n\nIMPLEMENTATION RESULT AND CONTEXT\n{{context}}\n\nCONSTRAINTS AND ACCEPTANCE BOUNDARY\n{{constraints}}\n\nPRIMARY VERIFICATION EVIDENCE\n{{verification}}\n\nRETURN\nVERDICT: ship | fix-first | rethink\nBLOCKING FINDINGS: precise locations and required fixes, or none\nNON-BLOCKING RISKS: concise list, or none\nMISSING EVIDENCE: checks still required, or none\nRESIDUAL RISK: most important remaining risk, or none"
@@ -340,13 +361,15 @@
     },
     {
       "id": "hard-path-web-advice",
-      "name": "Hard-path external review",
+      "name": "GPT reviewer",
       "enabled": false,
-      "description": "Packet-only second opinion after a real planning dead end, contradictory evidence, or a high-blast-radius low-confidence decision.",
+      "description": "Review one supplied packet with the configured ChatGPT Provider and return evidence-backed findings without ambient repository access.",
+      "role_instructions": "Act as an independent GPT reviewer over the supplied packet. Remain read-only, distinguish evidence from inference, report precise findings and return one clear verdict. Do not claim ambient repository access or implement fixes.",
       "route": "audit",
       "tags": [
         "external",
-        "hard-path",
+        "gpt",
+        "review",
         "read-only"
       ],
       "stages": [
@@ -356,7 +379,7 @@
           "provider_id": "chatgpt-web-pro",
           "access": "read_only",
           "requires_user_approval": false,
-          "template": "ROLE\nAct as an external advisor. Review only the supplied packet. You have no ambient repository access and must not claim implementation.\n\nDECISION OR BLOCKER\n{{task}}\n\nPACKET CONTENT AND OBSERVED EVIDENCE\n{{context}}\n\nFIXED CONSTRAINTS\n{{constraints}}\n\nPRIOR ATTEMPTS OR REQUIRED DECISION TEST\n{{verification}}\n\nRETURN\n1. Blocking assumptions or contradictions\n2. Two plausible next routes and their failure modes\n3. Exact evidence missing from the packet\n4. Smallest next check that most changes the decision\n5. One-sentence recommendation with uncertainty\nDo not request broad repository access and do not turn the consultation into implementation."
+          "template": "ROLE\nAct as an independent GPT reviewer. Review only the supplied packet. You have no ambient repository access; remain read-only and do not implement fixes.\n\nREVIEW OBJECTIVE\n{{task}}\n\nPACKET CONTENT AND OBSERVED EVIDENCE\n{{context}}\n\nFIXED CONSTRAINTS\n{{constraints}}\n\nVERIFICATION EVIDENCE\n{{verification}}\n\nRETURN\nVERDICT: ship | fix-first | rethink\nREASON: decisive evidence-based reason\nBLOCKING FINDINGS: precise packet locations and required corrections, or none\nMISSING EVIDENCE: exact evidence absent from the packet, or none\nSMALLEST NEXT CHECK: one discriminating validation step\nRESIDUAL RISK: most important remaining risk, or none"
         }
       ]
     }

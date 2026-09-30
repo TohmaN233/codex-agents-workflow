@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header>
+  <header class="control-header">
     <div>
       <p class="eyebrow" data-i18n-zh="本地控制平面" data-i18n-en="LOCAL CONTROL PLANE">LOCAL CONTROL PLANE</p>
       <h1 id="page-title" data-i18n-zh="Codex Agents Workflow" data-i18n-en="Codex Agents Workflow">Codex Agents Workflow</h1>
@@ -27,7 +27,7 @@
     </div>
   </header>
 
-  <main>
+  <main id="main-content">
     <section id="config-storage" class="storage-banner" aria-live="polite">
       <div>
         <p class="eyebrow" data-i18n-zh="配置存储" data-i18n-en="CONFIGURATION STORAGE">CONFIGURATION STORAGE</p>
@@ -67,9 +67,15 @@
           <p class="eyebrow" data-i18n-zh="模型与传输适配器" data-i18n-en="MODEL AND TRANSPORT ADAPTERS">MODEL AND TRANSPORT ADAPTERS</p>
           <h2 id="providers-heading" data-i18n-zh="Provider 配置" data-i18n-en="Providers">Providers</h2>
         </div>
-        <button id="add-provider" class="secondary" data-i18n-zh="添加 Provider" data-i18n-en="Add provider">Add provider</button>
+        <div class="actions">
+          <button id="refresh-models" class="secondary" data-i18n-zh="刷新模型列表" data-i18n-en="Refresh models">Refresh models</button>
+          <button id="add-provider" class="secondary" data-i18n-zh="添加原生 Provider" data-i18n-en="Add native provider">Add native provider</button>
+          <button id="add-api-provider" class="secondary" data-i18n-zh="添加 API Provider" data-i18n-en="Add API provider">Add API provider</button>
+        </div>
       </div>
-      <p class="hint" data-i18n-zh="原生 Provider 将模型和推理强度作为普通控件展示。连接器和网页审阅 Provider 从自身客户端继承模型设置；本地推理值保持为空，也不会显示不受支持的选项。" data-i18n-en="Native Providers expose Model and Reasoning effort as normal controls. Connector and web-review Providers inherit model settings from their own client; their local reasoning value remains empty and unsupported knobs are not shown.">Native Providers expose Model and Reasoning effort as normal controls. Connector and web-review Providers inherit model settings from their own client; their local reasoning value remains empty and unsupported knobs are not shown.</p>
+      <p id="model-catalog-status" class="hint" aria-live="polite"></p>
+      <p id="provider-secret-status" class="hint" aria-live="polite"></p>
+      <p class="hint" data-i18n-zh="原生 Provider 是模型连接：同一模型与推理强度只需一个。规划、实现、解题和审阅行为在工作流工作区的可编辑 Role 与节点中定义。API Provider 可在卡片中输入密钥；密钥只保留在当前控制平面进程，不写入配置文件。" data-i18n-en="A native Provider is a model connection: each model and reasoning-effort pair needs only one. Planning, implementation, problem-solving, and review behavior is defined by editable Roles and nodes in the Workflow workspace. API Providers accept a key in their card; the key stays only in the current control-plane process and is never written to configuration.">A native Provider is a model connection: each model and reasoning-effort pair needs only one. Planning, implementation, problem-solving, and review behavior is defined by editable Roles and nodes in the Workflow workspace. API Providers accept a key in their card; the key stays only in the current control-plane process and is never written to configuration.</p>
       <div id="providers" class="stack"></div>
     </section>
 

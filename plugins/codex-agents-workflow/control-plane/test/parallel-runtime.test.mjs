@@ -9,6 +9,7 @@ import { createDraft } from '../lib/workflow-schema.mjs';
 import { ParallelWorktreeManager } from '../lib/parallel/worktree-manager.mjs';
 import { createCodexToolBroker } from '../lib/execution/codex-tool-broker.mjs';
 import { digest } from '../lib/workflow-revisions.mjs';
+import { hostResultProposalEnvelope } from '../lib/execution/host-main-automation.mjs';
 
 const worker = (id, paths = []) => ({ id, type: 'agent', role: 'implementer', executor: { kind: 'main' }, access: paths.length ? 'bounded_write' : 'read_only',
   path_scope: paths, approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: {}, prompt_template: '{{task}}' });
@@ -29,7 +30,7 @@ async function fixture(t, workflow = definition()) {
   const options = { workflowStore: store, runRoot: join(root, 'runs'), parallelManager: manager, strictCapability: () => true }; // Mechanical runtime tests use the actual bounded broker below.
   const runtime = await new WorkflowRuntime(options).initialize(); const run = await runtime.start({ workflow_id: workflow.id, workspace, access: 'bounded_write', allowed_paths: ['src'], main_actor: 'root' });
   t.after(async () => { assert(resolve(root).startsWith(resolve(tmpdir()))); await rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 }); });
-  const claim = async nodeId => { const lease = await runtime.claimNode(run.run_id, { node_id: nodeId, owner: 'root', request_id: 'claim-' + nodeId, control_token: run.control_token }); return { ...lease, control_token: run.control_token }; };
+  const claim = async nodeId => { const lease = await runtime.claimHostMain(run.run_id, { node_id: nodeId, owner: 'root', request_id: 'claim-' + nodeId, control_token: run.control_token }); return { ...lease, control_token: run.control_token }; };
   const execute = async (nodeId, path, text) => {
     const args = await claim(nodeId); await manager.ensureNode(runtime, run.run_id, args); const envelope = await runtime.execution(run.run_id, args);
     if (path) {
@@ -38,7 +39,14 @@ async function fixture(t, workflow = definition()) {
         onOperation: metadata => runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'tool_operation', metadata } }) });
       const before = await readFile(join(envelope.workspace, path)); await broker.call('write_workspace', { path, text, expected_sha256: digest(before) }, 'write-' + nodeId); broker.revoke(); await broker.quiesce();
     }
-    await runtime.completeNode(run.run_id, { ...args, completion: { status: 'succeeded', summary: 'Actual broker execution', structured_output: { verified: true }, artifacts: [], evidence: [{ broker: true }], changed_paths: path ? [path] : [], outside_paths: [], ...(nodeId === 'final' ? { acceptance: { accepted: true } } : {}) } });
+    const request_id=`dispatch-${args.attempt_id}`;
+    await runtime.recordHostMainDispatchIntent(run.run_id,{...args,request_id,envelope_hash:'f'.repeat(64)});
+    await runtime.recordHostMainDispatchReceipt(run.run_id,{...args,request_id,receipt:{invocation_id:`host-main-${args.attempt_id}`,executor:'codex-app-server-host-main',executable_sha256:'a'.repeat(64),model:'fixture-main',effort:'medium',main_actor:'root',session_id:`logical-main-${run.run_id}`,call_chain_id:`workflow-run-${run.run_id}`}});
+    const definition=(await runtime.runs.read(run.run_id)).pins.root.workflow.nodes.find(node=>node.id===nodeId);
+    const proposal=hostResultProposalEnvelope(definition,{output:{verified:true},summary:'Actual broker execution',artifacts:[],evidence:[{broker:true}],changed_paths:path?[path]:[],outside_paths:[]},{finalAcceptance:nodeId==='final'});
+    const saved=await runtime.runs.saveExecutorResult(run.run_id,args.attempt_id,proposal);
+    await runtime.recordExecutorEvent(run.run_id,{...args,event:{kind:'result_proposed',metadata:{...saved,final_acceptance_required:nodeId==='final'}}});
+    await runtime.completeHostMainResult(run.run_id,args,{...(nodeId==='final'?{accepted:true}:{})});
     return envelope;
   };
   return { root, workspace, manager, store, runtime, options, run, claim, execute, initialIndex, head };

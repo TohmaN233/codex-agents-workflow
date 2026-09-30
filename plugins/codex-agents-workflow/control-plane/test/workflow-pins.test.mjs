@@ -50,3 +50,11 @@ test('a cached child is rechecked when reached under a different ancestor revisi
   const root = await f.store.create({ ...createDraft('root', 'Root'), nodes: [call('first-visit', shared), call('second-visit', newer)] });
   await assert.rejects(resolveWorkflowPins(f.store, root), { code: 'SUBWORKFLOW_CYCLE' });
 });
+
+test('legacy Role metadata is inert and never enters a Workflow Run closure',async t=>{
+  const f=await fixture(t);
+  const root=await f.store.create({...createDraft('role-parent','Role parent'),nodes:[{id:'worker',type:'agent',role_ref:{id:'builtin-role-bounded-code-change'},executor:{kind:'provider',provider_id:'native-luna'}}]});
+  const closure=await resolveWorkflowPins(f.store,root);
+  assert.equal(Object.hasOwn(closure,'roles'),false);
+  assert.equal(Object.hasOwn(closure.context,'roles'),false);
+});

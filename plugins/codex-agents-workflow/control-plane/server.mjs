@@ -7,10 +7,14 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
 import { WorkflowService } from './lib/workflow-service.mjs';
+import {waitForOwnedWorkflow} from './lib/execution/owned-workflow-wait.mjs';
 import { closeStrictManagers } from './lib/execution/strict-session-manager.mjs';
 import { closeManagedNativeManagers } from './lib/execution/managed-native-manager.mjs';
-import { plan1HostToolRegistry } from './lib/execution/plan1-host-tools.mjs';
-import { workflowToolDefinitions, WORKFLOW_TOOL_OPERATIONS } from './lib/workflow-tools.mjs';
+import { closeHostMainManagers } from './lib/execution/host-main-manager.mjs';
+import { fenceAllAttemptAdmissions, closeAttemptAdmissions } from './lib/execution/attempt-admission.mjs';
+import { workflowToolDefinitions, WORKFLOW_TOOL_OPERATIONS, HOST_ONLY_WORKFLOW_OPERATIONS } from './lib/workflow-tools.mjs';
+import { validateData } from './lib/workflow-data-schema.mjs';
+import { localCodexCatalog } from './lib/execution/local-codex-catalog.mjs';
 
 import {
   appendAuditEvent,
@@ -118,12 +122,12 @@ function bearerToken(req) {
   return header.startsWith('Bearer ') ? header.slice(7) : '';
 }
 
-async function readJsonBody(req) {
+async function readJsonBody(req, limit = MAX_HTTP_BODY) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_HTTP_BODY) throw new Error(`request body exceeds ${MAX_HTTP_BODY} bytes`);
+    if (size > limit) throw new Error(`request body exceeds ${limit} bytes`);
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString('utf8');
@@ -232,8 +236,19 @@ export async function startConsole({
       }
       if (url.pathname.startsWith('/api/workflow/') && req.method === 'POST') {
         const operation = url.pathname.slice('/api/workflow/'.length);
-        const service = new WorkflowService({ configPath, defaultConfigPath, env, capabilities: { hostToolRegistry: plan1HostToolRegistry() } });
-        jsonResponse(res, 200, await service.call(operation, await readJsonBody(req), { human: true }));
+        const service = new WorkflowService({ configPath, defaultConfigPath, env });
+        const body = await readJsonBody(req, operation === 'install_workflow_package' ? 72 * 1024 * 1024 : MAX_HTTP_BODY);
+        if (operation === 'current_main_pending') {
+          jsonResponse(res, 200, await service.call('main_status', {run_id:String(body.run_id || '')}, {human:true}));
+        } else if (operation === 'current_main_accept') {
+          jsonResponse(res, 200, await service.call('accept_main', {run_id:String(body.run_id || ''),control_token:String(body.control_token || ''),accepted:body.accepted}, {human:true}));
+        } else if (operation === 'current_main_approve') {
+          const run_id=String(body.run_id || ''),control_token=String(body.control_token || ''),owner=String(body.owner || 'human-console');
+          await service.call('approve',{run_id,control_token,approval_id:String(body.approval_id || ''),decision:body.decision},{human:true});
+          jsonResponse(res, 200, await service.call('continue_main',{run_id,control_token,owner},{human:true}));
+        } else if (operation === 'current_main_cancel') {
+          jsonResponse(res, 200, await service.call('cancel',{run_id:String(body.run_id || ''),control_token:String(body.control_token || '')},{human:true}));
+        } else jsonResponse(res, 200, await service.call(operation, body, { human: true }));
         return;
       }
       if (url.pathname === '/api/config' && req.method === 'GET') {
@@ -252,6 +267,40 @@ export async function startConsole({
           outcome: 'ok',
         }, { effectCommitted: true });
         jsonResponse(res, 200, saved);
+        return;
+      }
+      if (url.pathname === '/api/models' && req.method === 'GET') {
+        const config = await loadConfig({ configPath, defaultConfigPath });
+        const catalog = await localCodexCatalog({ env, extra: [config.strict_executor?.codex_binary].filter(Boolean) });
+        jsonResponse(res, 200, { models: catalog.models, source: catalog.source });
+        return;
+      }
+      if (url.pathname === '/api/provider-secrets' && req.method === 'GET') {
+        const config = await loadConfig({ configPath, defaultConfigPath });
+        const providers = config.providers.filter(provider => provider.kind === 'openai_compatible').map(provider => ({
+          provider_id: provider.id,
+          api_key_env: provider.config.api_key_env,
+          required: provider.config.auth_type !== 'none',
+          ready: provider.config.auth_type === 'none' || Boolean(env[provider.config.api_key_env]),
+        }));
+        jsonResponse(res, 200, { providers });
+        return;
+      }
+      if (url.pathname === '/api/provider-secret' && req.method === 'PUT') {
+        const body = await readJsonBody(req);
+        const config = await loadConfig({ configPath, defaultConfigPath });
+        const provider = config.providers.find(item => item.id === body.provider_id);
+        if (!provider || provider.kind !== 'openai_compatible') throw Object.assign(new Error('Select a saved OpenAI-compatible Provider'), { code: 'PROVIDER_SECRET_TARGET' });
+        if (provider.config.auth_type === 'none') throw Object.assign(new Error('This Provider does not use an API key'), { code: 'PROVIDER_SECRET_NOT_REQUIRED' });
+        if (body.clear === true) delete env[provider.config.api_key_env];
+        else {
+          if (typeof body.api_key !== 'string' || !body.api_key || body.api_key.length > 4096 || /[\r\n\0]/.test(body.api_key)) {
+            throw Object.assign(new Error('API key must contain 1–4096 characters without line breaks'), { code: 'PROVIDER_SECRET_VALUE' });
+          }
+          env[provider.config.api_key_env] = body.api_key;
+        }
+        await appendAuditEvent(configPath, { event: 'provider-secret-session-update', outcome: 'ok', provider_id: provider.id, cleared: body.clear === true }, { effectCommitted: true });
+        jsonResponse(res, 200, { provider_id: provider.id, api_key_env: provider.config.api_key_env, ready: body.clear !== true });
         return;
       }
       if (url.pathname === '/api/defaults' && req.method === 'GET') {
@@ -414,6 +463,8 @@ export async function handleRpc(request, {
   defaultConfigPath = DEFAULT_CONFIG_PATH,
   env = process.env,
   fetchImpl = globalThis.fetch,
+  serviceCapabilities = {},
+  signal,
 } = {}) {
   const method = String(request?.method || '');
   const id = request?.id;
@@ -449,14 +500,35 @@ export async function handleRpc(request, {
   if (method === 'tools/call') {
     const params = request.params && typeof request.params === 'object' ? request.params : {};
     const name = String(params.name || '');
-    const args = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
+    const suppliedArgs = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
+    const args=suppliedArgs;
     try {
+      if (name.startsWith('workflow_') && HOST_ONLY_WORKFLOW_OPERATIONS.has(name.slice('workflow_'.length))) {
+        throw Object.assign(new Error('Host-only Workflow operations are unavailable through the model MCP boundary'), { code: 'HOST_OPERATION_REQUIRED' });
+      }
       if (name.startsWith('workflow_') && WORKFLOW_TOOL_OPERATIONS.has(name.slice('workflow_'.length))) {
-        if (['workflow_create', 'workflow_save'].includes(name) && args.workflow?.status !== 'draft') {
-          throw Object.assign(new Error('Model tool edits must remain Draft; publish the exact reviewed revision in the human console'), { code: 'HUMAN_PUBLICATION_REQUIRED' });
+        const operation = name.slice('workflow_'.length);
+        const definition = workflowToolDefinitions().find(tool => tool.name === name);
+        validateData(suppliedArgs, definition.inputSchema);
+        const modelThreadId=typeof params._meta?.threadId==='string'?params._meta.threadId:'';
+        const needsModelThread=name==='workflow_start'||['workflow_native_next','workflow_native_spawned_batch','workflow_native_followed_up'].includes(name);
+        if(needsModelThread&& !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(modelThreadId))
+          throw Object.assign(new Error('Workflow execution requires authenticated Codex thread metadata'),{code:'MODEL_THREAD_ID'});
+        const workflowArgs=name==='workflow_start'?{...suppliedArgs,main_actor:'codex',native_parent_thread_id:modelThreadId}:suppliedArgs;
+        const service = new WorkflowService({ configPath, defaultConfigPath, env, fetchImpl, capabilities: serviceCapabilities });
+        if (name === 'workflow_start') {
+          const pack = await service.call('read', { workflow_id: workflowArgs.workflow_id });
+          const configuration = await service.config();
+          const nativeIds = new Set(configuration.providers.filter(provider => provider.enabled && provider.kind === 'native_agent').map(provider => provider.id));
+          const hasNativeNodes = pack.workflow.skill_policy?.mode === 'cooperative' && pack.workflow.nodes.some(node =>
+            node.executor?.kind === 'provider' && nativeIds.has(node.executor.provider_id) && node.skill_policy?.mode !== 'strict');
+          if (pack.provenance?.kind !== 'bundled_authoring_workflow' && (hasNativeNodes || pack.workflow.nodes.some(node => node.executor?.kind === 'main'))) {
+            const started = await service.call('run_main', { ...workflowArgs, revision_hash: pack.revision_hash, return_after_start: true, detached_host: true });
+            const result=await (serviceCapabilities.waitForOwnedWorkflow??waitForOwnedWorkflow)(service,started,{signal});
+            return { jsonrpc: '2.0', id, result: textToolResult(service.modelResult(result)) };
+          }
         }
-        const service = new WorkflowService({ configPath, defaultConfigPath, env, fetchImpl, capabilities: { hostToolRegistry: plan1HostToolRegistry() } });
-        const result = await service.call(name.slice('workflow_'.length), args);
+        const result = await service.call(operation, workflowArgs, { model: true, modelThreadId, signal });
         return { jsonrpc: '2.0', id, result: textToolResult(result) };
       }
       if (name === 'codex_agents_workflow_status') {
@@ -626,6 +698,7 @@ export function createStdioRequestScheduler({
 async function main() {
   const configPath = resolveConfigPath();
   const reader = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const requestAborts=new Map();
   const failures = [];
   const pendingWrites = new Set();
   let outputFailure = null;
@@ -645,19 +718,29 @@ async function main() {
   let scheduler;
   const requestShutdown = () => {
     if (shutdownPromise) return shutdownPromise;
+    fenceAllAttemptAdmissions();
     reader.close();
+    for(const abort of requestAborts.values())abort.abort();
     shutdownPromise = (async () => {
       await scheduler.shutdown();
       await Promise.allSettled([...pendingWrites]);
       await stopConsole();
-      await Promise.all([closeStrictManagers(), closeManagedNativeManagers()]);
+      const stopped = await Promise.allSettled([closeStrictManagers(), closeManagedNativeManagers(), closeHostMainManagers()]);
+      const admission = await Promise.allSettled([closeAttemptAdmissions()]);
+      const cleanupErrors = [...stopped, ...admission].filter(item => item.status === 'rejected').map(item => item.reason);
+      if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Workflow shutdown retained unconfirmed execution ownership');
       if (outputFailure) throw outputFailure;
       if (failures.length) throw failures[0];
     })();
     return shutdownPromise;
   };
   scheduler = createStdioRequestScheduler({
-    handle: (request) => handleRpc(request, { configPath, defaultConfigPath: DEFAULT_CONFIG_PATH }),
+    handle: async(request) => {
+      const abort=new AbortController();requestAborts.set(request.id,abort);
+      if(shutdownPromise)abort.abort();
+      try{return await handleRpc(request,{configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,signal:abort.signal});}
+      finally{if(requestAborts.get(request.id)===abort)requestAborts.delete(request.id);}
+    },
     write: writeResponse,
     onUnexpectedError: (error) => {
       process.stderr.write(`codex-agents-workflow request failed: ${error.stack || error.message}\n`);
@@ -676,6 +759,10 @@ async function main() {
         process.stderr.write(`codex-agents-workflow invalid JSON-RPC input: ${error.message}\n`);
         continue;
       }
+      if(request.method==='notifications/cancelled'){
+        requestAborts.get(request.params?.requestId)?.abort();
+        continue;
+      }
       scheduler.submit(request);
     }
     await requestShutdown();
@@ -690,8 +777,13 @@ if (isMain) {
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) return; shuttingDown = true;
+    fenceAllAttemptAdmissions();
     const cleanup = activeStdioLifecycle?.requestShutdown?.()
-      || Promise.allSettled([stopConsole(), closeStrictManagers(), closeManagedNativeManagers()]);
+      || (async () => {
+        const owners = await Promise.allSettled([stopConsole(), closeStrictManagers(), closeManagedNativeManagers(), closeHostMainManagers()]);
+        const admission = await Promise.allSettled([closeAttemptAdmissions()]);
+        return [...owners, ...admission];
+      })();
     cleanup.then((result) => {
       const failures = Array.isArray(result)
         ? result.filter(item => item.status === 'rejected')

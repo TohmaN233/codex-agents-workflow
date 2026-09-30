@@ -57,3 +57,41 @@ test('plugin identity and changing active-process protections fail visibly befor
   await writeFile(join(f.pluginRoot,'0.8.0+old/.codex-plugin/plugin.json'),JSON.stringify({name:'another-plugin',version:'0.8.0+old'}));
   await assert.rejects(pluginCachePlan(f.home,{inventory:f.inventory}),{code:'CACHE_PLUGIN_ID'});
 });
+test('cleanup handles orphaned plugin-cache revisions without manifests while retaining active revisions',async t=>{
+  const f=await fixture(t);
+  const empty=join(f.pluginRoot,'0.8.0+empty');
+  const partial=join(f.pluginRoot,'0.8.0+partial');
+  await mkdir(empty);
+  await mkdir(partial);
+  await writeFile(join(partial,'partial.txt'),'interrupted install');
+  await rm(join(f.pluginRoot,'0.8.0+active/.codex-plugin/plugin.json'));
+  const preview=await cleanupCaches({...f,preview:true});
+  assert.equal(preview.plugin_versions,3);
+  assert.deepEqual(preview.incomplete_plugin_versions,['0.8.0+empty','0.8.0+partial']);
+  const result=await cleanupCaches(f);
+  assert.equal(result.plugin_versions,preview.plugin_versions);
+  await assert.rejects(lstat(empty),{code:'ENOENT'});
+  await assert.rejects(lstat(partial),{code:'ENOENT'});
+  await lstat(join(f.pluginRoot,'0.8.0+active'));
+  await lstat(join(f.pluginRoot,'0.8.0+current'));
+});
+test('busy plugin cache is reported as deferred after other history is cleaned',async t=>{
+  const f=await fixture(t);
+  const old=await f.store.create(createDraft('sample','old'));
+  await f.store.save('sample',{...old.workflow,name:'current'},{expected_revision:old.revision_hash});
+  const busy=join(f.pluginRoot,'0.8.0+old');
+  const result=await cleanupCaches({...f,removePluginDirectory:async(path,options)=>{
+    if(path===busy)throw Object.assign(new Error('directory in use'),{code:'EBUSY'});
+    return rm(path,options);
+  }});
+  assert.equal(result.workflow_revisions,1);
+  assert.equal(result.plugin_versions,0);
+  assert.deepEqual(result.deferred_plugin_versions,['0.8.0+old']);
+  assert(result.retained_plugin_versions.includes('0.8.0+old'));
+  await assert.rejects(f.store.snapshot('sample',old.revision_hash),{code:'ENOENT'});
+  await lstat(busy);
+  const audit=JSON.parse(await readFile(result.audit_file,'utf8'));
+  assert.equal(audit.status,'partial');
+  assert.equal(audit.deleted.length,1);
+  assert.deepEqual(audit.deferred.map(item=>item.version),['0.8.0+old']);
+});

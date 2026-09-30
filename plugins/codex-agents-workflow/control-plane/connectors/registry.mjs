@@ -2,8 +2,32 @@ import { ConnectorTaskStore, resolveConnectorTaskPath } from './task-store.mjs';
 import { GrokAcpConnector } from './grok-acp.mjs';
 import { CursorCdpConnector } from './cursor-cdp.mjs';
 import { connectorError } from './errors.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const registries = new Map();
+const confirmedStates = new Set(['completed', 'failed', 'cancelled', 'scope_violation']);
+const cursorEvidence = new Set(['stable_cursor_reply', 'exact_cursor_stop', 'stable_cursor_composer', 'stable_cursor_history']);
+
+export function connectorExecutionQuiescent(task) {
+  if (task?.state === 'failed' && task.startup_cleanup?.local_quiescent === true
+    && task.startup_cleanup.prompt_submitted === false) return true;
+  if (!confirmedStates.has(task?.state) || task.execution_cleanup?.local_quiescent !== true) return false;
+  const evidence = task.terminal_evidence?.kind;
+  return task.connector === 'grok_acp' ? evidence === 'acp_prompt_result'
+    : task.connector === 'cursor_cdp' && cursorEvidence.has(evidence);
+}
+
+export async function confirmConnectorExecutionQuiescent(registry, taskId, waitMs = 5_000) {
+  const deadline = Date.now() + waitMs;
+  let task;
+  do {
+    task = await registry.status(taskId, 0);
+    if (connectorExecutionQuiescent(task)) return task;
+    if (Date.now() >= deadline) break;
+    await delay(Math.min(100, deadline - Date.now()));
+  } while (true);
+  throw connectorError('CONNECTOR_CANCEL_INCOMPLETE', `Exact connector ${taskId} lacks confirmed remote terminal and local cleanup evidence`);
+}
 
 export class ConnectorRegistry {
   constructor({ configPath, env = process.env, spawnImpl, execFileImpl, processRunningImpl }) {
@@ -45,7 +69,9 @@ export class ConnectorRegistry {
   }
 
   async start(params) {
+    params.assertActive?.();
     await this.initialize();
+    params.assertActive?.();
     const writeRequested = params?.stage?.read_only !== true;
     const approvalRequired = params?.provider?.requires_user_approval === true
       || params?.stage?.requires_user_approval === true;

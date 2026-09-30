@@ -97,21 +97,27 @@ export async function pluginCachePlan(home,{env=process.env,inventory=pluginInve
     requireValue(entry.isDirectory() && /^[0-9][A-Za-z0-9.+_-]*$/.test(entry.name),'CACHE_VERSION_ENTRY','Unexpected plugin version entry');
     if(current.startsWith(path.replaceAll('\\','/').toLowerCase()+'/') || config.includes(entry.name))keep.add(entry.name);
     if(keep.has(entry.name))continue;
-    const manifest=JSON.parse(await readFile(join(path,'.codex-plugin/plugin.json'),'utf8'));
-    requireValue(manifest.name==='codex-agents-workflow' && manifest.version===entry.name,'CACHE_PLUGIN_ID','Cached plugin identity differs');
+    // Interrupted installs can leave a version directory without a manifest.
+    // Its exact plugin-cache namespace, version name and scanned contents still
+    // identify a cleanup candidate; a present manifest must match this plugin.
+    const manifestPath=join(path,'.codex-plugin/plugin.json');
+    let manifest;
+    try {await noSymlinks(manifestPath);manifest=JSON.parse(await readFile(manifestPath,'utf8'));}
+    catch(error){if(error.code!=='ENOENT')throw error;}
+    if(manifest!==undefined)requireValue(manifest?.name==='codex-agents-workflow' && manifest.version===entry.name,'CACHE_PLUGIN_ID','Cached plugin identity differs');
     const files=await treeFiles(path);
-    directories.push({path,version:entry.name,bytes:files.reduce((n,f)=>n+f.bytes,0),fingerprint:digest(canonicalJSON(files))});
+    directories.push({path,version:entry.name,manifest_present:manifest!==undefined,bytes:files.reduce((n,f)=>n+f.bytes,0),fingerprint:digest(canonicalJSON(files))});
   }
   return {directories,retained_versions:[...keep]};
 }
-export async function cleanupCaches({store,runs,home,auditRoot,env=process.env,preview=false,inventory}) {
+export async function cleanupCaches({store,runs,home,auditRoot,env=process.env,preview=false,inventory,removePluginDirectory=rm}) {
   return store.withWriter(()=>runs.writer.withWriter(async()=>{
     const workflow=await workflowCachePlan(store,runs);
     const plugin=await pluginCachePlan(home,{env,inventory});
-    const result={workflow_revisions:workflow.files.filter(f=>f.kind==='workflow_revision').length,workflow_resources:workflow.files.filter(f=>f.kind==='workflow_resource').length,plugin_versions:plugin.directories.length,bytes:workflow.files.reduce((n,f)=>n+f.bytes,0)+plugin.directories.reduce((n,d)=>n+d.bytes,0),retained_revisions:workflow.retained_revisions,retained_plugin_versions:plugin.retained_versions};
+    const result={workflow_revisions:workflow.files.filter(f=>f.kind==='workflow_revision').length,workflow_resources:workflow.files.filter(f=>f.kind==='workflow_resource').length,plugin_versions:plugin.directories.length,incomplete_plugin_versions:plugin.directories.filter(d=>!d.manifest_present).map(d=>d.version),bytes:workflow.files.reduce((n,f)=>n+f.bytes,0)+plugin.directories.reduce((n,d)=>n+d.bytes,0),retained_revisions:workflow.retained_revisions,retained_plugin_versions:plugin.retained_versions};
     if(preview)return result;
     const auditPath=insideRoot(auditRoot,join(auditRoot,'cache-cleanup-'+randomUUID()+'.json'));
-    const audit={started_at:new Date().toISOString(),status:'running',planned:result,candidates:[...workflow.files,...plugin.directories],deleted:[]};
+    const audit={started_at:new Date().toISOString(),status:'running',planned:result,candidates:[...workflow.files,...plugin.directories],deleted:[],deferred:[]};
     await writeDurableJSON(auditPath,audit);
     try {
       for(const file of workflow.files) {
@@ -125,9 +131,18 @@ export async function cleanupCaches({store,runs,home,auditRoot,env=process.env,p
         requireValue(fresh.directories.some(d=>d.path===directory.path && d.fingerprint===directory.fingerprint),'CACHE_CHANGED','Plugin version changed or became active; retry cleanup');
         insideRoot(resolve(home,'plugins/cache/codex-agents-workflow/codex-agents-workflow'),directory.path);
         await noSymlinks(directory.path);
-        await rm(directory.path,{recursive:true});audit.deleted.push({path:directory.path,bytes:directory.bytes});await writeDurableJSON(auditPath,audit);
+        try {await removePluginDirectory(directory.path,{recursive:true});}
+        catch(error) {
+          if(error.code!=='EBUSY')throw error;
+          audit.deferred.push({path:directory.path,version:directory.version,reason:'busy'});
+          await writeDurableJSON(auditPath,audit);
+          continue;
+        }
+        audit.deleted.push({path:directory.path,version:directory.version,bytes:directory.bytes});await writeDurableJSON(auditPath,audit);
       }
-      audit.status='complete';await writeDurableJSON(auditPath,audit);return {...result,audit_file:auditPath};
+      const completed={...result,plugin_versions:plugin.directories.length-audit.deferred.length,bytes:audit.deleted.reduce((total,item)=>total+item.bytes,0),deferred_plugin_versions:audit.deferred.map(item=>item.version),retained_plugin_versions:[...new Set([...result.retained_plugin_versions,...audit.deferred.map(item=>item.version)])]};
+      audit.status=audit.deferred.length?'partial':'complete';audit.completed=completed;
+      await writeDurableJSON(auditPath,audit);return {...completed,audit_file:auditPath};
     }catch(error){audit.status='failed';audit.error=error.message;await writeDurableJSON(auditPath,audit);throw Object.assign(error,{details:{audit_file:auditPath,deleted: audit.deleted.length}});}
   }));
 }

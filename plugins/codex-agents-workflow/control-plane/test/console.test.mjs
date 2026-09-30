@@ -28,6 +28,10 @@ test('loopback console requires token and revision-checks saves', async (t) => {
   const indexSource = await (await fetch(`${base}/index.html`)).text();
   const stylesSource = await (await fetch(`${base}/styles.css`)).text();
   assert.match(appSource, /provider-reasoning-effort/);
+  assert.match(appSource, /nativeModelSelect/);
+  assert.match(appSource, /provider-api-key/);
+  assert.match(appSource, /\/api\/models/);
+  assert.doesNotMatch(appSource, /textInput\(provider\.config\?\.model \|\| '', 'provider-model'\)/);
   assert.match(appSource, /reasoning_effort \|\| ''/);
   assert.match(appSource, /task-type-card/);
   assert.match(appSource, /add-task-type-from-preset/);
@@ -42,7 +46,8 @@ test('loopback console requires token and revision-checks saves', async (t) => {
   assert.doesNotMatch(appSource, /selectInput\(\['solo', 'delegate', 'audit', 'full'\]/);
   assert.doesNotMatch(appSource, /scenario-card/);
   assert.match(indexSource, /config-storage/);
-  assert.match(stylesSource, /\.provider-native-options\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(indexSource, /add-api-provider/);
+  assert.match(stylesSource, /\.provider-native-options\[hidden\], \.provider-api-options\[hidden\]/);
 
   const headers = { authorization: `Bearer ${state.token}` };
   const loadedResponse = await fetch(`${base}/api/config`, { headers });
@@ -73,6 +78,25 @@ test('loopback console requires token and revision-checks saves', async (t) => {
     body: JSON.stringify({ config: loaded.config, expected_revision: loaded.revision }),
   });
   assert.equal(staleResponse.status, 409);
+
+  const secretStatus = await (await fetch(`${base}/api/provider-secrets`, { headers })).json();
+  const custom = secretStatus.providers.find(provider => provider.provider_id === 'custom-openai-compatible');
+  assert.equal(custom.ready, false);
+  const key = 'session-only-console-test-key';
+  const secretResponse = await fetch(`${base}/api/provider-secret`, {
+    method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ provider_id: custom.provider_id, api_key: key }),
+  });
+  assert.equal(secretResponse.status, 200);
+  assert.equal((await secretResponse.json()).ready, true);
+  const afterSecret = await (await fetch(`${base}/api/config`, { headers })).text();
+  assert.equal(afterSecret.includes(key), false);
+  const cleared = await fetch(`${base}/api/provider-secret`, {
+    method: 'PUT', headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({ provider_id: custom.provider_id, clear: true }),
+  });
+  assert.equal(cleared.status, 200);
+  assert.equal((await cleared.json()).ready, false);
 });
 
 test('ordinary console reports global storage under CODEX_HOME', async (t) => {

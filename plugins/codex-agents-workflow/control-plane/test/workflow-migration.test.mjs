@@ -6,7 +6,6 @@ import { tmpdir } from './physical-tempdir.mjs';
 import { fileURLToPath } from 'node:url';
 import { prepareV6Migration, migrateV6OnDisk, restoreV6Backup } from '../lib/workflow-migration-v6.mjs';
 import { digest } from '../lib/workflow-revisions.mjs';
-import { resolveLegacyWorkflowRequest } from '../lib/legacy-control-adapter.mjs';
 import { WorkflowStore } from '../lib/workflow-store.mjs';
 import { validateWorkflowGraph } from '../lib/workflow-validator.mjs';
 
@@ -86,15 +85,6 @@ test('custom templates preserve whitespace; disabled bindings remain blocked, no
   assert.equal(node.executor.provider_id, custom.stages[0].provider_id);
   const checked = validateWorkflowGraph(workflow, { providers: raw.providers });
   assert.equal(checked.valid, true); assert.equal(checked.launch_ready, false);
-});
-
-test('legacy adapter maps exact IDs and rejects missing or mixed references', () => {
-  const config = { legacy_mapping: prepareV6Migration(bundled).mappings };
-  const taskType = bundled.task_types.find(item => item.stages.length);
-  assert.deepEqual(resolveLegacyWorkflowRequest(config, { task_type_id: taskType.id, stage_id: taskType.stages[0].id, task: 'x' }), { workflow_id: taskType.id, node_id: taskType.stages[0].id, task: 'x' });
-  for (const task_type_id of ['missing', '__proto__', 'constructor']) assert.throws(() => resolveLegacyWorkflowRequest(config, { task_type_id }), { code: 'LEGACY_TASK_TYPE_MISSING' });
-  assert.throws(() => resolveLegacyWorkflowRequest(config, { task_type_id: taskType.id, stage_id: '__proto__' }), { code: 'LEGACY_STAGE_MISSING' });
-  assert.throws(() => resolveLegacyWorkflowRequest(config, { task_type_id: taskType.id, workflow_id: taskType.id }), { code: 'AMBIGUOUS_WORKFLOW_REQUEST' });
 });
 
 test('v6 backup restores exact bytes under CAS and retains v7 stores', async t => {

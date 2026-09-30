@@ -21,10 +21,30 @@ external messaging, permission choices, or product/governance authority.
 ## `native_agent`
 
 The adapter returns exact `agent_type`, freshness, role, expected model/effort, and any
-requested sandbox. Use `spawn_config` as the spawn arguments and inspect the returned task identity.
+requested sandbox. A Cooperative Workflow's `workflow_start` or `workflow_native_next`
+returns one scoped packet per real native subagent. Use each `spawn_config` as the
+`spawn_agent` arguments and its prompt as the message. Spawn every released packet,
+then call `workflow_native_spawned_batch` with no arguments. The Host journals its
+precomputed packet indexes and canonical Agent paths, holds the one-hour lifecycle
+event wait, validates exact terminal child turns, releases available slots, joins
+results in dispatch order and seals the completed dispatch internally. The Host
+constructs the completion envelope and derives
+the node, lease, owner, and dispatch request ID from the Run and attempt.
+For serial fan-out, each handoff exposes just the next packet. After its Agent
+is journaled, call the supplied Host continuation once; do not poll or transcribe
+the result.
+If Host observation reports a blocked or invalid per-item result, call the exact
+`followup_config` on the same child, journal it with `workflow_native_followed_up`,
+and remain in the returned Host continuation. Accepted items remain journaled.
+There is no manual result-submission or receipt-recovery interface.
 Generic agents receive explicit model/effort overrides with a fresh context; fixed
 roles receive no overrides and must match their registered model/effort. A requested sandbox is not proof of the host
-policy. Reviewers remain behaviorally read-only and do not implement their own fixes.
+policy. An inspection-only reviewer is read-only; a review-and-fix node needs
+explicit bounded-write access and a write-capable Provider.
+Native Provider read/write capability describes what the model may be assigned,
+not authority for this invocation. The Workflow node access resolves the actual
+read-only or bounded-write task intent; native `spawn_agent` does not itself prove an OS sandbox. Display names may change while Provider IDs
+remain stable for existing Workflow references.
 
 ## `codex_thread`
 
@@ -84,6 +104,9 @@ exact workspace. It does not force-close an already-running Cursor that lacks CD
 - Cancellation requires `confirm=true` and the exact returned `expected_agent_id`.
   Stop is clicked only in the exact matching generating composer and becomes terminal
   only after a stable stopped observation.
+- Background inactivity termination is disabled by default (`task_timeout_ms: 0`).
+  A positive value explicitly opts this Provider into an inactivity deadline; exact
+  Agent activity renews it. CDP loss still enters `needs_attention` immediately.
 - Timeout or CDP loss enters `needs_attention`. After restart, `reconcile` reopens the
   persisted exact Agent on history-backed surfaces. The Agents panel reattaches only
   when its currently visible composer has the persisted exact ID; it never guesses or
@@ -117,8 +140,9 @@ The connector starts a dedicated Leader and ACP child and uses `initialize`,
 - An in-scope write permission is still surfaced for explicit option selection.
 - Cancellation requires `confirm=true`, `expected_session_id`, and `expected_run_id`.
   It is terminal only after ACP prompt evidence proves the outcome.
-- `task_timeout_ms` is an inactivity deadline: every exact-session ACP update renews
-  it, and it pauses while an exact permission/input decision is pending. A separate
+- Background inactivity termination is disabled by default (`task_timeout_ms: 0`).
+  A positive value explicitly opts this Provider into an inactivity deadline: every
+  exact-session ACP update renews it, and it pauses while an exact permission/input decision is pending. A separate
   `max_task_duration_ms` bounds the underlying prompt RPC as a long absolute safety
   limit. Inactivity timeout enters `needs_attention`; no replacement run is created.
 - After restart, `reconcile` attaches an ACP child to the persisted Leader socket and
@@ -141,12 +165,19 @@ the external integration as bundled.
 
 `mcp_tool` remains only a legacy configuration alias for `external_mcp`.
 
-## `packet_review`: ChatGPT web
+## `packet_review`: ChatGPT web Pro
 
-Follow the installed packet-first `chatgpt-review-agent` skill. The packet is the
-evidence boundary. Wait for the newest completed answer, capture that exact response,
-and save it. Missing browser control or reviewer availability fails the lane without
-substitution. A web review never proves code execution or correctness.
+The built-in **GPT reviewer** Role binds to the existing `chatgpt-web-pro` Provider;
+it does not create another Provider or another Role when that Provider is edited.
+Both are disabled by default. A compiled Role returns the exact `packet_review`
+adapter below after both have been enabled.
+
+Follow the installed `chatgpt-agent` skill in reviewer role using its `packet.inspect`
+route. Build the frozen ZIP packet with that skill's packet builder, upload it in the
+ChatGPT side/in-app browser, and instruct the reviewer to use only the packet. The ZIP
+is the evidence boundary. Wait for the newest completed answer, capture that exact
+response, and save it. Missing browser control or reviewer availability fails the lane
+without substitution. A web review never proves code execution or correctness.
 
 ## `direct_api`: OpenAI-compatible advisory model
 

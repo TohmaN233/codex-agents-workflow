@@ -1,6 +1,8 @@
 import { informationalImportObservation } from '../workflow-import-observations.mjs';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { requireValue } from '../workflow-paths.mjs';
+import { compileDeployableConversion } from './conversion-deployment.mjs';
+import { createConversionCertificate } from './conversion-certificate.mjs';
 
 export function importIssueId(issue) {
   const { id, ...observation } = issue;
@@ -14,7 +16,7 @@ export function importReviewPacket(pack) {
     observations:[...(pack.import_report?.observations ?? []),...pack.workflow.import_status.unresolved.filter(informationalImportObservation)], requirements: pack.workflow.requirements, review_history: pack.import_report?.review_history ?? [] };
 }
 
-export async function reviewImportedDraft(store, workflowId, { expected_revision, decisions = [], inferences = [] }) {
+export async function reviewImportedDraft(store, workflowId, { expected_revision, decisions = [], inferences = [] }, {beforeHistoryPurge=async()=>{}}={}) {
   const pack = await store.snapshot(workflowId, expected_revision); const packet = importReviewPacket(pack);
   requireValue(Array.isArray(decisions) && Array.isArray(inferences) && decisions.length + inferences.length > 0 && decisions.length + inferences.length <= 1000, 'IMPORT_REVIEW_SCHEMA', 'Review needs bounded explicit decisions');
   const workflow = structuredClone(pack.workflow); const reviewedIssues = new Set(); const reviewedItems = new Set(); const records = [];
@@ -42,6 +44,21 @@ export async function reviewImportedDraft(store, workflowId, { expected_revision
   workflow.status = 'draft'; // Review never auto-publishes or broadens a requirement.
   const history = pack.import_report?.review_history ?? [];
   requireValue(history.length < 512, 'IMPORT_REVIEW_LIMIT', 'Review history exceeded its bounded revision limit');
-  return store.save(workflowId, workflow, { expected_revision, import_report: { ...pack.import_report,
-    review_history: [...history, { actor: 'user', source_revision: pack.revision_hash, at: new Date().toISOString(), decisions: records }] } });
+  const review_history=[...history,{actor:'user',source_revision:pack.revision_hash,at:new Date().toISOString(),decisions:records}];
+  const blockers=workflow.import_status.unresolved.filter(issue=>!informationalImportObservation(issue));
+  const expansion=pack.import_report?.expansion;
+  if(blockers.length || workflow.import_status.conversion_level==='unsupported' || !expansion?.canonical_proposal){
+    return store.save(workflowId,workflow,{expected_revision,import_report:{...pack.import_report,review_history}});
+  }
+  requireValue(expansion.review_contract_version,'CONVERSION_REVIEW_CONTRACT_STALE','Private conversion Draft is missing its review contract identity');
+  const resources=await store.resources(workflowId,pack.revision_hash);
+  const deployed=compileDeployableConversion({workflow,proposal:expansion.canonical_proposal,resources,pack,proposalHash:expansion.proposal_hash,
+    reviewContractVersion:expansion.review_contract_version});
+  deployed.import_report.review_history=review_history;
+  deployed.import_report.expansion.certificate=createConversionCertificate(deployed.workflow,deployed.resources,{source_revision:pack.revision_hash,
+    source_hash:deployed.provenance.source_hash,proposal_hash:expansion.proposal_hash,review_contract_version:expansion.review_contract_version});
+  const saved=await store.save(workflowId,deployed.workflow,{expected_revision,resources:deployed.resources,provenance:deployed.provenance,
+    import_report:deployed.import_report,history_purge:'deferred'});
+  await store.resumeHistoryPurge(workflowId,saved.revision_hash,{beforePurge:beforeHistoryPurge});
+  return saved;
 }

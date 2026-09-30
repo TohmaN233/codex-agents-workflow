@@ -3,11 +3,19 @@ import { sourceSectionInventory } from './source-dispositions.mjs';
 import { bindingPointers } from '../workflow-bindings.mjs';
 import { exclusiveConditionFanIn, nearestDataProducerIds, selectedUpstreamBinding } from './fan-in-topology.mjs';
 import { authoringSourcePath, SKILL_SOURCE } from './authoring-source.mjs';
+import { dependencyExecutables, sourceContractIndex } from './source-contracts.mjs';
+import { normalizeExecutableRequirements } from '../runtime-requirements.mjs';
+import { isOperationalMemoryArtifactPath } from '../artifact-policy.mjs';
 
 const commandPattern = /(?:^|[\s`"'(])((?:\.\/)?(?:scripts|tools|bin)\/[A-Za-z0-9._/-]+\.(?:py|mjs|cjs|js|sh|ps1|cmd|bat))(?=$|[\s`"',);])/gmi;
 const approvalPattern = /(?:\b(?:must|required|before|obtain|explicit|ask(?:\s+the\s+user)?(?:\s+for)?)\b.{0,100}\b(?:approval|approve|confirmation|confirm)\b|\b(?:approval|confirmation)\b.{0,100}\b(?:must|required|before)\b|(?:必须|需要|务必|在.{0,20}之前).{0,40}(?:批准|审批|确认))/i;
 const inputPattern = /(?:\b(?:ask|prompt|collect|get|receive)\b.{0,80}\b(?:user|human)\b.{0,80}\b(?:input|answer|choice|feedback|brief|selection)\b|\b(?:user|human)\b.{0,80}\b(?:input|answer|choice|feedback|brief|selection)\b|(?:询问|收集|取得|接收).{0,30}(?:用户|人工).{0,30}(?:输入|回答|选择|反馈|简报))/i;
 const artifactPathPattern = /(?:[`'"])?((?:(?:[A-Za-z]:[\\/]|\/)?(?:[A-Za-z0-9._-]+[\\/])*)[A-Za-z0-9_-]+\.(?:json|csv|tsv|txt|md|html|pdf|png|jpg|jpeg|mp4|wav|zip))(?:[`'"])?/gi;
+const artifactProductionPattern = /\b(?:write|save|create|produce|emit|return|output|update)\b/i;
+const conditionalArtifactPattern = /\b(?:optional(?:ly)?|if|when|unless|only\s+(?:if|when))\b/i;
+const negativeArtifactPattern = /\b(?:do\s+not|don't|never|must\s+not|forbid(?:den)?)\b/i;
+const artifactClauses = text => text.split(/;\s*|(?<=[.!?])\s+(?=[A-Z])/);
+const dynamicOutputRootPattern = /\b(?:all|every)\b.{0,100}\b(?:outputs?|artifacts?|files?)\b.{0,80}\b(?:in|into|under)\s+[`'"]?<[^>]+>[\\/]/i;
 const interfacePattern = /\b(?:(?:exact\s+)?(?:keys?|columns?|schema|signature)|return\s+type|output\s+format)\b/i;
 const canonicalizationPattern = /(?:YYYY-MM-DDTHH:MM:SSZ|\b(?:round(?:ed)?|truncate(?:d)?|format(?:ted)?)\b.{0,80}\b(?:to|as)\s+(?:exactly\s+)?(?:\d+\s+decimal\s+places?|[A-Za-z0-9_.:+-]+))/i;
 const methodPattern = /(?:\bEPSG:\d+\b|\b\d+\s+decimal\s+places?\b|\b(?:must|Must|shall|Shall|required to|Required to)\s+(?:the\s+)?(?:[A-Za-z][\w.-]*(?:\([^)]{0,80}\))?|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\b|\buse\s+(?:[A-Za-z][\w.-]*\([^)]{0,80}\)|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3})\b|\b(?:do not|Do not|never|Never)\s+use\b)/;
@@ -17,10 +25,10 @@ const methodPreferencePattern = /(?:\b(?:prefer|recommended|trust)\b.{0,160}\b(?
 // formulas and rounding/scaling operations in the deterministic floor instead
 // of relying on a planning model to notice them later.
 const methodCodePattern = /(?:\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\s*\(|\b(?:FactorAnalyzer|StandardScaler|LinearRegression|RandomForestRegressor|PCA)\s*\(|\b(?:round|floor|ceil)\s*\(|\b(?:contribution\w*|contrib_\w+)\s*=|\[["'][^"']+["']\]\s*=.*(?:\+|-|\*|\/))/;
-const executablePattern = /\b(?:python(?:3)?|node|ffmpeg|ffprobe|git|java|Rscript)\b/gi;
-const dependencyContext = /\b(?:require(?:s|d)?|dependency|install|need(?:s)?|use\s+(?:python(?:3)?|node|ffmpeg|ffprobe|git|java|Rscript))\b/i;
+const dependencyContext = /(?:\b(?:require(?:s|d)?|dependency|install|need(?:s)?|(?:use|with|run)\s+(?:python(?:3)?|node|ffmpeg|ffprobe|git|java|Rscript|codegraph))\b|^\s*(?:(?:\d+[.)]|[-*+])\s*)?`?(?:python(?:3)?|node|ffmpeg|ffprobe|git|java|Rscript|codegraph)\b)/i;
 const referencePathPattern = /(?:`|['"])?((?:\.\.\/|\.\/)?(?:[A-Za-z0-9._-]+\/)*[A-Za-z0-9._-]+\.(?:md|json|ya?ml|txt))(?:`|['"])?/gi;
 const referenceContext = /\b(?:read|follow|apply|consult|load|use|required)\b|(?:读取|遵循|应用|查阅|加载|使用|必须)/i;
+const readinessContext = /\b(?:on\s+(?:the\s+)?PATH|available|installed)\b/i;
 
 const span = (resource, line) => ({ resource, start_line: line, end_line: line });
 const safe = value => value.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 48) || 'resource';
@@ -61,9 +69,12 @@ function details(kind, line, match = null) {
  */
 export function observedSourceRequirements(resources) {
   const requirements = [];
+  const contractsByResource=new Map();
+  for(const contract of sourceContractIndex(resources).contracts){const entries=contractsByResource.get(contract.resource)??[];entries.push(contract.contract_id);contractsByResource.set(contract.resource,entries);}
   for (const [resource, bytes] of textResources(resources)) {
     const lines = bytes.toString('utf8').split('\n');
     const requiredLines=new Set(sourceSectionInventory(resources).filter(section=>section.authority==='required').flatMap(section=>Array.from({length:section.source_span.end_line-section.source_span.start_line+1},(_,offset)=>section.source_span.start_line+offset)));
+    const dynamicOutputRoot=lines.some((text,index)=>requiredLines.has(index+1)&&dynamicOutputRootPattern.test(text));
     let artifactListActive=false,conditionalScope=false;
     for (const [index, text] of lines.entries()) {
       const line = index + 1; const sourceSpans = [span(resource, line)];
@@ -78,23 +89,29 @@ export function observedSourceRequirements(resources) {
       for (const match of text.matchAll(commandPattern)) {
         if(/\b(?:never|do\s+not|don't|must\s+not|forbid(?:den)?)\b/i.test(text.slice(0,match.index)))continue;
         ordinal++; const target = match[1].replace(/^\.\//, ''); const targetResource = posix.normalize('source/' + target);
-        requirements.push({ requirement_id: id('script', resource, line, String(ordinal)), requirement_kind: 'script_operation', source_spans: sourceSpans, trigger: 'source_observed', required_result: `Execute the pinned script resource ${targetResource} with declared inputs and verified outputs.`, resource_refs: [targetResource], details: {} });
+        requirements.push({ requirement_id: id('script', resource, line, String(ordinal)), requirement_kind: 'script_operation', source_spans: sourceSpans, trigger: 'source_observed', required_result: `Execute the pinned script resource ${targetResource} with declared inputs and verified outputs.`, resource_refs: [targetResource], details: {source_contract_ids:[...(contractsByResource.get(targetResource)??[])]} });
       }
       let artifactOrdinal = 0;
-      for (const artifact of text.matchAll(artifactPathPattern)) {
-        // A bare filename in prose is only contractual when the line actually
-        // describes production/returning/output, avoiding incidental citations.
-        if (!artifactListActive && !/\b(?:write|save|create|produce|emit|return|output)\b/i.test(text)) continue;
-        artifactOrdinal++; requirements.push({ requirement_id: id('artifact_path', resource, line, String(artifactOrdinal)), requirement_kind: 'artifact_path', source_spans: sourceSpans, trigger: 'produce_declared_artifact', required_result: `Produce the exact artifact path ${artifact[1]}.`, resource_refs: [resource], details: details('artifact_path', text, artifact) });
+      for (const clause of artifactClauses(text)) {
+        // Only an unconditioned production clause establishes an unconditional
+        // path gate. A later `when` clause on the same line must not promote
+        // its file, or an earlier file, by borrowing a verb across clauses.
+        if (conditionalScope || conditionalArtifactPattern.test(clause) || negativeArtifactPattern.test(clause) || (!artifactListActive && !artifactProductionPattern.test(clause))) continue;
+        for (const artifact of clause.matchAll(artifactPathPattern)) {
+          if (isOperationalMemoryArtifactPath(artifact[1], { sourceText: text })) continue;
+          const runtimeScoped=dynamicOutputRoot&&!/[\\/]/.test(artifact[1]);
+          artifactOrdinal++; requirements.push({ requirement_id: id('artifact_path', resource, line, String(artifactOrdinal)), requirement_kind: 'artifact_path', source_spans: sourceSpans, trigger: runtimeScoped?'runtime_resolved_artifact':'produce_declared_artifact', required_result: runtimeScoped?`Produce ${artifact[1]} under the source-defined runtime output root.`:`Produce the exact artifact path ${artifact[1]}.`, resource_refs: [resource], details: details('artifact_path', clause, artifact) });
+        }
       }
-      artifactListActive=/\b(?:write|save|create|produce|emit|return|output)\b[^\n]*:\s*$/i.test(text) || (artifactListActive && /^\s*[-*+]/.test(text));
+      artifactListActive=/\b(?:write|save|create|produce|emit|return|output|update)\b[^\n]*:\s*$/i.test(text) || (artifactListActive && /^\s*[-*+]/.test(text));
       if (interfacePattern.test(text)) requirements.push({ requirement_id: id('artifact_schema', resource, line), requirement_kind: 'artifact_schema', source_spans: sourceSpans, trigger: 'produce_or_validate_interface', required_result: `Preserve this exact interface statement: ${text.trim().slice(0, 1000)}`, resource_refs: [resource], details: details('artifact_schema', text) });
       if (canonicalizationPattern.test(text)) requirements.push({ requirement_id: id('canonicalization', resource, line), requirement_kind: 'canonicalization', source_spans: sourceSpans, trigger: 'before_final_validation', required_result: `Apply this deterministic representation rule without changing semantic content: ${text.trim().slice(0, 1000)}`, resource_refs: [resource], details: details('canonicalization', text) });
       if (methodPattern.test(text) || methodPreferencePattern.test(text) || methodCodePattern.test(text)) requirements.push({ requirement_id: id('method_rule', resource, line), requirement_kind: 'method_rule', source_spans: sourceSpans, trigger: 'perform_prescribed_method', required_result: `Preserve this exact method statement: ${text.trim().slice(0, 1000)}`, resource_refs: [resource], details: details('method_rule', text) });
-      if (dependencyContext.test(text)) {
+      const negativeCommand=/\b(?:never|do\s+not|don't|must\s+not|forbid(?:den)?)\b/i.test(text);
+      if (!negativeCommand && (dependencyContext.test(text) || dependencyExecutables(text).length)) {
         let dependencyOrdinal = 0;
-        for (const match of text.matchAll(executablePattern)) {
-          dependencyOrdinal++; const name = /^rscript$/i.test(match[0]) ? 'Rscript' : match[0].toLowerCase();
+        for (const name of dependencyExecutables(text)) {
+          dependencyOrdinal++;
           // Dependency prose is conditional whenever it contains an explicit
           // conditional cue.  Do not attempt to enumerate the subject
           // (rendering/audio/video/etc.); missing one would incorrectly
@@ -120,6 +137,95 @@ export function observedSourceRequirements(resources) {
   return requirements;
 }
 
+// A current authoring decision may refine a coarse name-only observation from
+// the exact same source line. Reconcile that fact by source identity, never by
+// executable name alone: another line may independently require the program.
+const approvalCue=/(?:\b(?:approval|approve|confirmation|confirm|permission)\b|批准|审批|确认)/gi;
+const inputCue=/(?:\b(?:input|answer|choice|feedback)\b|输入|回答|选择|反馈)/gi;
+const exactDependencyName=name=>new RegExp(`(?<![A-Za-z0-9_.+-])${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?![A-Za-z0-9_+-]|\\.[A-Za-z0-9_+-])`,'i');
+const dependencyObjectEnd=/^\s*(?:(?:version\s+)?(?:v\d+(?:\.\d+){0,2}|(?:>=|<=|==|>|<)?\s*\d+(?:\.\d+){0,2}))?\s*(?:(?:if\s+(?:it\s+is\s+)?(?:missing|unavailable|not\s+found))|(?:before\s+(?:running|using)\s+it))?\s*[.!?。]?\s*$/i;
+// An approval is Host preparation only when the approved action itself is
+// installing/downloading this executable. A nearby mention of "missing" or
+// "locate" says nothing about the approval's object. A coordinated second
+// action makes the single observed approval ambiguous, so retain it for the
+// semantic gate instead of silently assigning it to Host setup.
+function hostPreparationClause(clause,kind,name){
+  const dependency=exactDependencyName(name);
+  if(kind==='approval'){
+    const action=clause.match(/\b(?:approval|permission|confirmation)\s+(?:to|for)\s+(?:download\s+and\s+install|install|download|installing|downloading)\s+(?:the\s+)?/i);
+    if(!action)return false;
+    const remainder=clause.slice(action.index+action[0].length);
+    const mentioned=remainder.match(dependency);
+    if(!mentioned||mentioned.index!==0)return false;
+    const tail=remainder.slice(mentioned[0].length);
+    return dependencyObjectEnd.test(tail);
+  }
+  // A location question must name the executable's environment/path as the
+  // requested input, not merely mention that executable elsewhere in a task.
+  const input=[...clause.matchAll(inputCue)][0];
+  if(!input)return false;
+  const request=clause.slice(input.index+input[0].length).trim();
+  const location='(?:path|location|installation|executable|binary|environment)';
+  const locationRequest=request.match(new RegExp(`^(?:(?:for|to|about|on)\\s+)?(?:(?:locate|find|provide|specify|select|choose)\\s+)?(?:the\\s+)?(?:${location}\\b\\s+(?:of|for|to)\\s+${dependency.source}|${dependency.source}\\s+${location}\\b)`,'i'));
+  return !!locationRequest&&/^\s*[.!?。]?\s*$/.test(request.slice(locationRequest[0].length));
+}
+export function hostPreparationObservationEvidence(observation,decision,resources={}){
+  if(!['approval','user_input'].includes(observation?.requirement_kind)||decision?.requirement_kind!=='dependency'||decision.details?.phase!=='unconditional')return false;
+  const name=decision.details?.executable;
+  if(typeof name!=='string'||!name.trim())return false;
+  const quote=decision.details?.source_quote,anchor=observation.source_spans?.[0];
+  if(typeof quote!=='string'||!quote.trim()||quote.includes('\n')||!anchor||anchor.start_line!==anchor.end_line||!Object.hasOwn(resources,anchor.resource))return false;
+  const line=Buffer.from(resources[anchor.resource]).toString('utf8').split('\n')[anchor.start_line-1]??'';
+  if(!line.includes(quote)||!(decision.source_spans??[]).some(span=>span.resource===anchor.resource&&span.start_line<=anchor.start_line&&span.end_line>=anchor.end_line))return false;
+  const cue=observation.requirement_kind==='approval'?approvalCue:inputCue;
+  const count=text=>[...text.matchAll(cue)].length;
+  if(count(line)!==1||count(quote)!==1)return false;
+  // Observations cover source lines. Inspect the original approval-bearing
+  // clause, so a shortened quote cannot hide a second approved task action.
+  return line.split(/;\s*|(?<=[.!?。])\s+/).some(clause=>count(clause)===1&&hostPreparationClause(clause,observation.requirement_kind,name));
+}
+const authoringDependencyQuoteAnchored=(decision,resources)=>{
+  const quote=decision.details?.source_quote;
+  return typeof quote==='string'&&quote.trim()&&(decision.source_spans??[]).some(span=>{
+    if(!Object.hasOwn(resources,span.resource))return false;
+    const lines=Buffer.from(resources[span.resource]).toString('utf8').split('\n');
+    return lines.slice(span.start_line-1,span.end_line).join('\n').includes(quote);
+  });
+};
+export function reconciledObservedRequirements(observed,proposed=[],resources={}){
+  const explicit=(proposed??[]).filter(item=>item?.requirement_kind==='dependency'&&String(item.requirement_id).startsWith('authoring_dependency_')&&authoringDependencyQuoteAnchored(item,resources));
+  return observed.filter(item=>{
+    if(['approval','user_input'].includes(item.requirement_kind))return !explicit.some(decision=>(decision.details?.host_preparation_observation_ids??[]).includes(item.requirement_id)&&hostPreparationObservationEvidence(item,decision,resources));
+    return item.requirement_kind!=='dependency'||!explicit.some(decision=>
+      decision.details?.executable===item.details?.executable&&(decision.source_spans??[]).some(source=>(item.source_spans??[]).some(anchor=>source.resource===anchor.resource&&source.start_line<=anchor.end_line&&source.end_line>=anchor.start_line)));
+  });
+}
+
+// A planner may retain a section that the coarse inventory conservatively
+// marked as a reference candidate. Its explicit executable-readiness lines
+// then become Host facts, but only at the planner-selected source phase. This
+// does not promote the rest of that section's prose into unconditional rules.
+function selectedReadinessRequirements(proposal,resources) {
+  const source=authoringSourcePath(resources),lines=resources[source].toString('utf8').split('\n');
+  const inventory=new Map(sourceSectionInventory(resources).map(section=>[section.section_id,section]));
+  const selected=[];
+  for(const disposition of proposal.source_dispositions??[]) {
+    const section=inventory.get(disposition.section_id);
+    if(!section||section.authority==='required'||!['workflow','conditional'].includes(disposition.disposition))continue;
+    for(let line=section.source_span.start_line;line<=section.source_span.end_line;line++) {
+      const text=lines[line-1]??'';
+      if(!readinessContext.test(text)||negativeArtifactPattern.test(text))continue;
+      const conditional=disposition.disposition==='conditional'||/\b(?:optional(?:ly)?|if|when|unless|only|first[- ]use)\b/i.test(text);
+      let ordinal=0;
+      for(const name of dependencyExecutables(text)) {
+        ordinal++;
+        selected.push({requirement:{requirement_id:id('dependency',source,line,String(ordinal)),requirement_kind:'dependency',source_spans:[span(source,line)],trigger:conditional?`conditional: ${text.trim().slice(0,500)}`:'unconditional_source_dependency',required_result:`${conditional?'Conditionally check':'Prepare'} executable ${name}.`,resource_refs:[source],details:{executable:name,phase:conditional?'conditional':'unconditional'}},node_ids:[...(disposition.node_ids??[])]});
+      }
+    }
+  }
+  return selected;
+}
+
 /**
  * Fill deterministic format fields that a model should not have to echo.
  * Observed requirements have stable Host IDs in the planning packet. The Host
@@ -131,8 +237,12 @@ export function projectObservedRequirements(proposal, resources) {
   const result = structuredClone(proposal);
   result.source_requirements = Array.isArray(result.source_requirements) ? result.source_requirements : [];
   result.requirement_mappings = Array.isArray(result.requirement_mappings) ? result.requirement_mappings : [];
-  const observed = observedSourceRequirements(resources);
-  const observedIds = new Set(observed.map(item => item.requirement_id));
+  const selectedReadiness=selectedReadinessRequirements(result,resources);
+  const observedBase = [...observedSourceRequirements(resources),...selectedReadiness.map(item=>item.requirement)];
+  const observed = reconciledObservedRequirements(observedBase,result.source_requirements,resources);
+  const observedIds = new Set(observedBase.map(item => item.requirement_id));
+  const retainedIds=new Set(observed.map(item=>item.requirement_id));
+  result.requirement_mappings=result.requirement_mappings.filter(item=>!observedIds.has(item.requirement_id)||retainedIds.has(item.requirement_id));
   // Observed entries are host facts, not model-authored proposal fields. Strip
   // any echoed copies and inject the canonical host values below. The model may
   // refer to these stable IDs from mappings and nodes, but cannot mutate their
@@ -140,27 +250,43 @@ export function projectObservedRequirements(proposal, resources) {
   result.source_requirements = result.source_requirements.filter(item => !observedIds.has(item?.requirement_id));
   const nodes = new Map((result.nodes ?? []).map(node => [node.id, node]));
   for (const node of result.nodes ?? []) if (['agent','tool','human_gate'].includes(node.type)) {
-    if (contractProjection && node.type==='agent') {
-      // Mechanical bindings are host-owned. Keep only semantic selections the
-      // planner added, then regenerate task/direct-predecessor pointers.
+    // Only legacy proposals without a projection inherit the coarse inputs.
+    // An explicit map, including {}, is the activity's complete input contract.
+    if (contractProjection && node.type==='agent' && !Object.hasOwn(node,'input_bindings')) {
       const producers=nearestDataProducerIds(result.nodes,result.edges,node.id);
-      const producerPointers=new Set(producers.map(source=>`/nodes/${source}/output`));
-      const mechanicalNames=new Set(['upstream_selected',...producers.map(source=>`upstream_${source}`)]);
-      const bindings=Object.fromEntries(Object.entries(node.input_bindings ?? {}).filter(([name,binding])=>{
-        if(name==='task' || mechanicalNames.has(name))return false;
-        try{return !bindingPointers(binding).every(pointer=>producerPointers.has(pointer));}catch{return true;}
-      }));
-      bindings.task='/inputs/task';
+      const bindings={task:'/inputs/task'};
       if(exclusiveConditionFanIn(result.nodes,result.edges,node.id))bindings.upstream_selected=selectedUpstreamBinding(result.nodes,result.edges,node.id);
       else for (const source of producers) bindings[`upstream_${source}`]=`/nodes/${source}/output`;
       node.input_bindings=bindings;
     }
     if (!Object.hasOwn(node,'input_bindings') && node.type==='human_gate') node.input_bindings={};
     if (contractProjection || node.type==='human_gate') node.resource_refs=[...new Set([...(node.source_span?.resource?[node.source_span.resource]:[]),...(node.resource_refs ?? [])])];
-    if (contractProjection) node.requirement_ids=[];
+    if (contractProjection) {node.requirement_ids=[];node.required_artifacts=[];}
     else if (node.type==='human_gate' && !Object.hasOwn(node,'requirement_ids')) node.requirement_ids=[];
   }
   for (const hostRequirement of observed) result.source_requirements.push(structuredClone(hostRequirement));
+  const mappedReadiness=new Set(result.requirement_mappings.map(mapping=>mapping.requirement_id));
+  for(const {requirement,node_ids} of selectedReadiness) if(retainedIds.has(requirement.requirement_id)&&!mappedReadiness.has(requirement.requirement_id)) {
+    const responsible=[...new Set(node_ids)].filter(id=>['agent','tool'].includes(nodes.get(id)?.type));
+    if(!responsible.length)continue;
+    result.requirement_mappings.push({requirement_id:requirement.requirement_id,node_ids:responsible,binding_names:[],runtime_guards:[],resource_refs:[...requirement.resource_refs],status:'agent_assisted',rationale:'Host projected an explicit executable-readiness line from a planner-retained source section onto its declared responsible activities.'});
+    mappedReadiness.add(requirement.requirement_id);
+  }
+  // A literal, unconditional path can be assigned mechanically when exactly
+  // one write-capable activity cites the source line and explicitly names the
+  // same production action and path. Ambiguous or merely mentioned paths stay
+  // unassigned for semantic review; the Host never guesses a producer.
+  const mappedIds=new Set(result.requirement_mappings.map(mapping=>mapping.requirement_id));
+  for (const requirement of observed) if (requirement.requirement_kind==='artifact_path' && !mappedIds.has(requirement.requirement_id)) {
+    const path=requirement.details.artifact_path;
+    const candidates=(result.nodes??[]).filter(node=>node.type==='agent'&&node.operation_mode==='write'
+      &&(node.source_spans??(node.source_span?[node.source_span]:[])).some(candidate=>(requirement.source_spans??[]).some(source=>candidate.resource===source.resource&&candidate.start_line<=source.start_line&&candidate.end_line>=source.end_line))
+      &&artifactClauses(node.prompt_template??'').some(clause=>artifactProductionPattern.test(clause)&&!conditionalArtifactPattern.test(clause)&&!negativeArtifactPattern.test(clause)
+        &&[...clause.matchAll(artifactPathPattern)].some(match=>match[1]===path)));
+    if(candidates.length!==1)continue;
+    result.requirement_mappings.push({requirement_id:requirement.requirement_id,node_ids:[candidates[0].id],binding_names:[],runtime_guards:[],resource_refs:[...requirement.resource_refs],status:'agent_assisted',rationale:'Host matched one write activity to the same unconditional source line, explicit production action, and literal artifact path.'});
+    mappedIds.add(requirement.requirement_id);
+  }
   // A human gate already encodes the approval boundary. Generated mappings
   // often name only that gate even though the compiler contract also needs the
   // immediately authorized operation. Derive this mechanical relationship
@@ -215,6 +341,9 @@ export function projectObservedRequirements(proposal, resources) {
       // Mapping resource evidence is the authoritative semantic selection;
       // node.resource_refs is its runtime projection, not a second model field.
       if (contractProjection) node.resource_refs = [...new Set([...(node.resource_refs ?? []), ...(mapping.resource_refs ?? [])])];
+      if(contractProjection&&mapping.status!=='unsupported'&&requirement?.requirement_kind==='artifact_path'&&requirement.trigger!=='runtime_resolved_artifact'&&node.type!=='human_gate'){
+        node.required_artifacts=[...new Map([...(node.required_artifacts??[]),{requirement_id:requirement.requirement_id,path:requirement.details.artifact_path}].map(item=>[item.requirement_id,item])).values()];
+      }
     }
   }
   }
@@ -243,19 +372,45 @@ export function projectObservedRequirements(proposal, resources) {
       mapping.rationale=`Host downgraded compiled to agent_assisted because ${requirement.requirement_kind} is enforced only by Agent interpretation. ${mapping.rationale}`.slice(0,2000);
     }
   }
+  // Section dispositions and requirement assignments are the authoritative
+  // semantic links. Project their Host-owned source coordinates onto the
+  // responsible nodes so review sees the same evidence
+  // that the coverage table already records. This does not infer new intent.
+  const appendSpans=(item,spans)=>{
+    if(!item || !spans?.length)return;
+    const existing=item.source_spans ?? (item.source_span?[item.source_span]:[]);
+    item.source_spans=[...new Map([...existing,...spans].map(span=>[`${span.resource}:${span.start_line}:${span.end_line}`,structuredClone(span)])).values()];
+    item.source_span ??= item.source_spans[0];
+  };
+  const sections=new Map(sourceSectionInventory(resources).map(section=>[section.section_id,section]));
+  for(const disposition of result.source_dispositions ?? []) {
+    if(disposition.disposition==='omit')continue;
+    const section=sections.get(disposition.section_id);
+    if(!section)continue;
+    for(const id of disposition.node_ids ?? []) {
+      const node=nodes.get(id);
+      appendSpans(node,[section.source_span]);
+      if(node && contractProjection && ['agent','tool','human_gate'].includes(node.type)) node.resource_refs=[...new Set([...(node.resource_refs ?? []),section.source_span.resource])];
+    }
+  }
+  for(const mapping of result.requirement_mappings) {
+    const requirement=result.source_requirements.find(item=>item.requirement_id===mapping.requirement_id);
+    for(const id of mapping.node_ids ?? [])appendSpans(nodes.get(id),requirement?.source_spans);
+  }
   // The executable list is a canonical projection of host-observed dependency
   // facts plus the accepted mapping status. It is not free-form planner output.
   // Unconditional dependencies are source facts, not a reward for choosing the
   // word `compiled`. Deliberately unsupported requirements still block later;
   // every other unconditional dependency remains visible to preparation.
   const mappingById = new Map(result.requirement_mappings.map(item => [item.requirement_id, item]));
-  const executables = new Map();
+  const executableEvidence = new Map(),executableDescriptors=[];
   for (const requirement of result.source_requirements) if (requirement.requirement_kind === 'dependency'
     && requirement.details?.phase === 'unconditional' && mappingById.get(requirement.requirement_id)?.status !== 'unsupported') {
     const name = requirement.details.executable;
-    if (!executables.has(name)) executables.set(name,{name,confidence:1,source_span:structuredClone(requirement.source_spans[0])});
+    executableDescriptors.push({name,...(requirement.details.version?{version:requirement.details.version}:{}),...(requirement.details.python_modules?{python_modules:requirement.details.python_modules}:{})});
+    if (!executableEvidence.has(name)) executableEvidence.set(name,structuredClone(requirement.source_spans[0]));
   }
-  if (contractProjection) result.required_executables = [...executables.values()].sort((a,b)=>a.name.localeCompare(b.name));
+  if (contractProjection) result.required_executables = normalizeExecutableRequirements(executableDescriptors).map(item=>({...item,confidence:1,source_span:executableEvidence.get(item.name)}));
   return result;
 }
 

@@ -75,6 +75,7 @@ export class ConnectorTaskStore {
         finished_at: null,
         remote_identity: {},
         terminal_evidence: null,
+        execution_cleanup: null,
         result: null,
         error: null,
         ...clone(fields),

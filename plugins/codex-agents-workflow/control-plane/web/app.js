@@ -5,7 +5,7 @@ const token = fragment.get('token') || '';
 history.replaceState(null, '', location.pathname);
 document.querySelector('#workflow-workspace').href = '/workflows#token=' + encodeURIComponent(token);
 
-const state = { config: null, bundledDefaults: null, revision: '', storage: null, dirty: false };
+const state = { config: null, bundledDefaults: null, revision: '', storage: null, dirty: false, modelCatalog: [], modelCatalogError: '', providerSecrets: {}, providerSecretsError: '' };
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const copy = (zh, en = zh) => ({ zh, en });
@@ -24,6 +24,14 @@ function clearLocalizedText(element) {
   if (!element) return;
   delete element.dataset.i18nZh;
   delete element.dataset.i18nEn;
+}
+
+function uniqueProviderId(base) {
+  const existing = new Set($$('.provider-id').map((input) => input.value.trim()).filter(Boolean));
+  if (!existing.has(base)) return base;
+  let suffix = 2;
+  while (existing.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
 }
 
 function applyLocalizedText(element) {
@@ -161,6 +169,61 @@ function textarea(value = '', className = '') {
   return input;
 }
 
+function passwordInput(className = '') {
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.autocomplete = 'off';
+  input.className = className;
+  return input;
+}
+
+function catalogModel(modelId) {
+  return state.modelCatalog.find((item) => item.model === modelId);
+}
+
+function modelDisplayName(modelId) {
+  const item = catalogModel(modelId);
+  return item?.displayName ? `${item.displayName} · ${item.model}` : modelId;
+}
+
+function nativeModelSelect(current) {
+  const select = document.createElement('select');
+  select.className = 'provider-model';
+  const ids = [...new Set([...state.modelCatalog.map((item) => item.model), current].filter(Boolean))];
+  for (const modelId of ids) {
+    const option = document.createElement('option');
+    option.value = modelId;
+    option.textContent = modelDisplayName(modelId);
+    option.selected = modelId === current;
+    select.append(option);
+  }
+  select.addEventListener('change', markDirty);
+  return select;
+}
+
+function reasoningEfforts(modelId, current) {
+  const item = catalogModel(modelId);
+  const advertised = (item?.supportedReasoningEfforts || []).map((entry) => entry.reasoningEffort).filter(Boolean);
+  return [...new Set([...(advertised.length ? advertised : ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']), current].filter(Boolean))];
+}
+
+function replaceReasoningOptions(select, modelId, preferred) {
+  const values = reasoningEfforts(modelId, preferred);
+  const model = catalogModel(modelId);
+  const selected = values.includes(preferred) ? preferred : (model?.defaultReasoningEffort || values[0] || '');
+  select.replaceChildren(...values.map((value) => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = localizedValue(REASONING_EFFORT_LABELS[value] || copy(value));
+    option.selected = value === selected;
+    return option;
+  }));
+}
+
+function secretState(providerId) {
+  return state.providerSecrets[providerId] || { required: true, ready: false };
+}
+
 function grid(...children) {
   const el = document.createElement('div');
   el.className = 'grid two';
@@ -211,60 +274,153 @@ function providerCard(provider, index) {
   const config = textarea(JSON.stringify(provider.config, null, 2), 'provider-config');
   const nativeOptions = document.createElement('div');
   nativeOptions.className = 'grid two provider-native-options';
-  const model = textInput(provider.config?.model || '', 'provider-model');
+  const model = nativeModelSelect(provider.config?.model || '');
   const currentEffort = provider.config?.reasoning_effort || '';
-  const effortOptions = ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-  if (!effortOptions.includes(currentEffort)) effortOptions.push(currentEffort);
+  const effortOptions = reasoningEfforts(model.value, currentEffort);
   const reasoningEffort = selectInput(
     effortOptions,
     currentEffort,
     'provider-reasoning-effort',
     REASONING_EFFORT_LABELS,
   );
+  replaceReasoningOptions(reasoningEffort, model.value, currentEffort);
   nativeOptions.append(
-    field(copy('模型', 'Model'), model),
+    field(copy('可用模型', 'Available model'), model),
     field(copy('推理强度', 'Reasoning effort'), reasoningEffort),
   );
 
+  const apiOptions = document.createElement('div');
+  apiOptions.className = 'stack provider-api-options';
+  const apiEndpoint = textInput(provider.config?.endpoint || '', 'provider-api-endpoint');
+  const apiModel = textInput(provider.config?.model || '', 'provider-api-model');
+  const apiAuth = selectInput(['bearer', 'x-api-key', 'none'], provider.config?.auth_type || 'bearer', 'provider-api-auth');
+  const apiKeyEnv = textInput(provider.config?.api_key_env || '', 'provider-api-key-env');
+  const apiKey = passwordInput('provider-api-key');
+  apiKey.placeholder = t('粘贴 API key；保存后从输入框清除', 'Paste API key; cleared from this field after save');
+  const apiKeyStatus = document.createElement('p');
+  apiKeyStatus.className = 'hint provider-secret-status';
+  const clearSecret = document.createElement('button');
+  clearSecret.type = 'button';
+  clearSecret.className = 'secondary small';
+  setLocalizedText(clearSecret, '清除本次会话的 API key', 'Clear API key for this session');
+  const apiGrid = grid(
+    field(copy('API 地址', 'API endpoint'), apiEndpoint),
+    field(copy('模型 ID', 'Model id'), apiModel),
+    field(copy('认证方式', 'Authentication'), apiAuth),
+    field(copy('API key 环境变量名', 'API key environment variable'), apiKeyEnv),
+  );
+  apiOptions.append(apiGrid, field(copy('API key（仅当前会话）', 'API key (current session only)'), apiKey), apiKeyStatus, clearSecret);
+
+  const advanced = document.createElement('details');
+  advanced.className = 'provider-advanced';
+  const advancedSummary = document.createElement('summary');
+  setLocalizedText(advancedSummary, '高级适配器设置', 'Advanced adapter settings');
+  advanced.append(advancedSummary, field(copy('适配器 JSON（禁止填写密钥）', 'Adapter JSON (never enter secrets)'), config));
+
   const refreshProviderSummary = () => {
-    setLocalizedOrUserText(title, name.value, '未命名 Provider', '(unnamed provider)');
+    clearLocalizedText(title);
+    if (kind.value === 'native_agent' && model.value) title.textContent = `${modelDisplayName(model.value)} / ${reasoningEffort.value}`;
+    else if (kind.value === 'openai_compatible' && apiModel.value) title.textContent = apiModel.value;
+    else setLocalizedOrUserText(title, name.value, '未命名 Provider', '(unnamed provider)');
     const kindCopy = asCopy(PROVIDER_KIND_LABELS[kind.value] || kind.value);
     setLocalizedText(
       meta,
-      `${kindCopy.zh} · ${enabled.checked ? '已启用' : '已停用'}`,
-      `${kindCopy.en} · ${enabled.checked ? 'enabled' : 'disabled'}`,
+      `${name.value || '未命名'} · ${kindCopy.zh} · ${enabled.checked ? '已启用' : '已停用'}`,
+      `${name.value || '(unnamed)'} · ${kindCopy.en} · ${enabled.checked ? 'enabled' : 'disabled'}`,
     );
   };
   name.addEventListener('input', refreshProviderSummary);
   enabled.addEventListener('change', refreshProviderSummary);
 
-  const syncNativeVisibility = () => {
+  const syncVisibility = () => {
     nativeOptions.hidden = kind.value !== 'native_agent';
+    apiOptions.hidden = kind.value !== 'openai_compatible';
   };
-  const syncNativeConfig = () => {
-    if (kind.value !== 'native_agent') return;
-    let parsed;
-    try { parsed = JSON.parse(config.value); } catch { return; }
-    parsed.model = model.value.trim();
-    parsed.reasoning_effort = reasoningEffort.value;
+  const parsedConfig = () => {
+    try { return JSON.parse(config.value); } catch { return null; }
+  };
+  const writeParsedConfig = (parsed) => {
     config.value = JSON.stringify(parsed, null, 2);
     markDirty();
   };
+  const syncNativeConfig = () => {
+    if (kind.value !== 'native_agent') return;
+    const parsed = parsedConfig();
+    if (!parsed) return;
+    parsed.model = model.value.trim();
+    parsed.reasoning_effort = reasoningEffort.value;
+    parsed.role ||= 'advisor';
+    details.dataset.role = parsed.role;
+    writeParsedConfig(parsed);
+    refreshProviderSummary();
+    refreshProviderOptions();
+  };
   const syncNativeFields = () => {
     if (kind.value !== 'native_agent') return;
-    try {
-      const parsed = JSON.parse(config.value);
-      if (typeof parsed.model === 'string') model.value = parsed.model;
-      if ([...reasoningEffort.options].some((option) => option.value === parsed.reasoning_effort)) {
-        reasoningEffort.value = parsed.reasoning_effort;
-      }
-    } catch {}
+    const parsed = parsedConfig();
+    if (!parsed) return;
+    if (typeof parsed.model === 'string' && [...model.options].some((option) => option.value === parsed.model)) model.value = parsed.model;
+    replaceReasoningOptions(reasoningEffort, model.value, parsed.reasoning_effort);
+    details.dataset.role = parsed.role || 'advisor';
   };
-  model.addEventListener('input', syncNativeConfig);
+  const syncApiConfig = () => {
+    if (kind.value !== 'openai_compatible') return;
+    const parsed = parsedConfig();
+    if (!parsed) return;
+    parsed.endpoint = apiEndpoint.value.trim();
+    parsed.model = apiModel.value.trim();
+    parsed.auth_type = apiAuth.value;
+    parsed.api_key_env = apiAuth.value === 'none' ? '' : apiKeyEnv.value.trim();
+    writeParsedConfig(parsed);
+    refreshProviderSummary();
+  };
+  const syncApiFields = () => {
+    if (kind.value !== 'openai_compatible') return;
+    const parsed = parsedConfig();
+    if (!parsed) return;
+    apiEndpoint.value = parsed.endpoint || '';
+    apiModel.value = parsed.model || '';
+    apiAuth.value = parsed.auth_type || 'bearer';
+    apiKeyEnv.value = parsed.api_key_env || '';
+  };
+  const refreshSecretStatus = () => {
+    const current = secretState(id.value.trim());
+    if (apiAuth.value === 'none') setLocalizedText(apiKeyStatus, '此 Provider 不需要 API key。', 'This Provider does not require an API key.');
+    else if (apiKey.value) setLocalizedText(apiKeyStatus, '保存配置时载入此 key；不会写入磁盘。', 'This key will be loaded on save and will not be written to disk.');
+    else if (current.ready) setLocalizedText(apiKeyStatus, `当前会话已载入 ${apiKeyEnv.value || current.api_key_env}。`, `${apiKeyEnv.value || current.api_key_env} is loaded for this session.`);
+    else setLocalizedText(apiKeyStatus, `尚未载入 ${apiKeyEnv.value || current.api_key_env || 'API key'}。`, `${apiKeyEnv.value || current.api_key_env || 'API key'} is not loaded.`);
+    clearSecret.hidden = apiAuth.value === 'none' || !current.ready;
+  };
+  const resetConfigForKind = () => {
+    const current = parsedConfig() || {};
+    if (kind.value === 'native_agent' && (!current.agent_type || !current.role)) {
+      const firstModel = state.modelCatalog[0]?.model || 'gpt-6-luna';
+      config.value = JSON.stringify({ agent_type: 'default', model: firstModel, reasoning_effort: catalogModel(firstModel)?.defaultReasoningEffort || 'medium', role: 'advisor', fresh_context: true, requested_sandbox: 'workspace-write', inactivity_timeout_ms: 0 }, null, 2);
+      syncNativeFields();
+    } else if (kind.value === 'openai_compatible' && !current.endpoint) {
+      config.value = JSON.stringify({ endpoint: 'https://api.openai.com/v1/chat/completions', model: '', api_key_env: `CODEX_WORKFLOW_${id.value.trim().replace(/[^A-Za-z0-9]/g, '_').toUpperCase()}_API_KEY`, auth_type: 'bearer', timeout_ms: 120000, max_output_tokens: 4096, max_tokens_field: 'max_tokens', temperature: 0.2, system_prompt: '', headers: {} }, null, 2);
+      syncApiFields();
+    }
+    syncVisibility();
+    refreshSecretStatus();
+    refreshProviderSummary();
+  };
+  model.addEventListener('change', () => { replaceReasoningOptions(reasoningEffort, model.value, catalogModel(model.value)?.defaultReasoningEffort || reasoningEffort.value); syncNativeConfig(); });
   reasoningEffort.addEventListener('change', syncNativeConfig);
-  config.addEventListener('input', syncNativeFields);
-  kind.addEventListener('change', () => { syncNativeVisibility(); refreshProviderSummary(); });
-  syncNativeVisibility();
+  for (const input of [apiEndpoint, apiModel, apiKeyEnv]) input.addEventListener('input', syncApiConfig);
+  apiAuth.addEventListener('change', () => { syncApiConfig(); refreshSecretStatus(); });
+  apiKey.addEventListener('input', () => { markDirty(); refreshSecretStatus(); });
+  clearSecret.addEventListener('click', () => api('/api/provider-secret', { method: 'PUT', body: JSON.stringify({ provider_id: id.value.trim(), clear: true }) }).then((result) => {
+    state.providerSecrets[result.provider_id] = result;
+    apiKey.value = '';
+    refreshSecretStatus();
+    toast(copy('本次会话的 API key 已清除。', 'API key cleared for this session.'));
+  }).catch((error) => toast(error.message, true)));
+  config.addEventListener('input', () => { syncNativeFields(); syncApiFields(); refreshProviderSummary(); });
+  kind.addEventListener('change', resetConfigForKind);
+  id.addEventListener('input', refreshSecretStatus);
+  syncVisibility();
+  refreshSecretStatus();
 
   const toggles = document.createElement('div');
   toggles.className = 'grid three';
@@ -281,7 +437,8 @@ function providerCard(provider, index) {
     toggles,
     field(copy('描述', 'Description'), description),
     nativeOptions,
-    field(copy('Provider 适配器 JSON（不要存储秘密值）', 'Provider adapter JSON (never store secret values)'), config),
+    apiOptions,
+    advanced,
   );
 
   const actions = document.createElement('div');
@@ -547,6 +704,13 @@ function refreshProviderOptions() {
   const providers = $$('.provider-card').map((card) => ({
     id: $('.provider-id', card).value.trim(),
     name: $('.provider-name', card).value.trim(),
+    kind: $('.provider-kind', card).value,
+    model: $('.provider-kind', card).value === 'native_agent'
+      ? $('.provider-model', card)?.value.trim()
+      : $('.provider-kind', card).value === 'openai_compatible'
+        ? $('.provider-api-model', card)?.value.trim()
+        : '',
+    effort: $('.provider-reasoning-effort', card)?.value || '',
     read: $('.provider-read', card).checked,
     write: $('.provider-write', card).checked,
   })).filter((provider) => provider.id);
@@ -558,7 +722,10 @@ function refreshProviderOptions() {
     for (const provider of compatible) {
       const option = document.createElement('option');
       option.value = provider.id;
-      option.textContent = `${provider.name || localizedValue(copy('未命名', '(unnamed)'))} · ${provider.id}`;
+      const identity = provider.model
+        ? `${provider.kind === 'native_agent' ? modelDisplayName(provider.model) : provider.model}${provider.effort ? ` / ${provider.effort}` : ''}`
+        : localizedValue(PROVIDER_KIND_LABELS[provider.kind] || copy(provider.kind));
+      option.textContent = `${identity} — ${provider.name || localizedValue(copy('未命名连接', '(unnamed connection)'))}`;
       option.selected = provider.id === current;
       select.append(option);
     }
@@ -587,6 +754,22 @@ function render() {
   $('#allow-direct-api').checked = config.global.allow_direct_api;
   $('#console-title').value = config.global.console_title;
   $('#providers').replaceChildren(...config.providers.map(providerCard));
+  const catalogStatus = $('#model-catalog-status');
+  if (state.modelCatalogError) {
+    catalogStatus.className = 'hint error-text';
+    setLocalizedText(catalogStatus, `模型列表读取失败：${state.modelCatalogError}`, `Could not load model list: ${state.modelCatalogError}`);
+  } else {
+    catalogStatus.className = 'hint';
+    setLocalizedText(catalogStatus, `已从当前 Codex 登录读取 ${state.modelCatalog.length} 个可选模型。`, `${state.modelCatalog.length} selectable model(s) loaded from the current Codex login.`);
+  }
+  const secretStatus = $('#provider-secret-status');
+  if (state.providerSecretsError) {
+    secretStatus.className = 'hint error-text';
+    setLocalizedText(secretStatus, `API Key 状态读取失败：${state.providerSecretsError}`, `Could not load API key status: ${state.providerSecretsError}`);
+  } else {
+    secretStatus.className = 'hint';
+    setLocalizedText(secretStatus, 'API Key 仅保存在当前控制平面进程中，不会写入配置文件。', 'API keys stay only in the current control-plane process and are never written to configuration.');
+  }
   $('#task-types').closest('section').hidden = config.version === 7;
   $('#load-defaults').hidden = config.version === 7;
   $('#defaults-heading').closest('section').hidden = config.version === 7;
@@ -657,6 +840,24 @@ async function load(path = '/api/config') {
   ]);
   if (defaultsPayload) state.bundledDefaults = defaultsPayload.config;
   state.config = payload.config;
+  const [models, secrets] = await Promise.allSettled([
+    api('/api/models'),
+    api('/api/provider-secrets'),
+  ]);
+  if (models.status === 'fulfilled') {
+    state.modelCatalog = models.value.models || [];
+    state.modelCatalogError = '';
+  } else {
+    state.modelCatalog = [];
+    state.modelCatalogError = models.reason?.message || String(models.reason);
+  }
+  if (secrets.status === 'fulfilled') {
+    state.providerSecrets = Object.fromEntries((secrets.value.providers || []).map((item) => [item.provider_id, item]));
+    state.providerSecretsError = '';
+  } else {
+    state.providerSecrets = {};
+    state.providerSecretsError = secrets.reason?.message || String(secrets.reason);
+  }
   if (path === '/api/config') {
     state.revision = payload.revision;
     state.storage = payload.storage;
@@ -683,12 +884,20 @@ async function load(path = '/api/config') {
 
 async function save() {
   setBadge(copy('保存中', 'Saving'));
+  const pendingSecrets = $$('.provider-card').map((card) => ({
+    provider_id: $('.provider-id', card).value.trim(),
+    api_key: $('.provider-api-key', card)?.value || '',
+  })).filter((item) => item.api_key);
   const payload = await api('/api/config', {
     method: 'PUT',
     body: JSON.stringify({ config: collect(), expected_revision: state.revision }),
   });
   state.config = payload.config;
   state.revision = payload.revision;
+  for (const secret of pendingSecrets) {
+    const result = await api('/api/provider-secret', { method: 'PUT', body: JSON.stringify(secret) });
+    state.providerSecrets[result.provider_id] = result;
+  }
   render();
   toast(copy('配置已保存。新的解析会立即使用它。', 'Configuration saved. New resolutions will use it immediately.'));
 }
@@ -710,30 +919,73 @@ $('#load-defaults').addEventListener('click', () => {
 });
 $('#add-provider').addEventListener('click', () => {
   const n = $$('.provider-card').length + 1;
+  const firstModel = state.modelCatalog[0];
+  const id = uniqueProviderId('native-provider');
   const provider = {
-    id: `custom-provider-${n}`,
-    name: `Custom provider ${n}`,
+    id,
+    name: t('新的原生连接', 'New native connection'),
+    kind: 'native_agent',
+    enabled: false,
+    description: '',
+    requires_user_approval: false,
+    capabilities: { read: true, write: true, background: false },
+    config: {
+      agent_type: 'default',
+      model: firstModel?.model || 'gpt-6-luna',
+      reasoning_effort: firstModel?.defaultReasoningEffort || 'medium',
+      role: 'advisor',
+      fresh_context: true,
+      requested_sandbox: 'workspace-write',
+      inactivity_timeout_ms: 0,
+    },
+  };
+  $('#providers').append(providerCard(provider, n - 1));
+  markDirty();
+  refreshProviderOptions();
+});
+$('#add-api-provider').addEventListener('click', () => {
+  const n = $$('.provider-card').length + 1;
+  const id = uniqueProviderId('api-provider');
+  const envStem = id.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+  const provider = {
+    id,
+    name: t('新的 API 连接', 'New API connection'),
     kind: 'openai_compatible',
     enabled: false,
     description: '',
     requires_user_approval: false,
     capabilities: { read: true, write: false, background: false },
     config: {
-      endpoint: 'https://example.invalid/v1/chat/completions',
-      model: 'replace-me',
-      api_key_env: 'CODEX_WORKFLOW_CUSTOM_API_KEY',
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      model: '',
+      api_key_env: `CODEX_WORKFLOW_${envStem}_API_KEY`,
       auth_type: 'bearer',
       timeout_ms: 120000,
       max_output_tokens: 4096,
       max_tokens_field: 'max_tokens',
       temperature: 0.2,
-      system_prompt: 'You are an advisory subagent. Return text only.',
+      system_prompt: '',
       headers: {},
     },
   };
   $('#providers').append(providerCard(provider, n - 1));
   markDirty();
   refreshProviderOptions();
+});
+$('#refresh-models').addEventListener('click', () => {
+  api('/api/models').then((payload) => {
+    state.modelCatalog = payload.models || [];
+    state.modelCatalogError = '';
+    const wasDirty = state.dirty;
+    state.config = collect();
+    render();
+    if (wasDirty) markDirty();
+  }).catch((error) => {
+    state.modelCatalogError = error.message;
+    const status = $('#model-catalog-status');
+    status.className = 'hint error-text';
+    setLocalizedText(status, `模型列表读取失败：${error.message}`, `Could not load model list: ${error.message}`);
+  });
 });
 $('#add-task-type-from-preset').addEventListener('click', () => {
   const source = state.bundledDefaults?.task_types.find((taskType) => taskType.id === $('#task-type-preset').value);

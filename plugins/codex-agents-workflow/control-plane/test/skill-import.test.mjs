@@ -7,7 +7,7 @@ import { readSkillSnapshot, parseSkill, redactKnownCredentials } from '../lib/sk
 import { compileCoarseSkill, importCoarseSkill, verifyCoarseRelocation } from '../lib/skill-import/coarse-compiler.mjs';
 import { WorkflowStore } from '../lib/workflow-store.mjs';
 import { validateWorkflowGraph } from '../lib/workflow-validator.mjs';
-import { digest, canonicalJSON } from '../lib/workflow-revisions.mjs';
+import { digest, canonicalJSON, prepareResources } from '../lib/workflow-revisions.mjs';
 import { SkillInventory } from '../lib/skill-import/inventory.mjs';
 import { expansionPacket, applyExpansion, compileExpansion, compileRequirementCoverage, EXPANSION_CONTRACT } from '../lib/skill-import/semantic-expander.mjs';
 import { importReviewPacket, reviewImportedDraft } from '../lib/skill-import/review-import.mjs';
@@ -24,8 +24,84 @@ import { observedSourceRequirements, projectObservedRequirements } from '../lib/
 import { validateData } from '../lib/workflow-data-schema.mjs';
 import { sourceSectionInventory, validateSourceDispositions } from '../lib/skill-import/source-dispositions.mjs';
 import { CONVERSION_CONTRACT } from '../lib/skill-import/conversion-contract.mjs';
+import { compileDeployableConversion, requireDeployableConvertedSnapshot } from '../lib/skill-import/conversion-deployment.mjs';
+import { AUTHORING_NODE_PROMPT_MAX_LENGTH } from '../lib/authoring/blueprint-contract.mjs';
 import { createConversionCertificate, requireCurrentConversionCertificate } from '../lib/skill-import/conversion-certificate.mjs';
 import { exclusiveConditionFanIn } from '../lib/skill-import/fan-in-topology.mjs';
+import { dependencyExecutables } from '../lib/skill-import/source-contracts.mjs';
+import { resolveBindings } from '../lib/workflow-bindings.mjs';
+
+const roleProfiles=[
+  {id:'builtin-role-bounded-code-change',revision_hash:'1'.repeat(64),role:'implementer',access:'bounded_write',instructions:'Implement the bounded task.'},
+  {id:'builtin-role-judgment-heavy-change',revision_hash:'2'.repeat(64),role:'implementer',access:'bounded_write',instructions:'Implement the complex task.'},
+  {id:'builtin-role-cross-review',revision_hash:'3'.repeat(64),role:'reviewer',access:'read_only',instructions:'Review independently.'},
+  {id:'builtin-role-repository-analysis',revision_hash:'4'.repeat(64),role:'implementer',access:'read_only',instructions:'Analyze the repository.'},
+  {id:'builtin-role-review-and-repair',revision_hash:'5'.repeat(64),role:'reviewer',access:'bounded_write',instructions:'Review and repair bounded defects.'},
+];
+
+test('source requirement projection preserves explicit field and zero-input contracts on repeated calls', () => {
+  const resources={'source/SKILL.md':Buffer.from('# Workflow\nProduce a summary and consume that summary.')};
+  const proposal={source_requirements:[],requirement_mappings:[],nodes:[
+    {id:'producer',type:'agent',input_bindings:{},resource_refs:[],outputs_schema:{type:'object',properties:{summary:{type:'string'},evidence:{type:'string'}},required:['summary','evidence']}},
+    {id:'consumer',type:'agent',input_bindings:{summary:'/nodes/producer/output/summary'},resource_refs:[]},
+  ],edges:[{source:'producer',target:'consumer'}]};
+  const once=projectObservedRequirements(proposal,resources),twice=projectObservedRequirements(once,resources);
+  assert.deepEqual(once.nodes[0].input_bindings,{});
+  assert.deepEqual(once.nodes[1].input_bindings,proposal.nodes[1].input_bindings);
+  assert.deepEqual(twice,once);
+  const input=resolveBindings(twice.nodes[1].input_bindings,{inputs:{task:'user task'},nodes:{producer:{output:{summary:'tiny summary',evidence:'X'.repeat(100000)}}}});
+  assert.equal(Buffer.byteLength(JSON.stringify(input)),26);
+  assert.throws(()=>resolveBindings(twice.nodes[1].input_bindings,{nodes:{producer:{output:{evidence:'present'}}}}),{code:'BINDING_MISSING'});
+  const legacy=structuredClone(proposal);delete legacy.nodes[1].input_bindings;
+  assert.deepEqual(projectObservedRequirements(legacy,resources).nodes[1].input_bindings,{task:'/inputs/task',upstream_producer:'/nodes/producer/output'});
+});
+
+test('compiled agent prompt rejects overflow after Host-required artifact paths are appended', async t => {
+  const f=await fixture(t,'Write results/final_report.md with the result.');
+  const provider={id:'chosen',enabled:true,capabilities:{read:true,write:true}};
+  const pack=await importCoarseSkill(f.store,f.source,{id:'prompt-limit',providerId:provider.id});
+  const resources=await f.store.resources('prompt-limit');
+  const artifact=observedSourceRequirements(resources).find(item=>item.requirement_kind==='artifact_path');
+  assert.equal(artifact?.details?.artifact_path,'results/final_report.md');
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:9,end_line:9}};
+  const prompt='X'.repeat(AUTHORING_NODE_PROMPT_MAX_LENGTH-20);
+  const proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[{requirement_id:artifact.requirement_id,node_ids:['work'],binding_names:[],runtime_guards:[],resource_refs:[...artifact.resource_refs],status:'agent_assisted',rationale:'Writing the exact source artifact is this activity responsibility.'}],nodes:[{id:'work',type:'agent',prompt_template:prompt,operation_mode:'write',...origin}],edges:[{id:'start-work',source:'start',target:'work',...origin},{id:'work-final',source:'work',target:'final',...origin}]};
+  assert.throws(()=>compileExpansion(pack,resources,proposal,{providers:[provider]}),error=>error.code==='AUTHORING_PROMPT_LIMIT'&&error.activity_key==='work'&&error.prompt_chars>AUTHORING_NODE_PROMPT_MAX_LENGTH);
+});
+
+test('parallel aggregates consume declared fields from every concrete branch and may use a registered tool', async t => {
+  const f=await fixture(t,'Run both independent checks and combine their summaries.');
+  const provider={id:'chosen',enabled:true,capabilities:{read:true}};
+  const pack=await importCoarseSkill(f.store,f.source,{id:'field-aggregate',providerId:provider.id});
+  const resources=await f.store.resources('field-aggregate');
+  const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:9,end_line:9}};
+  const output={type:'object',properties:{summary:{type:'string'},evidence:{type:'string'}},required:['summary','evidence']};
+  const bindings={left_summary:'/nodes/left/output/summary',right_summary:'/nodes/right/output/summary'};
+  const contract={id:'combine_summaries',identity:{name:'combine_summaries',version:'1',sha256:'a'.repeat(64)},argv:['combine_summaries'],input_schema:{type:'object',additionalProperties:false,properties:{left_summary:{type:'string'},right_summary:{type:'string'}},required:['left_summary','right_summary']},output_schema:{type:'object',properties:{summary:{type:'string'}},required:['summary']},env_allow:[],permissions:{network:false,read_paths:[],write_paths:[]},output_cap_bytes:4096,deadline_ms:1000,idempotency:{mode:'safe'}};
+  const proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],nodes:[
+    {id:'fork',type:'parallel',join_id:'joined',failure_policy:'fail_fast',...origin},
+    ...['left','right'].map(id=>({id,type:'agent',prompt_template:'Return the check summary and evidence.',input_bindings:{},outputs_schema:output,...origin})),
+    {id:'joined',type:'join',parallel_id:'fork',...origin},
+    {id:'aggregate',type:'agent',prompt_template:'Combine the two summaries.',input_bindings:bindings,outputs_schema:contract.output_schema,...origin},
+  ],edges:[['a','start','fork'],['b','fork','left','left'],['c','fork','right','right'],['d','left','joined'],['e','right','joined'],['f','joined','aggregate'],['g','aggregate','final']].map(([id,source,target,label])=>({id,source,target,...(label?{label}:{}),...origin}))};
+  const context={providers:[provider],host_tools:[contract.id],host_tool_contracts:[contract]};
+  for(const type of ['agent','tool']) {
+    const candidate=structuredClone(proposal);
+    if(type==='tool')candidate.nodes[4]={id:'aggregate',type,tool:contract.id,input_bindings:bindings,...origin};
+    const compiled=compileExpansion(pack,resources,candidate,context);
+    assert.deepEqual(compiled.workflow.nodes.find(node=>node.id==='aggregate').input_bindings,bindings);
+    assert.deepEqual(compiled.workflow.nodes.find(node=>node.id==='left').input_bindings,{});
+    assert.equal(compiled.workflow.nodes.find(node=>node.id==='left').retry.max_attempts,3);
+    const explicitRetry=structuredClone(candidate);explicitRetry.nodes.find(node=>node.id==='left').retry_max_attempts=1;
+    assert.equal(compileExpansion(pack,resources,explicitRetry,context).workflow.nodes.find(node=>node.id==='left').retry.max_attempts,1);
+    assert.deepEqual(compiled.workflow.nodes.find(node=>node.id==='final').input_bindings,{task:'/inputs/task',upstream_result:'/nodes/aggregate/output'});
+    assert.deepEqual(compileExpansion(pack,resources,compiled.canonical_proposal,context).canonical_proposal,compiled.canonical_proposal);
+  }
+  for(const input_bindings of [{left_summary:bindings.left_summary},{selected:{coalesce:Object.values(bindings)}}]) {
+    const omitted=structuredClone(proposal);omitted.nodes[4].input_bindings=input_bindings;
+    assert.throws(()=>compileExpansion(pack,resources,omitted,context),{code:'EXPANSION_AGGREGATE_BINDING'});
+  }
+});
 
 test('dependency scanning distinguishes shell-local colors from external environment reads', () => {
   const snapshot={root:'/synthetic/source',metadata:{},problems:[],inventory:[],files:{
@@ -35,6 +111,13 @@ test('dependency scanning distinguishes shell-local colors from external environ
   const analysis=analyzeSkillDependencies(snapshot);
   assert.deepEqual(analysis.requirements.environment,[]);
   assert.deepEqual(analysis.observed_dependencies.filter(item=>item.kind==='environment').map(item=>item.name).sort(),['API_KEY','REMOTE_TOKEN']);
+});
+
+test('source dependency parsing ignores program names inside quoted command arguments',()=>{
+  assert.deepEqual(dependencyExecutables('python -c "print(\'ffmpeg\')"'),['python']);
+  assert.deepEqual(dependencyExecutables('ffmpeg -i input.mp4 output.mp4 | ffprobe output.mp4'),['ffmpeg','ffprobe']);
+  const resources={'source/SKILL.md':Buffer.from('# Skill\n\n## Workflow\n\nRun `python -c "print(\'ffmpeg\')"`.')};
+  assert.deepEqual(observedSourceRequirements(resources).filter(item=>item.requirement_kind==='dependency').map(item=>item.details.executable),['python']);
 });
 
 test('allowed tools and optional script resources remain policy/observations rather than unconditional requirements', () => {
@@ -63,6 +146,104 @@ test('contract anchors retain entrypoint artifacts and dependencies without prom
   assert(requirements.filter(item=>item.requirement_kind==='dependency').every(item=>item.details.phase==='conditional'));
   assert(!requirements.some(item=>item.source_spans[0].resource==='source/reference.md'));
   assert(!requirements.some(item=>item.source_spans[0].resource==='source/example.js'));
+});
+
+test('literal product artifacts exclude project-memory bookkeeping and remain trigger-scoped', () => {
+  const resources={'source/SKILL.md':Buffer.from([
+    'Update project_memory/progress.md and changelog.md; update decision_log.md when a shared contract moves.',
+    'Write final_report.pdf after review; save debug_trace.json if a check fails.',
+    'Never write obsolete_report.pdf.',
+    'When a preview is requested:',
+    '  - Update optional_preview.mp4.',
+  ].join('\n'))};
+  const paths=observedSourceRequirements(resources).filter(item=>item.requirement_kind==='artifact_path').map(item=>item.details.artifact_path);
+  assert.deepEqual(paths,['final_report.pdf']);
+});
+
+test('host never projects project-memory bookkeeping as product completion artifacts', () => {
+  const source='Update project_memory/progress.md and changelog.md; update decision_log.md when a shared contract moves.\nWrite final_report.pdf.\n';
+  const resources={'source/SKILL.md':Buffer.from(source)};
+  const span={resource:'source/SKILL.md',start_line:1,end_line:2};
+  const node=(id,operation_mode,prompt_template)=>({id,type:'agent',operation_mode,prompt_template,source_spans:[span],input_bindings:{task:'/inputs/task'},resource_refs:['source/SKILL.md'],requirement_ids:[]});
+  const proposal={source_requirements:[],requirement_mappings:[],nodes:[
+    node('document','write','Update project_memory/progress.md and changelog.md with verification results. Write final_report.pdf.'),
+    node('review','read','Review project_memory/progress.md and changelog.md.'),
+  ],edges:[]};
+  const projected=projectObservedRequirements(proposal,resources);
+  assert.deepEqual(projected.requirement_mappings.map(mapping=>mapping.node_ids),[['document']]);
+  assert.deepEqual(projected.nodes[0].required_artifacts.map(item=>item.path),['final_report.pdf']);
+  assert.deepEqual(projected.nodes[1].required_artifacts,[]);
+  assert.equal(projected.source_requirements.some(item=>/project_memory|changelog|decision_log/.test(item.details?.artifact_path??'')),false);
+});
+
+test('a basename under an explicit runtime output root is not an exact Host path gate', () => {
+  const resources={'source/SKILL.md':Buffer.from('All session outputs go into `<videos_dir>/edit/`.\nProduce takes_packed.md and edl.json.\n')};
+  const observed=observedSourceRequirements(resources).filter(item=>item.requirement_kind==='artifact_path');
+  assert.deepEqual(observed.map(item=>[item.details.artifact_path,item.trigger]),[['takes_packed.md','runtime_resolved_artifact'],['edl.json','runtime_resolved_artifact']]);
+  for(const item of observed)assert.doesNotThrow(()=>validateData(item,EXPANSION_PROPOSAL_SCHEMA.properties.source_requirements.items));
+  const proposal={source_requirements:[],requirement_mappings:observed.map(item=>({requirement_id:item.requirement_id,node_ids:['produce'],binding_names:[],runtime_guards:[],resource_refs:['source/SKILL.md'],status:'agent_assisted',rationale:'Writer resolves the runtime output root.'})),nodes:[{id:'produce',type:'agent',operation_mode:'write',prompt_template:'Produce takes_packed.md and edl.json under the supplied edit directory.',source_spans:[{resource:'source/SKILL.md',start_line:2,end_line:2}],input_bindings:{task:'/inputs/task'},resource_refs:['source/SKILL.md'],requirement_ids:[]}],edges:[]};
+  const projected=projectObservedRequirements(proposal,resources);
+  assert.deepEqual(projected.nodes[0].required_artifacts,[]);
+  assert.deepEqual(projected.nodes[0].requirement_ids,observed.map(item=>item.requirement_id));
+});
+
+test('explicit readiness in a retained candidate section reaches the Host preparation gate', () => {
+  const resources={'source/SKILL.md':Buffer.from([
+    '# Example workflow',
+    '## Principle',
+    'The only things you MUST do are in the Hard Rules section. Everything else is a worked example.',
+    '## Hard Rules',
+    'Never change source footage.',
+    '## Setup',
+    'On cold start verify:',
+    '- `ffmpeg` + `ffprobe` on PATH.',
+    '- Python deps installed.',
+    '- Node.js available if animation is requested.',
+  ].join('\n'))};
+  const setup=sourceSectionInventory(resources).find(section=>section.title==='Setup');
+  assert.equal(setup.authority,'reference_candidate');
+  const proposal={source_requirements:[],requirement_mappings:[],source_dispositions:[{section_id:setup.section_id,disposition:'workflow',node_ids:['prepare'],requirement_ids:[],rationale:'Retain explicit readiness checks.'}],nodes:[{id:'prepare',type:'agent',operation_mode:'read',source_spans:[setup.source_span],input_bindings:{task:'/inputs/task'},resource_refs:['source/SKILL.md'],requirement_ids:[]}],edges:[]};
+  const projected=projectObservedRequirements(proposal,resources);
+  assert.deepEqual(projected.required_executables.map(item=>item.name),['ffmpeg','ffprobe','python']);
+  assert.deepEqual(projected.source_requirements.filter(item=>item.requirement_kind==='dependency').map(item=>[item.details.executable,item.details.phase]),[['ffmpeg','unconditional'],['ffprobe','unconditional'],['python','unconditional'],['node','conditional']]);
+  assert(projected.requirement_mappings.filter(item=>item.requirement_id.startsWith('observed_dependency_')).every(item=>item.node_ids.includes('prepare')));
+});
+
+test('Host node evidence includes its mapped source sections and requirement lines', () => {
+  const resources={'source/SKILL.md':Buffer.from([
+    '# Example',
+    '## Implementation',
+    'Never use a placeholder token/card or a number as the visible card name.',
+    '## Review',
+    'Inspect the implementation against every assigned rule.',
+  ].join('\n'))};
+  const sections=sourceSectionInventory(resources);
+  const implementation=sections.find(item=>item.title==='Implementation');
+  const review=sections.find(item=>item.title==='Review');
+  assert(implementation && review);
+  const rule={requirement_id:'rule_exact_source_line',requirement_kind:'method_rule',source_spans:[{resource:'source/SKILL.md',start_line:3,end_line:3}],trigger:'perform the implementation',required_result:'Never use a placeholder card.',resource_refs:['source/SKILL.md'],details:{}};
+  const proposal={source_requirements:[rule],requirement_mappings:[{requirement_id:rule.requirement_id,node_ids:['review'],binding_names:[],runtime_guards:[],resource_refs:['source/SKILL.md'],status:'agent_assisted',rationale:'The review checks this exact implementation rule.'}],source_dispositions:[{section_id:implementation.section_id,disposition:'workflow',node_ids:['review'],requirement_ids:[],rationale:'The review verifies the implementation rule.'}],nodes:[{id:'review',type:'agent',operation_mode:'read',source_span:review.source_span,source_spans:[review.source_span],input_bindings:{task:'/inputs/task'},resource_refs:['source/SKILL.md'],requirement_ids:[]}],edges:[]};
+  const projected=projectObservedRequirements(proposal,resources);
+  const node=projected.nodes[0];
+  assert(node.requirement_ids.includes(rule.requirement_id));
+  assert(node.source_spans.some(span=>span.resource===implementation.source_span.resource && span.start_line===implementation.source_span.start_line && span.end_line===implementation.source_span.end_line));
+  assert(node.source_spans.some(span=>span.resource===rule.source_spans[0].resource && span.start_line===rule.source_spans[0].start_line && span.end_line===rule.source_spans[0].end_line));
+  assert.deepEqual(projectObservedRequirements(projected,resources).nodes[0].source_spans,node.source_spans);
+});
+
+test('contract anchors recognize executable command lines and CodeGraph as unconditional dependencies', () => {
+  const source = [
+    'Build a concrete trace with CodeGraph (`codegraph explore` and `codegraph node`).',
+    '   python scripts/run_semantic_scenario.py case.json --project-root . --evidence result.json',
+    '   python -m pytest tests/test_cards.py -q',
+    '   node --check web/app.js',
+    '   git diff --check',
+  ].join('\n');
+  const dependencies = observedSourceRequirements({ 'source/SKILL.md': Buffer.from(source) })
+    .filter(item => item.requirement_kind === 'dependency');
+  assert.deepEqual([...new Set(dependencies.map(item => item.details.executable))].sort(),
+    ['codegraph', 'git', 'node', 'python']);
+  assert(dependencies.every(item => item.details.phase === 'unconditional'));
 });
 
 test('contract anchors require explicitly referenced pinned guidance at its source trigger', () => {
@@ -128,26 +309,26 @@ test('source anchors preserve absolute artifacts, list continuations, independen
 });
 
 test('source-section inventory preserves workflow contracts while exposing worked examples for pruning', () => {
-  const zenon=sourceSectionInventory({'source/SKILL.md':Buffer.from([
-    '# Write cards','A card is done only when source, behavior and scenarios agree.',
+  const requiredSections=sourceSectionInventory({'source/SKILL.md':Buffer.from([
+    '# Build artifacts','An artifact is done only when source, behavior and checks agree.',
     '## Non-negotiable rules','Never use placeholders. Do not duplicate UI.',
-    '## Visibility contract','The controller must see private cards. Never leak them.',
-    '## Card implementation loop','1. Read sources.','2. Implement.','3. Verify.',
+    '## Visibility contract','The controller must see private inputs. Never leak them.',
+    '## Implementation loop','1. Read sources.','2. Implement.','3. Verify.',
     '## Review checklist','- Source and behavior agree.',
   ].join('\n'))});
-  assert.deepEqual(zenon.map(item=>item.authority),['required','required','required','required','required']);
+  assert.deepEqual(requiredSections.map(item=>item.authority),['required','required','required','required','required']);
 
-  const video=sourceSectionInventory({'source/SKILL.md':Buffer.from([
-    '# Video Use','## Principle','Ask → confirm → execute → iterate → persist. The only things you MUST do are in the Hard Rules section below. Everything else is a worked example.',
-    '## Hard Rules (production correctness — non-negotiable)','Never cut inside a word.','## The process','1. Inventory.','2. Confirm.','3. Execute.',
-    '## Color grade (when requested)','Example filter chains: warm_cinematic.','## EDL format','```json','{"grade":"warm"}','```',
+  const exampleHeavy=sourceSectionInventory({'source/SKILL.md':Buffer.from([
+    '# Artifact Use','## Principle','Ask → confirm → execute → iterate → persist. The only things you MUST do are in the Hard Rules section below. Everything else is a worked example.',
+    '## Hard Rules (production correctness — non-negotiable)','Never corrupt an input boundary.','## The process','1. Inventory.','2. Confirm.','3. Execute.',
+    '## Optional styling (when requested)','Example presets: warm_presentation.','## Output format','```json','{"style":"warm"}','```',
     '## Anti-patterns','Never edit before confirming.',
   ].join('\n'))});
-  assert.equal(video.find(item=>item.title==='Hard Rules (production correctness — non-negotiable)').authority,'required');
-  assert.equal(video.find(item=>item.title==='The process').authority,'required');
-  assert.equal(video.find(item=>item.title==='Anti-patterns').authority,'required');
-  assert.equal(video.find(item=>item.title==='Color grade (when requested)').authority,'reference_candidate');
-  assert.equal(video.find(item=>item.title==='EDL format').authority,'reference_candidate');
+  assert.equal(exampleHeavy.find(item=>item.title==='Hard Rules (production correctness — non-negotiable)').authority,'required');
+  assert.equal(exampleHeavy.find(item=>item.title==='The process').authority,'required');
+  assert.equal(exampleHeavy.find(item=>item.title==='Anti-patterns').authority,'required');
+  assert.equal(exampleHeavy.find(item=>item.title==='Optional styling (when requested)').authority,'reference_candidate');
+  assert.equal(exampleHeavy.find(item=>item.title==='Output format').authority,'reference_candidate');
 });
 
 test('source dispositions reject silent loss but allow justified pruning of non-mandatory examples', () => {
@@ -200,9 +381,15 @@ test('host projects a compiled approval gate onto its explicit dependent operati
 test('approval coverage rejects any success path that bypasses the human gate', () => {
   const resources={'source/SKILL.md':Buffer.from('You must obtain approval before rendering.\n')};
   const approval=observedSourceRequirements(resources)[0];const span=approval.source_spans[0];
-  const proposal={source_requirements:[],requirement_mappings:[{requirement_id:approval.requirement_id,node_ids:['approve','render'],binding_names:[],runtime_guards:[],resource_refs:['source/SKILL.md'],status:'compiled',rationale:'Gate should dominate rendering.'}],nodes:[{id:'approve',type:'human_gate',source_span:span},{id:'render',type:'agent',operation_mode:'write',source_span:span}],edges:[{id:'to-gate',source:'start',target:'approve'},{id:'approved',source:'approve',target:'render'},{id:'bypass',source:'start',target:'render'}]};
+  const proposal={source_requirements:[],requirement_mappings:[{requirement_id:approval.requirement_id,node_ids:['approve','render'],binding_names:[],runtime_guards:[],resource_refs:['source/SKILL.md'],status:'compiled',rationale:'Gate should dominate rendering.'}],nodes:[{id:'approve',semantic_key:'approve_strategy',type:'human_gate',source_span:span},{id:'render',semantic_key:'render_video',type:'agent',operation_mode:'write',source_span:span}],edges:[{id:'to-gate',source:'start',target:'approve'},{id:'approved',source:'approve',target:'render'},{id:'bypass',source:'start',target:'render'}]};
   const projected=projectObservedRequirements(proposal,resources);
-  assert.throws(()=>compileRequirementCoverage(projected,resources,projected.nodes,projected.edges),{code:'EXPANSION_REQUIREMENT_COVERAGE'});
+  assert.throws(()=>compileRequirementCoverage(projected,resources,projected.nodes,projected.edges),error=>{
+    assert.equal(error.code,'EXPANSION_REQUIREMENT_COVERAGE');assert.equal(error.findings.length,1);
+    assert.equal(error.findings[0].requirement_id,approval.requirement_id);
+    assert.deepEqual(error.findings[0].semantic_keys,['approve_strategy','render_video']);
+    assert(error.findings[0].affected_semantic_fields.includes('approvals.before'));
+    return true;
+  });
 });
 
 test('host projects authoritative mappings into redundant node requirement IDs', () => {
@@ -266,7 +453,7 @@ test('host refuses fully-compiled artifact schemas that omit exact source fields
   assert.equal(projectObservedRequirements(projected,resources).requirement_mappings[0].status,'compiled');
 });
 
-test('host replaces owned bindings but preserves invalid semantic pointers for validation', () => {
+test('host preserves explicit bindings including invalid pointers for visible validation', () => {
   const resources={'source/SKILL.md':Buffer.from('Prepare and review the result.\n'),'source/reference.md':Buffer.from('Exact method.\n')};
   const requirement={requirement_id:'method',requirement_kind:'method_rule',source_spans:[{resource:'source/reference.md',start_line:1,end_line:1}],trigger:'prepare',required_result:'Use exact method.',resource_refs:['source/reference.md'],details:{rule_text:'Exact method.'}};
   const proposal={source_requirements:[requirement],requirement_mappings:[{requirement_id:'method',node_ids:['prepare'],binding_names:[],runtime_guards:[],resource_refs:['source/reference.md'],status:'agent_assisted',rationale:'Agent follows pinned method.'}],nodes:[
@@ -274,9 +461,10 @@ test('host replaces owned bindings but preserves invalid semantic pointers for v
     {id:'review',type:'agent',input_bindings:{task:'/inputs/invented',upstream_wrong:'/nodes/missing/output',semantic_choice:'/inputs/style'},resource_refs:['source/SKILL.md'],requirement_ids:['invented_requirement'],source_span:{resource:'source/SKILL.md',start_line:1,end_line:1}},
   ],edges:[{id:'prepare-review',source:'prepare',target:'review'}]};
   const projected=projectObservedRequirements(proposal,resources);
-  assert.deepEqual(projected.nodes[0].input_bindings,{semantic_choice:'/inputs/style',task:'/inputs/task'});
+  assert.deepEqual(projected.nodes[0].input_bindings,proposal.nodes[0].input_bindings);
   assert.deepEqual(projected.nodes[0].requirement_ids,['method']);
-  assert.deepEqual(projected.nodes[1].input_bindings,{upstream_wrong:'/nodes/missing/output',semantic_choice:'/inputs/style',task:'/inputs/task',upstream_prepare:'/nodes/prepare/output'});
+  assert.deepEqual(projected.nodes[1].input_bindings,proposal.nodes[1].input_bindings);
+  assert.throws(()=>resolveBindings(projected.nodes[1].input_bindings,{inputs:{invented:'declared task',style:'plain'},nodes:{prepare:{output:{}}}}),{code:'BINDING_MISSING'});
   assert.deepEqual(projected.nodes[1].requirement_ids,[]);
 });
 
@@ -340,24 +528,25 @@ test('source status detects changes to imported resources, not only SKILL.md', a
 });
 
 test('automatic planning pins model suitability and compiles main, independent parallel agents and human approval', async t => {
-  const f=await fixture(t,'Inspect two independent sources, synthesize, ask approval.');
+  const f=await fixture(t,'Inspect two independent sources and synthesize a result.');
   const providers=[{id:'custom-fast',description:'Fast bounded evidence extraction',enabled:true,kind:'native_agent',capabilities:{read:true},config:{model:'custom-model',role:'implementer'}}];
   const pack=await importCoarseSkill(f.store,f.source,{id:'automatic'});
   const resources=await f.store.resources('automatic'); const rules=defaultRoutingRules(providers);
   const span={resource:'source/SKILL.md',start_line:9,end_line:9};
-  const proposal={source_revision:pack.revision_hash,planning_analysis:{parallelism:'A and B read independent sources, join before synthesis.',main_responsibilities:'Main synthesizes evidence.',human_intervention:'Confirm synthesis before final acceptance.'},nodes:[
+  const proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'A and B read independent sources, join before synthesis.',main_responsibilities:'Main synthesizes evidence.',human_intervention:'Confirm synthesis before final acceptance.'},nodes:[
     {id:'fork',type:'parallel',join_id:'join'},
     ...['a','b'].map(id=>({id,type:'agent',execution_target:'thread',provider_choice:'custom-fast',operation_mode:'read',task_type:'implementation',routing_reason:'Fast bounded evidence extraction fits the independent read task',prompt_template:'Read evidence'})),
     {id:'join',type:'join',parallel_id:'fork'},
     {id:'synthesize',type:'agent',execution_target:'main',task_type:'planning',routing_reason:'Main retains cross-source synthesis and user decisions',prompt_template:'Synthesize'},
     {id:'confirm',type:'human_gate',prompt_template:'Confirm synthesis'},
   ].map(n=>({...n,confidence:0.9,source_span:span})),edges:[['start','fork'],['fork','a'],['fork','b'],['a','join'],['b','join'],['join','synthesize'],['synthesize','confirm'],['confirm','final']].map(([source,target])=>({id:source+'-'+target,source,target,...(source==='fork'?{label:target}:{}),confidence:0.9,source_span:span}))};
-  const context={providers,routing_rules:rules,tools:['read_workflow_resource']};
+  const context={providers,roles:roleProfiles,routing_rules:rules,tools:['read_workflow_resource']};
   const planningPrompt=expansionPacket(pack,resources,providers[0],rules,providers).prompt;
   assert.doesNotMatch(planningPrompt,/Fast bounded evidence extraction/);
   assert.match(planningPrompt,/Routing is entirely Host-owned/);
   const result=compileExpansion(pack,resources,proposal,context);
   assert.equal(result.validation.valid,true);
+  assert.notEqual(result.workflow.import_status.conversion_level,'unsupported',JSON.stringify(result.workflow.import_status.requirement_coverage));
   const invalidChoice=structuredClone(proposal);invalidChoice.nodes.find(n=>n.id==='a').provider_choice='invented';
   assert.throws(()=>compileExpansion(pack,resources,invalidChoice,context),{code:'ROUTING_CLASSIFICATION'});
   assert.equal(result.workflow.nodes.find(n=>n.id==='synthesize').executor.kind,'main');
@@ -370,12 +559,14 @@ test('automatic planning pins model suitability and compiles main, independent p
   assert.throws(()=>compileExpansion(pack,resources,proposal,{...context,providers:[],routing_catalog:providers}),{code:'ROUTING_PROVIDER_UNAVAILABLE'});
   const saved=await applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context,inference_confirmation:'Confirmed all displayed nodes and edges',conversion_review_contract_version:CONVERSION_CONTRACT.version});
   assert(!validateWorkflowGraph(saved.workflow,context).blockers.some(i=>i.code==='AI_INFERENCE_UNREVIEWED'));
-  assert(saved.workflow.nodes.find(n=>n.id==='a').origin.review.note);
+  assert.equal(saved.provenance.kind,'workflow_conversion');
+  assert.equal(saved.workflow.nodes.find(n=>n.id==='a').origin.kind,'converted');
+  assert(saved.import_report.expansion.inference_confirmation.note);
+  assert.equal(saved.resources.some(item=>item.path.startsWith('source/')),false);
   assert.equal(saved.workflow.status,'draft');
   assert.doesNotThrow(()=>requireCurrentConversionCertificate(saved.workflow,saved.resources,saved.import_report));
-  const reviewOnly=structuredClone(saved.workflow);const reviewedNode=reviewOnly.nodes.find(node=>node.origin?.kind==='inferred');
+  const reviewOnly=structuredClone(saved.workflow);const reviewedNode=reviewOnly.nodes.find(node=>node.origin?.kind==='converted');
   reviewedNode.origin.reviewed=!reviewedNode.origin.reviewed;reviewedNode.origin.review={actor:'user',revision:'later-review-revision',note:'Confirmed the exact certified inference.'};
-  reviewOnly.import_status.unresolved=[...reviewOnly.import_status.unresolved,{code:'AI_INFERENCES_REQUIRE_REVIEW',origin:'inferred'}];
   assert.doesNotThrow(()=>requireCurrentConversionCertificate(reviewOnly,saved.resources,saved.import_report));
   const forgedStatus=structuredClone(saved.workflow);forgedStatus.import_status.conversion_level=forgedStatus.import_status.conversion_level==='unsupported'?'fully_compiled':'unsupported';
   assert.throws(()=>requireCurrentConversionCertificate(forgedStatus,saved.resources,saved.import_report),{code:'CONVERSION_CERTIFICATE_STALE'});
@@ -383,16 +574,15 @@ test('automatic planning pins model suitability and compiles main, independent p
   const mutated=structuredClone(saved.workflow);mutated.nodes.find(node=>node.id==='synthesize').prompt_template+=' changed';
   assert.throws(()=>requireCurrentConversionCertificate(mutated,saved.resources,saved.import_report),{code:'CONVERSION_CERTIFICATE_STALE'});
   assert.deepEqual(saved.workflow.requirements.executables,pack.workflow.requirements.executables);
-  assert.doesNotThrow(()=>expansionPacket(saved,resources,providers[0],rules,providers));
+  assert.throws(()=>expansionPacket(saved,resources,providers[0],rules,providers),{code:'AUTHORING_SOURCE'});
   const rerouted=structuredClone(proposal);
   rerouted.source_revision=saved.revision_hash;
   for(const node of rerouted.nodes.filter(n=>n.type==='agent')) {node.execution_target='main';delete node.provider_choice;}
-  const regenerated=compileExpansion(saved,resources,rerouted,context);
-  assert.deepEqual(regenerated.workflow.requirements.providers,[]);
-  assert.deepEqual(regenerated.workflow.nodes.find(n=>n.id==='a').resources,['source/SKILL.md']);
-  assert.equal(regenerated.workflow.nodes.find(n=>n.id==='a').origin.reviewed,false);
-  assert.throws(()=>compileExpansion(saved,resources,rerouted,{providers}),{code:'EXPANSION_ROUTING_REQUIRED'});
-  await assert.rejects(applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context,conversion_review_contract_version:CONVERSION_CONTRACT.version}),{code:'REVISION_CONFLICT'});
+  assert.throws(()=>compileExpansion(saved,resources,rerouted,context),{code:'AUTHORING_SOURCE'});
+  assert.equal((await f.store.snapshot('automatic',pack.revision_hash)).revision_hash,pack.revision_hash);
+  await f.store.resumeHistoryPurge('automatic',saved.revision_hash,{beforePurge:async()=>{}});
+  await assert.rejects(f.store.snapshot('automatic',pack.revision_hash),{code:'ENOENT'});
+  await assert.rejects(applyExpansion(f.store,'automatic',proposal,{expected_revision:pack.revision_hash,context,conversion_review_contract_version:CONVERSION_CONTRACT.version}),{code:'ENOENT'});
 });
 
 test('folder discovery scans default Codex roots without a binary and reselects custom folders by source hash', async t => {
@@ -417,52 +607,64 @@ test('folder discovery scans default Codex roots without a binary and reselects 
 test('routed expansion assigns each responsibility independently and pins editable planning rules', async t => {
   const f = await fixture(t,'Implement a result.\nReview the result.');
   const providers = [
-    {id:'native-luna',enabled:true,kind:'native_agent',capabilities:{read:true,write:true},config:{role:'implementer'}},
-    {id:'native-terra',enabled:true,kind:'native_agent',capabilities:{read:true,write:true},config:{role:'implementer'}},
-    {id:'native-reviewer',enabled:true,kind:'native_agent',capabilities:{read:true,write:false},config:{role:'reviewer'}},
+    {id:'native-luna',enabled:true,kind:'native_agent',capabilities:{read:true,write:true},config:{role:'advisor'}},
+    {id:'native-sol',enabled:true,kind:'native_agent',capabilities:{read:true,write:false},config:{role:'reviewer'}},
   ];
   const pack = await importCoarseSkill(f.store,f.source,{id:'routed'});
   const resources = await f.store.resources('routed');
-  const rules = {...defaultRoutingRules(providers),selection_mode:"fixed",generation:{planner_provider_id:'native-terra',review_provider_id:'native-reviewer',max_rounds:2}};
+  const rules = {...defaultRoutingRules(providers),selection_mode:"fixed",generation:{planner_provider_id:'native-luna',review_provider_id:'native-sol',max_rounds:2}};
   const span = {resource:'source/SKILL.md',start_line:10,end_line:10};
   const proposal = {source_revision:pack.revision_hash,nodes:[
     {id:'build',type:'agent',task_type:'implementation',routing_reason:'Routine production',prompt_template:'Implement',confidence:0.9,source_span:span},
     {id:'check',type:'agent',task_type:'review',routing_reason:'Independent checking',prompt_template:'Review',confidence:0.9,source_span:span},
   ],edges:[['start','build'],['build','check'],['check','final']].map(([source,target])=>({id:source+'-'+target,source,target,confidence:0.9,source_span:span}))};
-  const packet = expansionPacket(pack,resources,providers[1],rules);
+  const packet = expansionPacket(pack,resources,providers[0],rules);
   assert.deepEqual(packet.routing_rules,rules);
-  assert.throws(()=>compileExpansion(pack,resources,proposal,{providers}),{code:'ROUTING_RULES_REQUIRED'});
-  const result = compileExpansion(pack,resources,proposal,{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']});
+  assert.throws(()=>compileExpansion(pack,resources,proposal,{providers,roles:roleProfiles}),{code:'ROUTING_RULES_REQUIRED'});
+  const result = compileExpansion(pack,resources,proposal,{providers,roles:roleProfiles,routing_rules:packet.routing_rules,tools:['read_workflow_resource']});
   const boundPack = structuredClone(pack); boundPack.workflow.nodes.find(n=>n.id==='instructions').executor={kind:'provider',provider_id:'native-luna'};
-  assert.throws(()=>compileExpansion(boundPack,resources,proposal,{providers}),{code:'ROUTING_RULES_REQUIRED'});
-  const bound = compileExpansion(boundPack,resources,proposal,{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']});
-  assert.equal(bound.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.throws(()=>compileExpansion(boundPack,resources,proposal,{providers,roles:roleProfiles}),{code:'ROUTING_RULES_REQUIRED'});
+  const bound = compileExpansion(boundPack,resources,proposal,{providers,roles:roleProfiles,routing_rules:packet.routing_rules,tools:['read_workflow_resource']});
+  assert.equal(bound.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-sol');
   assert.equal(result.workflow.nodes.find(n=>n.id==='build').executor.provider_id,'native-luna');
-  assert.equal(result.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.equal(result.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-sol');
+  assert.equal(Object.hasOwn(result.workflow.nodes.find(n=>n.id==='build'),'role_ref'),false);
+  assert.equal(Object.hasOwn(result.workflow.nodes.find(n=>n.id==='check'),'role_ref'),false);
+  const reviewAndFix = structuredClone(proposal);
+  reviewAndFix.nodes.find(node => node.id === 'check').operation_mode = 'write';
+  const writeCapable = providers.map(provider => provider.id === 'native-sol'
+    ? { ...provider, capabilities: { read: true, write: true } } : provider);
+  const convertedReviewAndFix = compileExpansion(pack,resources,reviewAndFix,
+    {providers:writeCapable,roles:roleProfiles,routing_rules:packet.routing_rules,tools:['read_workflow_resource']});
+  assert.equal(convertedReviewAndFix.validation.valid,true);
+  assert.equal(convertedReviewAndFix.workflow.nodes.find(node=>node.id==='check').access,'bounded_write');
+  assert.equal(Object.hasOwn(convertedReviewAndFix.workflow.nodes.find(node=>node.id==='check'),'role_ref'),false);
+  assert.throws(()=>compileExpansion(pack,resources,reviewAndFix,
+    {providers,roles:roleProfiles,routing_rules:packet.routing_rules,tools:['read_workflow_resource']}),{code:'EXPANSION_WRITE_PROVIDER'});
   assert.equal(result.workflow.nodes.find(n=>n.id==='final').executor.kind,'main');
   assert.equal(result.workflow.status,'draft');
-  const job = expansionRunPack(pack,resources,providers[1],'planning-job',rules,false,providers[2],providers);
-  rules.routes.implementation.provider_id='native-terra';
+  const job = expansionRunPack(pack,resources,providers[0],'planning-job',rules,false,providers[1],providers);
+  rules.routes.implementation.provider_id='native-luna';
   assert.equal(job.provenance.routing_rules.routes.implementation.provider_id,'native-luna');
   assert.doesNotMatch(job.resources['analysis/request.txt'],/Every agent requires task_type/);
   assert.match(job.resources['analysis/request.txt'],/compact activity profile/);
   const dependencyPack=structuredClone(pack);dependencyPack.workflow.requirements.executables=['ffmpeg','ffprobe'];
-  const dependencyJob=expansionRunPack(dependencyPack,resources,providers[1],'dependency-planning-job',packet.routing_rules,false,providers[2],providers);
+  const dependencyJob=expansionRunPack(dependencyPack,resources,providers[0],'dependency-planning-job',packet.routing_rules,false,providers[1],providers);
   assert.match(dependencyJob.resources['analysis/request.txt'],/Imported Draft baseline requirements/);
   assert.match(dependencyJob.resources['analysis/request.txt'],/"ffprobe"/);
-  const expanded = await applyExpansion(f.store,'routed',proposal,{expected_revision:pack.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']},conversion_review_contract_version:CONVERSION_CONTRACT.version});
-  const regeneratedJob = expansionRunPack(expanded,resources,providers[1],'regeneration-job',packet.routing_rules,false,providers[2],providers);
+  const expanded = await applyExpansion(f.store,'routed',proposal,{expected_revision:pack.revision_hash,context:{providers,roles:roleProfiles,routing_rules:packet.routing_rules,tools:['read_workflow_resource']},conversion_review_contract_version:CONVERSION_CONTRACT.version});
+  const regeneratedJob = expansionRunPack(expanded,resources,providers[0],'regeneration-job',packet.routing_rules,false,providers[1],providers);
   assert.match(regeneratedJob.resources['analysis/request.txt'],/source\/SKILL.md/);
-  const regenerated = await applyExpansion(f.store,'routed',{...proposal,source_revision:expanded.revision_hash},{expected_revision:expanded.revision_hash,context:{providers,routing_rules:packet.routing_rules,tools:['read_workflow_resource']},conversion_review_contract_version:CONVERSION_CONTRACT.version});
+  const regenerated = await applyExpansion(f.store,'routed',{...proposal,source_revision:expanded.revision_hash},{expected_revision:expanded.revision_hash,context:{providers,roles:roleProfiles,routing_rules:packet.routing_rules,tools:['read_workflow_resource']},conversion_review_contract_version:CONVERSION_CONTRACT.version});
   assert.deepEqual(regenerated.resources,expanded.resources);
-  assert.equal(regenerated.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-reviewer');
+  assert.equal(regenerated.workflow.nodes.find(n=>n.id==='check').executor.provider_id,'native-sol');
   assert.equal(regenerated.workflow.import_status.unresolved.filter(i=>i.code==='AI_INFERENCES_REQUIRE_REVIEW').length,1);
-  const disabled = providers.map(p=>p.id==='native-reviewer'?{...p,enabled:false}:p);
-  assert.throws(()=>compileExpansion(pack,resources,proposal,{providers:disabled,routing_rules:rules}),{code:'ROUTING_PROVIDER_UNAVAILABLE'});
+  const disabled = providers.map(p=>p.id==='native-sol'?{...p,enabled:false}:p);
+  assert.throws(()=>compileExpansion(pack,resources,proposal,{providers:disabled,roles:roleProfiles,routing_rules:rules}),{code:'ROUTING_PROVIDER_UNAVAILABLE'});
   const invalid = structuredClone(proposal); invalid.nodes[0].task_type='invented';
-  assert.throws(()=>compileExpansion(pack,resources,invalid,{providers,routing_rules:rules}),{code:'ROUTING_CLASSIFICATION'});
+  assert.throws(()=>compileExpansion(pack,resources,invalid,{providers,roles:roleProfiles,routing_rules:rules}),{code:'ROUTING_CLASSIFICATION'});
   const forged = structuredClone(proposal); forged.nodes[0].executor={kind:'main'};
-  assert.throws(()=>compileExpansion(pack,resources,forged,{providers,routing_rules:rules}),{code:'EXPANSION_AUTHORITY'});
+  assert.throws(()=>compileExpansion(pack,resources,forged,{providers,roles:roleProfiles,routing_rules:rules}),{code:'EXPANSION_AUTHORITY'});
 });
 
 async function fixture(t, body = 'Read [the guide](references/guide.md) and return a result.') {
@@ -528,6 +730,18 @@ test('declared metadata dependencies become requirements without activating comm
   assert(pack.workflow.import_status.unresolved.some(item => item.code === 'MCP_CONNECTION_REQUIRES_REVIEW'));
   assert(pack.workflow.import_status.unresolved.some(item => item.code === 'UNSUPPORTED_DECLARED_REQUIREMENT'));
   assert.equal(pack.import_report.scripts_executed, 0); assert.equal(pack.workflow.import_status.classification, 'external_requirements');
+});
+
+test('Python executable metadata retains its portable version and module requirements', async t => {
+  const f = await fixture(t);
+  await writeFile(join(f.sourceRoot, 'SKILL.json'), JSON.stringify({ requirements: { executables: [
+    { name: 'python', version: '>=3.11,<4', python_modules: ['yaml', 'requests'] },
+  ] } }));
+  const pack = await importCoarseSkill(f.store, f.source, { id: 'python-requirements' });
+  assert.deepEqual(pack.workflow.requirements.executables, [
+    { name: 'python', version: '>=3.11.0,<4.0.0', python_modules: ['requests', 'yaml'] },
+  ]);
+  assert.equal(pack.workflow.import_status.classification, 'external_requirements');
 });
 
 test('invalid optional metadata remains a visible Draft blocker and does not silently lose declared dependencies', async t => {
@@ -638,7 +852,7 @@ test('AI expansion stays Draft, pins inferences, preserves authority and retains
   assert.equal(next.workflow.nodes.find(node => node.id === 'final').executor.kind, 'main');
   assert(next.workflow.import_status.unresolved.some(item => item.code === 'AI_INFERENCES_REQUIRE_REVIEW'));
   assert.equal((await f.store.snapshot('expanded', pack.revision_hash)).workflow.import_status.mode, 'coarse');
-  const regenerated = expansionPacket(next, resources, provider, defaultRoutingRules([]), []);
+  const regenerated = expansionPacket(next, resources, provider, defaultRoutingRules([{id:'native-luna',enabled:true}]), []);
   assert.match(regenerated.prompt, /previous graph is not source authority/);
   const stale = structuredClone(proposal); stale.source_revision = 'a'.repeat(64);
   await assert.rejects(applyExpansion(f.store, 'expanded', stale, { expected_revision: next.revision_hash, context: { providers: [provider] }, conversion_review_contract_version:CONVERSION_CONTRACT.version }), { code: 'EXPANSION_SCHEMA' });
@@ -708,6 +922,12 @@ test('condition fan-in uses one selected binding while parallel fan-in stays str
   assert(exclusiveConditionFanIn(proposal.nodes,proposal.edges,'deliver'));
   const compiled=compileExpansion(pack,resources,proposal,{providers:[provider]});
   assert.deepEqual(compiled.workflow.nodes.find(item=>item.id==='deliver').input_bindings,{task:'/inputs/task',upstream_selected:{coalesce:['/nodes/final_review/output','/nodes/initial/output']}});
+  const explicit=structuredClone(proposal),selected={selected_result:{coalesce:['/nodes/final_review/output/result','/nodes/initial/output/result']}};
+  explicit.nodes.find(item=>item.id==='deliver').input_bindings=selected;
+  const explicitCompiled=compileExpansion(pack,resources,explicit,{providers:[provider]});
+  assert.deepEqual(explicitCompiled.workflow.nodes.find(item=>item.id==='deliver').input_bindings,selected);
+  assert.deepEqual({...resolveBindings(selected,{nodes:{initial:{output:{result:'initial'}}}})},{selected_result:'initial'});
+  assert.deepEqual({...resolveBindings(selected,{nodes:{initial:{output:{result:'initial'}},final_review:{output:{result:'reviewed'}}}})},{selected_result:'reviewed'});
   const direct=structuredClone(proposal);direct.nodes=direct.nodes.filter(item=>item.id!=='deliver');
   direct.edges=direct.edges.filter(edge=>!['c','f','g'].includes(edge.id));
   direct.edges.push({...origin,id:'c2',source:'decision',target:'final',label:'pass'},{...origin,id:'f2',source:'final_review',target:'final'});
@@ -722,7 +942,7 @@ test('conversion inventory limits fail before a planning packet is dispatched', 
   const pack=await importCoarseSkill(f.store,f.source,{id:'bounded-inventory',providerId:provider.id});
   const resources=await f.store.resources('bounded-inventory');
   resources['source/SKILL.md']=Buffer.from(Array.from({length:201},(_,index)=>`## Step ${index+1}\nDo work.`).join('\n'));
-  assert.throws(()=>expansionPacket(pack,resources,provider,null),{code:'EXPANSION_SOURCE_INVENTORY_LIMIT'});
+  assert.throws(()=>expansionPacket({...pack,resources:prepareResources(resources).manifest},resources,provider,null),{code:'EXPANSION_SOURCE_INVENTORY_LIMIT'});
 });
 
 test('a pinned script requirement binds only to a host-authorized contract and executes through the host runner', async t => {
@@ -734,7 +954,8 @@ test('a pinned script requirement binds only to a host-authorized contract and e
   const contract={id:'skill_script_run',identity:{name:'source/scripts/run.py',version:'1',sha256:digest(resources['source/scripts/run.py'])},argv:['python','source/scripts/run.py'],input_schema:{type:'object',required:['task'],additionalProperties:false,properties:{task:{type:'string'}}},output_schema:{type:'object',required:['result'],additionalProperties:false,properties:{result:{type:'string'}}},implements:['observed_script_9_1'],env_allow:[],permissions:{network:false,read_paths:['source/scripts/run.py'],write_paths:[]},output_cap_bytes:4096,deadline_ms:1000,idempotency:{mode:'safe'}};
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:9,end_line:9}};
   const requirement={requirement_id:'observed_script_9_1',requirement_kind:'script_operation',source_spans:[origin.source_span],trigger:'source_observed',required_result:'Execute the pinned script resource source/scripts/run.py with declared inputs and verified outputs.',resource_refs:['source/scripts/run.py']};
-  const proposal={source_revision:pack.revision_hash,source_requirements:[requirement],requirement_mappings:[{requirement_id:requirement.requirement_id,node_ids:['run_script'],binding_names:['task'],runtime_guards:['exact pinned host contract and receipt'],resource_refs:['source/scripts/run.py'],status:'compiled',rationale:'The registered broker executes the exact pinned script and returns schema-checked output.'}],nodes:[{id:'run_script',type:'tool',tool:contract.id,input_bindings:{task:'/inputs/task'},resource_refs:['source/scripts/run.py'],requirement_ids:[requirement.requirement_id],...origin}],edges:[{id:'start-run',source:'start',target:'run_script',...origin},{id:'run-final',source:'run_script',target:'final',...origin}]};
+  const dependency=observedSourceRequirements(resources).find(item=>item.requirement_kind==='dependency');assert(dependency);
+  const proposal={source_revision:pack.revision_hash,source_requirements:[requirement],requirement_mappings:[{requirement_id:requirement.requirement_id,node_ids:['run_script'],binding_names:['task'],runtime_guards:['exact pinned host contract and receipt'],resource_refs:['source/scripts/run.py'],status:'compiled',rationale:'The registered broker executes the exact pinned script and returns schema-checked output.'},{requirement_id:dependency.requirement_id,node_ids:['run_script'],binding_names:[],runtime_guards:['Host prepares the exact interpreter.'],resource_refs:['source/SKILL.md'],status:'compiled',rationale:'The command-position dependency is bound to the script operation.'}],nodes:[{id:'run_script',type:'tool',tool:contract.id,input_bindings:{task:'/inputs/task'},resource_refs:['source/scripts/run.py'],requirement_ids:[requirement.requirement_id,dependency.requirement_id],...origin}],edges:[{id:'start-run',source:'start',target:'run_script',...origin},{id:'run-final',source:'run_script',target:'final',...origin}]};
   assert.throws(()=>compileExpansion(pack,resources,proposal,{providers:[provider]}),{code:'EXPANSION_HOST_TOOL_UNAUTHORIZED'});
   const genericContract=structuredClone(contract);delete genericContract.implements;
   assert.equal(compileExpansion(pack,resources,proposal,{providers:[provider],host_tool_contracts:[genericContract],host_tools:[genericContract.id]}).workflow.import_status.conversion_level,'agent_assisted');
@@ -745,49 +966,80 @@ test('a pinned script requirement binds only to a host-authorized contract and e
   const runner=new HostToolRunner({registry:{[contract.id]:implementation}});
   const executed=await runner.execute(compiled.workflow.host_tools[0],{task:'demo'},{run_id:'run',node_id:'run_script',attempt_id:'attempt',permissions:{access:'read_only',allowed_paths:[]}});
   assert.equal(executed.receipt.status,'succeeded');assert.deepEqual(executed.output,{result:'done:demo'});
+  const deployed=await applyExpansion(f.store,'script-bound',proposal,{expected_revision:pack.revision_hash,
+    context:{providers:[provider],host_tool_contracts:[contract],host_tools:[contract.id]},
+    inference_confirmation:'Accepted exact reviewed script conversion',conversion_review_contract_version:CONVERSION_CONTRACT.version});
+  assert(deployed.resources.some(item=>item.path==='workflow-assets/scripts/run.py'));
+  assert.deepEqual(deployed.workflow.nodes.find(node=>node.id==='run_script').resources,['workflow-assets/scripts/run.py']);
+  assert.deepEqual(deployed.workflow.host_tools[0].argv,['python','workflow-assets/scripts/run.py']);
+  assert.deepEqual(deployed.workflow.host_tools[0].permissions.read_paths,['workflow-assets/scripts/run.py']);
+  assert.doesNotMatch(canonicalJSON(deployed),/source\/scripts\/run\.py|source\/SKILL\.md/);
+});
+
+test('nested Skill documents become Workflow-owned instructions without retaining Skill entrypoints',()=>{
+  const resources={
+    'source/SKILL.md':Buffer.from('# Source\n\n## Step\nUse the nested reference.'),
+    'source/skills/animation/SKILL.md':Buffer.from('# Animation\nRead source/skills/animation/references/guide.md.'),
+    'source/skills/animation/references/guide.md':Buffer.from('# Guide\nReturn the animation.'),
+  };
+  const workflow={id:'converted-nested',nodes:[{id:'work',resources:Object.keys(resources),outputs_schema:{type:'object',properties:{source_path:{type:'string'},source_span:{type:'string'}}}}],edges:[],import_status:{conversion_level:'agent_assisted'}};
+  const pack={revision_hash:'a'.repeat(64),provenance:{source_hash:digest(resources['source/SKILL.md'])}};
+  const converted=compileDeployableConversion({workflow,proposal:{nodes:[],edges:[]},resources,pack,proposalHash:'b'.repeat(64),reviewContractVersion:CONVERSION_CONTRACT.version});
+  const nested='workflow-assets/skills/animation/instructions.md';
+  assert(converted.resources[nested]);
+  assert(converted.resources['workflow-assets/skills/animation/references/guide.md']);
+  assert(!Object.keys(converted.resources).some(path=>path.toLowerCase().endsWith('/skill.md')));
+  assert(converted.workflow.nodes[0].resources.includes(nested));
+  assert.equal(converted.workflow.import_status.source_independent,true);
+  assert.doesNotThrow(()=>requireDeployableConvertedSnapshot({...converted,resources:Object.keys(converted.resources).map(path=>({path}))}));
+  assert.throws(()=>requireDeployableConvertedSnapshot({...converted,provenance:{...converted.provenance,source_path:'C:/private/SKILL.md'},resources:Object.keys(converted.resources).map(path=>({path}))}),{code:'CONVERTED_SOURCE_LEAK'});
+  const collision={...resources,'source/skills/animation/instructions.md':Buffer.from('Existing instructions.')};
+  assert.throws(()=>compileDeployableConversion({workflow:{...workflow,nodes:[{id:'work',resources:Object.keys(collision)}]},proposal:{nodes:[],edges:[]},resources:collision,pack,proposalHash:'b'.repeat(64),reviewContractVersion:CONVERSION_CONTRACT.version}),{code:'CONVERTED_ASSET_COLLISION'});
 });
 
 test('review cannot approve a proposal that omits a source-required approval gate', () => {
   const span={resource:'source/SKILL.md',start_line:1,end_line:1};
   const proposal={source_requirements:[{requirement_id:'approval_1',requirement_kind:'approval',source_spans:[span],trigger:'before render',required_result:'approved'}],requirement_mappings:[{requirement_id:'approval_1',node_ids:['render'],status:'compiled'}],source_dispositions:[{section_id:'section_01_overview',disposition:'workflow',node_ids:['render'],requirement_ids:['approval_1'],rationale:'The entrypoint requires approval before render.'}],nodes:[{id:'render',type:'agent'}],edges:[{id:'render-final',source:'render',target:'final'}]};
-  const checks=REVIEW_IDS.map(id=>({id,status:'pass',evidence:'Reviewed against the exact source.',node_ids:id==='source_support'?['render']:[],edge_ids:id==='source_support'?['render-final']:[],source_spans:[span]}));
+  const checks=REVIEW_IDS.map(()=>({status:'pass',evidence:'Reviewed against the exact source.'}));
   const result=evaluateReview({checks},proposal,{'source/SKILL.md':Buffer.from('Render only after user approval.')});
   assert.equal(result.approved,false);assert(result.findings.some(item=>item.includes('no human_gate')));
 });
 
-test('review validation drops invalid optional source spans but keeps mandatory evidence fail-closed', () => {
+test('review validation projects source spans and graph identities in Host order', () => {
   const span={resource:'source/SKILL.md',start_line:1,end_line:1};
   const proposal={source_requirements:[],requirement_mappings:[],source_dispositions:[{section_id:'section_01_overview',disposition:'workflow',node_ids:['work'],requirement_ids:[],rationale:'The entrypoint defines the task.'}],nodes:[{id:'work',type:'agent'}],edges:[{id:'work-final',source:'work',target:'final'}]};
-  const checks=REVIEW_IDS.map(id=>({id,status:'pass',evidence:'Checked.',node_ids:id==='source_support'?['work']:[],edge_ids:id==='source_support'?['work-final']:[],source_spans:[span]}));
-  checks.find(row=>row.id==='portable_artifact').source_spans=[{resource:'source/SKILL.md',start_line:99,end_line:99}];
+  const checks=REVIEW_IDS.map(()=>({status:'pass',evidence:'Checked.'}));
   const resources={'source/SKILL.md':Buffer.from('Do the work.')};
-  assert.equal(evaluateReview({checks},proposal,resources).approved,true);
-  checks.find(row=>row.id==='hard_rules').source_spans=[{resource:'source/SKILL.md',start_line:99,end_line:99}];
-  assert.throws(()=>evaluateReview({checks},proposal,resources),{code:'GENERATION_CHECKLIST_INVALID'});
+  const reviewed=evaluateReview({checks},proposal,resources);
+  assert.equal(reviewed.approved,true);
+  assert.deepEqual(reviewed.checks.map(row=>row.id),REVIEW_IDS);
+  assert(reviewed.checks.every(row=>row.node_ids.includes('work')&&row.edge_ids.includes('work-final')&&row.source_spans.length));
+  const transcribed=structuredClone(checks);transcribed[0].source_spans=[span];
+  assert.throws(()=>evaluateReview({checks:transcribed},proposal,resources),{code:'GENERATION_CHECKLIST_INVALID'});
 });
 
 test('v4 contract rejects an all-pass generic proposal that omits exact artifact, method and interface rules', async t => {
-  const f=await fixture(t,'Write `answer.json` with exact keys `id` and `place`. Use EPSG:4087 and round to 2 decimal places.');
+  const f=await fixture(t,'Write `record.json` with exact keys `id` and `label`. Apply the declared transform and round to 2 decimal places.');
   const provider={id:'chosen',enabled:true,kind:'native_agent',capabilities:{read:true},config:{role:'implementer'}};
-  const reviewer={id:'native-generation-reviewer',enabled:true,kind:'native_agent',capabilities:{read:true,write:false},config:{role:'reviewer'}};
+  const reviewer={id:'native-sol',enabled:true,kind:'native_agent',capabilities:{read:true,write:false},config:{role:'reviewer'}};
   const pack=await importCoarseSkill(f.store,f.source,{id:'v4-generic',providerId:provider.id}); const resources=await f.store.resources('v4-generic');
   const origin={confidence:0.9,source_span:{resource:'source/SKILL.md',start_line:9,end_line:9}};
   const proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],required_executables:[],nodes:[{id:'do_task',type:'agent',operation_mode:'read',prompt_template:'Do the task.',input_bindings:{task:'/inputs/task'},resource_refs:['source/SKILL.md'],requirement_ids:[],...origin}],edges:[{id:'start-do',source:'start',target:'do_task',...origin},{id:'do-final',source:'do_task',target:'final',...origin}]};
-  const checks=REVIEW_IDS.map(id=>({id,status:'pass',evidence:'All source requirements are covered.',node_ids:id==='source_support'?['do_task']:[],edge_ids:id==='source_support'?['start-do','do-final']:[],source_spans:[origin.source_span]}));
+  const checks=REVIEW_IDS.map(()=>({status:'pass',evidence:'All source requirements are covered.'}));
   const verdict=evaluateReview({checks},proposal,resources);
   assert.equal(verdict.approved,false); assert(verdict.findings.some(finding=>finding.includes('artifact_path'))); assert(verdict.findings.some(finding=>finding.includes('method_rule')));
   const job=expansionRunPack(pack,resources,provider,'v4-projection',null,false,reviewer,[provider,reviewer]);
-  assert.deepEqual(job.workflow.nodes.find(node=>node.id==='final').input_bindings,{proposal:'/nodes/expand/output/proposal'});
+  assert.deepEqual(job.workflow.nodes.find(node=>node.id==='final').input_bindings,{});
   const expand=job.workflow.nodes.find(node=>node.id==='expand');
   assert.deepEqual(expand.outputs_schema,AUTHORING_RUNTIME_ENVELOPE_SCHEMA);
   assert.doesNotThrow(()=>managedNativeResultSchema(expand));
-  assert.match(job.resources['analysis/request.txt'],/workflow-semantic-blueprint\/v4/);
+  assert.match(job.resources['analysis/request.txt'],/workflow-semantic-blueprint\/v6/);
   const outputMeta=EXPANSION_PROPOSAL_SCHEMA.properties.nodes.items.properties.outputs_schema;
   for(const schema of [
-    {type:'object',properties:{wyckoff_multiplicity_dict:{type:'object',additionalProperties:{type:'integer'}},wyckoff_coordinates_dict:{type:'object',additionalProperties:{type:'array',items:{type:'string'}}}},required:['wyckoff_multiplicity_dict','wyckoff_coordinates_dict'],additionalProperties:false},
-    {type:'object',properties:{id:{type:'string'},place:{type:'string'},time:{type:'string'},magnitude:{type:'number'},latitude:{type:'number'},longitude:{type:'number'},distance_km:{type:'number',minimum:0}},required:['id','place','time','magnitude','latitude','longitude','distance_km'],additionalProperties:false},
-    {type:'object',properties:{trend_result:{type:'array',items:{type:'object',properties:{slope:{type:'number'},p_value:{type:'number'}},required:['slope','p_value'],additionalProperties:false}}},required:['trend_result'],additionalProperties:false},
-    {type:'object',properties:{original_duration_seconds:{type:'number',minimum:0},compressed_duration_seconds:{type:'number',minimum:0},removed_duration_seconds:{type:'number',minimum:0},compression_percentage:{type:'number'},segments_removed:{type:'integer',minimum:0}},required:['original_duration_seconds','compressed_duration_seconds','removed_duration_seconds','compression_percentage','segments_removed'],additionalProperties:false},
+    {type:'object',properties:{item_counts:{type:'object',additionalProperties:{type:'integer'}},item_coordinates:{type:'object',additionalProperties:{type:'array',items:{type:'string'}}}},required:['item_counts','item_coordinates'],additionalProperties:false},
+    {type:'object',properties:{id:{type:'string'},label:{type:'string'},timestamp:{type:'string'},score:{type:'number'},x:{type:'number'},y:{type:'number'},distance:{type:'number',minimum:0}},required:['id','label','timestamp','score','x','y','distance'],additionalProperties:false},
+    {type:'object',properties:{measurements:{type:'array',items:{type:'object',properties:{value:{type:'number'},confidence:{type:'number'}},required:['value','confidence'],additionalProperties:false}}},required:['measurements'],additionalProperties:false},
+    {type:'object',properties:{source_value:{type:'number',minimum:0},result_value:{type:'number',minimum:0},delta:{type:'number'},ratio:{type:'number'},operations:{type:'integer',minimum:0}},required:['source_value','result_value','delta','ratio','operations'],additionalProperties:false},
   ]) assert.doesNotThrow(()=>validateData(schema,outputMeta));
 });
 

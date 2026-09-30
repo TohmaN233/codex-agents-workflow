@@ -4,6 +4,7 @@ import { digest, canonicalJSON } from './workflow-revisions.mjs';
 import { leaseToken, executionEnvelope, approvalBinding } from './workflow-execution-envelope.mjs';
 import { childIdentity } from './workflow-subworkflow.mjs';
 import { interruptActiveNodes, graphInfo } from './workflow-state.mjs';
+import { revalidateBoundSourceLocations } from './workspace-source-locations.mjs';
 
 const terminal = new Set(['succeeded', 'failed', 'cancelled']);
 function rotateAttempt(state, nodeId, attempt, controlToken) {
@@ -42,7 +43,7 @@ function recoveryAudit(recovery) {
 // Called only after authenticated human-console adoption or validated host-attested
 // user-message recovery. The root CAS and ancestor fence precede all descendant
 // writes. A partial recovery stays paused; repeating it repairs its exact tree.
-export async function adoptRunTree(runtime, runId, { expected_sequence, reason, main_actor, recovery }) {
+export async function adoptRunTree(runtime, runId, { expected_sequence, reason, main_actor, recovery }, onFenced = () => {}) {
   requireValue(Number.isSafeInteger(expected_sequence) && expected_sequence > 0 && typeof reason === 'string' && reason.trim() && reason.length <= 2000 && typeof main_actor === 'string' && main_actor.trim() && main_actor.length <= 256,
     'CONTROL_RECOVERY_SCHEMA', 'Control recovery needs the observed sequence, a reason and one main actor');
   const audit = recoveryAudit(recovery);
@@ -52,6 +53,7 @@ export async function adoptRunTree(runtime, runId, { expected_sequence, reason, 
     const record = await runtime.runs.recover(id, (state, pins, current) => {
       if (!parent) { requireValue(!pins.parent, 'CONTROL_RECOVERY_ROOT', 'Adopt the top-level Run so child authority remains attached to its parent', { parent_run_id: pins.parent?.run_id }); requireValue(current.sequence === expected_sequence, 'RUN_SEQUENCE_CONFLICT', 'Run changed since recovery was requested'); }
       else requireValue(pins.parent?.run_id === parent.run_id && pins.parent.node_id === parent.node_id && pins.parent.attempt_id === parent.attempt_id && pins.parent.pins_hash === parent.pins_hash, 'CHILD_RUN_CONFLICT', 'Recovered child ancestry differs from the exact parent dispatch');
+      onFenced(id, state);
       interruptActiveNodes(state, 'Human controller recovery fenced the previous executor');
       if (!terminal.has(state.status)) { state.status = 'paused'; state.pause_reason = reason; }
       state.control_hash = digest(controlToken); state.main_actor = main_actor;
@@ -87,7 +89,7 @@ export async function controllerAttempt(runtime, runId, { control_token, node_id
 export async function reattachAttempt(runtime, runId, args, observation) {
   const before = await controllerAttempt(runtime, runId, args);
   requireValue(before.node.status === 'interrupted' && before.attempt.status === 'interrupted', 'RECOVERY_ATTEMPT_STATE', 'Only an interrupted existing attempt can be reattached');
-  const result = await runtime.transition(runId, 'reattach', (state, pins) => {
+  const result = await runtime.transition(runId, 'reattach', async (state, pins) => {
     const node = state.nodes[args.node_id]; const attempt = node.attempts.find(item => item.id === args.attempt_id);
     requireValue(state.control_hash === before.state.control_hash && node.status === 'interrupted' && attempt?.status === 'interrupted' && node.active_attempt_id === attempt.id, 'RECOVERY_ATTEMPT_CHANGED', 'Attempt or controller changed during reconciliation');
     requireValue(['interrupted','paused','running','blocked'].includes(state.status), 'RUN_TERMINAL', 'Terminal Runs cannot reconnect executors');
@@ -97,7 +99,11 @@ export async function reattachAttempt(runtime, runId, args, observation) {
     const approval = approvalBinding(definition, state, pins, node.attempts.indexOf(attempt) + 1);
     if (approval.required) requireValue(state.approvals[node.approval_id]?.status === 'approved' && state.approvals[node.approval_id].binding_hash === approval.hash, 'APPROVAL_REQUIRED', 'The exact pinned approval must still hold');
     requireValue(observation && typeof observation.kind === 'string' && Buffer.byteLength(canonicalJSON(observation)) <= 64000, 'RECOVERY_EVIDENCE', 'Reattachment needs bounded observed identity evidence');
-    if (observation.kind === 'unsubmitted_claim') requireValue(!attempt.dispatch, 'DISPATCH_UNCERTAIN', 'An existing dispatch cannot be recovered as unsubmitted');
+    if (observation.kind === 'unsubmitted_claim') {
+      requireValue(!attempt.dispatch && !attempt.host_tool, 'DISPATCH_UNCERTAIN', 'An existing dispatch cannot be recovered as unsubmitted');
+      // No work was admitted, so the original source-location preflight still applies.
+      await revalidateBoundSourceLocations(definition, state, pins);
+    }
     else requireValue(attempt.dispatch && observation.dispatch_request_id === attempt.dispatch.request_id && observation.attempt_id === attempt.id, 'RECOVERY_IDENTITY', 'Evidence must match the existing dispatch');
     if (observation.receipt) {
       requireValue(!attempt.dispatch.receipt || canonicalJSON(attempt.dispatch.receipt) === canonicalJSON(observation.receipt), 'DISPATCH_CONFLICT', 'Remote receipt differs from the recorded identity');

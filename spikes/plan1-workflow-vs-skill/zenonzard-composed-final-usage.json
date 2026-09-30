@@ -1,0 +1,376 @@
+{
+  "schema": "zenonzard-composed-final-usage/v2",
+  "measurement_boundary": "Only the two Run journals' own native_parent_thread_id sessions, clipped to their Run/node timestamps, plus the native sessions mapped by those journals. The long-lived workflow development chat is excluded.",
+  "pricing": {
+    "basis": "OpenAI Standard rates; requests above 272K input use the documented long-context multipliers",
+    "rates_per_million": {
+      "gpt-6-sol": {
+        "input": 2.0,
+        "cached": 0.2,
+        "cache_write": 2.5,
+        "output": 10.0
+      },
+      "gpt-6-luna": {
+        "input": 0.1,
+        "cached": 0.01,
+        "cache_write": 0.125,
+        "output": 0.5
+      }
+    }
+  },
+  "comparison_by_model": {
+    "workflow": {
+      "gpt-6-luna": {
+        "usage": {
+          "input_tokens": 23418316,
+          "cached_input_tokens": 21927936,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 443955,
+          "reasoning_output_tokens": 326540,
+          "total_tokens": 23862271,
+          "uncached_input_tokens": 1490380
+        },
+        "api_equivalent_usd": 0.59029486,
+        "sessions": 13
+      },
+      "gpt-6-sol": {
+        "usage": {
+          "input_tokens": 10005304,
+          "cached_input_tokens": 9745664,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 33421,
+          "reasoning_output_tokens": 6425,
+          "total_tokens": 10038725,
+          "uncached_input_tokens": 259640
+        },
+        "api_equivalent_usd": 2.8026228,
+        "sessions": 4
+      }
+    },
+    "historical_skill": {
+      "gpt-6-sol": {
+        "usage": {
+          "input_tokens": 28037971,
+          "cached_input_tokens": 27776768,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 84622,
+          "total_tokens": 28122593,
+          "uncached_input_tokens": 261203
+        },
+        "api_equivalent_usd": 6.9239796,
+        "sessions": 1,
+        "caveat": "Two-turn continuation; the second turn inherited eight first-turn drafts."
+      }
+    }
+  },
+  "strict_semantic_review": {
+    "rule": "A card passes only when direct strict semantic review found no bug; Partial and Material gap both fail.",
+    "total_cards": 31,
+    "post_audit_checkout": {
+      "passed": 31,
+      "total": 31,
+      "pass_rate_percent": 100.0,
+      "passed_ids": [
+        "blue_02_02_02r_00",
+        "blue_04_02_02r_00",
+        "blue_04_02_02r_02",
+        "blue_07_02_02r_01",
+        "colorless_00_02_02r_00",
+        "colorless_010_02_02r_00",
+        "colorless_02_02_02r_01",
+        "colorless_04_02_02r_01",
+        "colorless_04_02_02r_03",
+        "colorless_06_02_02r_01",
+        "green_02_02_02r_00",
+        "green_03_02_02r_00",
+        "green_04_02_02r_01",
+        "green_08_02_02r_00",
+        "purple_03_02_02r_00",
+        "purple_03_03_02r_00",
+        "purple_04_02_02r_00",
+        "purple_04_02_02r_01",
+        "purple_07_02_02r_01",
+        "red_02_02_02r_01",
+        "red_02_03_02r_01",
+        "red_04_02_02r_01",
+        "red_08_02_02r_00",
+        "white_02_03_02r_00",
+        "white_04_02_02r_00",
+        "white_04_02_02r_02",
+        "white_07_02_02r_01",
+        "yellow_02_02_02r_00",
+        "yellow_03_02_02r_00",
+        "yellow_04_02_02r_01",
+        "yellow_08_02_02r_00"
+      ],
+      "failed_ids": []
+    },
+    "skill": {
+      "passed": 20,
+      "total": 31,
+      "pass_rate_percent": 64.52,
+      "passed_ids": [
+        "blue_02_02_02r_00",
+        "blue_04_02_02r_00",
+        "colorless_00_02_02r_00",
+        "colorless_010_02_02r_00",
+        "colorless_02_02_02r_01",
+        "colorless_04_02_02r_03",
+        "colorless_06_02_02r_01",
+        "green_02_02_02r_00",
+        "green_03_02_02r_00",
+        "green_08_02_02r_00",
+        "purple_03_02_02r_00",
+        "purple_03_03_02r_00",
+        "purple_04_02_02r_01",
+        "red_02_02_02r_01",
+        "red_02_03_02r_01",
+        "white_02_03_02r_00",
+        "white_04_02_02r_02",
+        "yellow_02_02_02r_00",
+        "yellow_03_02_02r_00",
+        "yellow_08_02_02r_00"
+      ],
+      "failed_ids": [
+        "blue_04_02_02r_02",
+        "blue_07_02_02r_01",
+        "colorless_04_02_02r_01",
+        "green_04_02_02r_01",
+        "purple_04_02_02r_00",
+        "purple_07_02_02r_01",
+        "red_04_02_02r_01",
+        "red_08_02_02r_00",
+        "white_04_02_02r_00",
+        "white_07_02_02r_01",
+        "yellow_04_02_02r_01"
+      ]
+    },
+    "workflow_run": {
+      "passed": 28,
+      "total": 31,
+      "pass_rate_percent": 90.32,
+      "passed_ids": [
+        "blue_04_02_02r_00",
+        "blue_04_02_02r_02",
+        "blue_07_02_02r_01",
+        "colorless_00_02_02r_00",
+        "colorless_010_02_02r_00",
+        "colorless_02_02_02r_01",
+        "colorless_04_02_02r_01",
+        "colorless_04_02_02r_03",
+        "colorless_06_02_02r_01",
+        "green_02_02_02r_00",
+        "green_03_02_02r_00",
+        "green_04_02_02r_01",
+        "green_08_02_02r_00",
+        "purple_03_02_02r_00",
+        "purple_03_03_02r_00",
+        "purple_04_02_02r_00",
+        "purple_04_02_02r_01",
+        "purple_07_02_02r_01",
+        "red_02_02_02r_01",
+        "red_02_03_02r_01",
+        "red_04_02_02r_01",
+        "white_02_03_02r_00",
+        "white_04_02_02r_00",
+        "white_04_02_02r_02",
+        "yellow_02_02_02r_00",
+        "yellow_03_02_02r_00",
+        "yellow_04_02_02r_01",
+        "yellow_08_02_02r_00"
+      ],
+      "failed_ids": [
+        "blue_02_02_02r_00",
+        "red_08_02_02r_00",
+        "white_07_02_02r_01"
+      ]
+    }
+  },
+  "preserved_pre_repair": {
+    "run_id": "3a449eec-f0a0-4fc4-a46f-b404546e6134",
+    "source_report": "zenonzard-preserved-generation-usage.json",
+    "selected_nodes": [
+      "activity_002",
+      "activity_002i",
+      "activity_004"
+    ],
+    "controller_scope": {
+      "thread_id": "01a0e654-aa44-7b63-83e2-0adfaed7dcf0",
+      "start": "2026-09-28T04:45:27.650Z",
+      "end": "2026-09-28T05:40:52.540Z",
+      "source": "Run journal native_parent_thread_id and node completion events"
+    },
+    "controller": {
+      "thread_id": "01a0e654-aa44-7b63-83e2-0adfaed7dcf0",
+      "node_id": "controller",
+      "rollout": "C:\\Users\\tgy23\\.codex\\archived_sessions\\rollout-2026-09-28T00-45-03-01a0e654-aa44-7b63-83e2-0adfaed7dcf0.jsonl",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "responses": 51,
+      "usage": {
+        "input_tokens": 2771779,
+        "cached_input_tokens": 2729728,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 7389,
+        "reasoning_output_tokens": 630,
+        "total_tokens": 2779168,
+        "uncached_input_tokens": 42051
+      },
+      "api_equivalent_usd": 0.7039376,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-sol": 0.7039376
+      },
+      "max_request_input_tokens": 68056,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": "2026-09-28T04:45:27.650Z",
+        "end": "2026-09-28T05:40:52.540Z"
+      }
+    },
+    "native_totals": {
+      "usage": {
+        "input_tokens": 14508303,
+        "cached_input_tokens": 13598976,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 304153,
+        "reasoning_output_tokens": 229856,
+        "total_tokens": 14812456,
+        "uncached_input_tokens": 909327
+      },
+      "api_equivalent_usd": 0.37899896
+    },
+    "all_online_totals": {
+      "usage": {
+        "input_tokens": 17280082,
+        "cached_input_tokens": 16328704,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 311542,
+        "reasoning_output_tokens": 230486,
+        "total_tokens": 17591624,
+        "uncached_input_tokens": 951378
+      },
+      "api_equivalent_usd": 1.08293656
+    }
+  },
+  "successful_repair_continuation": {
+    "run_id": "e4676a11-efa2-456e-9a6e-91ae1cc91b57",
+    "source_report": "zenonzard-repair-continuation-usage.json",
+    "controller_scope": {
+      "thread_id": "01a0e8e3-b3f1-7ec3-b318-927fc6e1f380",
+      "start": "2026-09-28T16:40:57.915Z",
+      "end": "2026-09-28T17:37:07.107Z",
+      "source": "Run journal native_parent_thread_id and node completion events"
+    },
+    "controller": {
+      "thread_id": "01a0e8e3-b3f1-7ec3-b318-927fc6e1f380",
+      "node_id": "controller",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T12-40-31-01a0e8e3-b3f1-7ec3-b318-927fc6e1f380.jsonl",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "responses": 44,
+      "usage": {
+        "input_tokens": 2454768,
+        "cached_input_tokens": 2424576,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 6861,
+        "reasoning_output_tokens": 336,
+        "total_tokens": 2461629,
+        "uncached_input_tokens": 30192
+      },
+      "api_equivalent_usd": 0.6139092,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-sol": 0.6139092
+      },
+      "max_request_input_tokens": 63291,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": "2026-09-28T16:40:57.915Z",
+        "end": "2026-09-28T17:37:07.107Z"
+      }
+    },
+    "native_totals": {
+      "usage": {
+        "input_tokens": 13688770,
+        "cached_input_tokens": 12920320,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 158973,
+        "reasoning_output_tokens": 102143,
+        "total_tokens": 13847743,
+        "uncached_input_tokens": 768450
+      },
+      "api_equivalent_usd": 1.6960719
+    },
+    "all_online_totals": {
+      "usage": {
+        "input_tokens": 16143538,
+        "cached_input_tokens": 15344896,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 165834,
+        "reasoning_output_tokens": 102479,
+        "total_tokens": 16309372,
+        "uncached_input_tokens": 798642
+      },
+      "api_equivalent_usd": 2.3099811
+    }
+  },
+  "discarded_failed_repair": {
+    "run_id": "3a449eec-f0a0-4fc4-a46f-b404546e6134",
+    "node_id": "activity_005r",
+    "usage": {
+      "input_tokens": 46136953,
+      "cached_input_tokens": 44436736,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 491752,
+      "reasoning_output_tokens": 356064,
+      "total_tokens": 46628705,
+      "uncached_input_tokens": 1700217
+    },
+    "api_equivalent_usd": 0.86026506,
+    "included_in_final_total": false
+  },
+  "completed_workflow_artifact": {
+    "usage": {
+      "input_tokens": 33423620,
+      "cached_input_tokens": 31673600,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 477376,
+      "reasoning_output_tokens": 332965,
+      "total_tokens": 33900996,
+      "uncached_input_tokens": 1750020
+    },
+    "api_equivalent_usd": 3.39291766
+  },
+  "historical_skill": {
+    "model": "gpt-6-sol",
+    "usage": {
+      "input_tokens": 28037971,
+      "cached_input_tokens": 27776768,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 84622,
+      "total_tokens": 28122593,
+      "uncached_input_tokens": 261203
+    },
+    "api_equivalent_usd": 6.9239796,
+    "caveat": "Two-turn continuation; the second turn inherited eight first-turn drafts."
+  },
+  "comparison_to_skill": {
+    "token_delta": 5778403,
+    "token_delta_percent": 20.55,
+    "cost_delta_usd": -3.53106194,
+    "cost_delta_percent": -51.0
+  },
+  "run_owned_native_only_diagnostic": {
+    "usage": {
+      "input_tokens": 28197073,
+      "cached_input_tokens": 26519296,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 463126,
+      "reasoning_output_tokens": 331999,
+      "total_tokens": 28660199,
+      "uncached_input_tokens": 1677777
+    },
+    "note": "Excludes both correctly identified Run controller sessions."
+  }
+}

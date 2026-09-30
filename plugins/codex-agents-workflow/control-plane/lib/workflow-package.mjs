@@ -1,7 +1,7 @@
 import { canonicalJSON, digest, prepareResources, revisionHash } from './workflow-revisions.mjs';
 import { requireValue } from './workflow-paths.mjs';
-import { requireCurrentConversionCertificate } from './skill-import/conversion-certificate.mjs';
-import { requireWorkflowResourceClosure } from './workflow-resource-validation.mjs';
+import { requireWorkflowSnapshotIntegrity } from './workflow-ready-validation.mjs';
+import { normalizeExecutableRequirements } from './runtime-requirements.mjs';
 
 export const WORKFLOW_PACKAGE_FORMAT='codex.workflow.package';
 export const WORKFLOW_PACKAGE_VERSION=1;
@@ -9,11 +9,18 @@ export const WORKFLOW_PACKAGE_API=1;
 
 function payloadOf(pack,resources,packageVersion){
   requireValue(/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(packageVersion),'WORKFLOW_PACKAGE_SEMVER','Workflow package version must be semantic');
-  const objects=Object.entries(resources).sort(([a],[b])=>a.localeCompare(b)).map(([path,bytes])=>({path,sha256:digest(bytes),bytes:bytes.length,content_base64:Buffer.from(bytes).toString('base64')}));
-  return {format:WORKFLOW_PACKAGE_FORMAT,format_version:WORKFLOW_PACKAGE_VERSION,package:{id:pack.workflow.id,version:packageVersion},compatibility:{plugin:'codex-agents-workflow',package_api:WORKFLOW_PACKAGE_API,workflow_schema:pack.workflow.schema_version},dependencies:{providers:[...(pack.workflow.requirements?.providers ?? [])].sort(),tools:[...(pack.workflow.requirements?.tools ?? [])].sort(),mcp_servers:[...(pack.workflow.requirements?.mcp_servers ?? [])].sort(),executables:[...(pack.workflow.requirements?.executables ?? [])].sort()},snapshot:{workflow:structuredClone(pack.workflow),resources:structuredClone(pack.resources),provenance:structuredClone(pack.provenance ?? {}),import_report:structuredClone(pack.import_report ?? {}),revision_hash:pack.revision_hash},objects};
+  const objects=Object.entries(resources).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([path,bytes])=>({path,sha256:digest(bytes),bytes:bytes.length,content_base64:Buffer.from(bytes).toString('base64')}));
+  return {format:WORKFLOW_PACKAGE_FORMAT,format_version:WORKFLOW_PACKAGE_VERSION,package:{id:pack.workflow.id,version:packageVersion},compatibility:{plugin:'codex-agents-workflow',package_api:WORKFLOW_PACKAGE_API,workflow_schema:pack.workflow.schema_version},dependencies:{providers:[...(pack.workflow.requirements?.providers ?? [])].sort(),tools:[...(pack.workflow.requirements?.tools ?? [])].sort(),mcp_servers:[...(pack.workflow.requirements?.mcp_servers ?? [])].sort(),executables:normalizeExecutableRequirements(pack.workflow.requirements?.executables ?? [])},snapshot:{workflow:structuredClone(pack.workflow),resources:structuredClone(pack.resources),provenance:structuredClone(pack.provenance),import_report:structuredClone(pack.import_report),revision_hash:pack.revision_hash},objects};
+}
+
+function requirePublicPackageResources(resources) {
+  const privatePaths=Object.keys(resources ?? {}).filter(path=>String(path).replaceAll('\\','/').toLowerCase().startsWith('source/'));
+  requireValue(privatePaths.length===0,'WORKFLOW_PACKAGE_AUTHORING_PRIVATE','Private conversion sources cannot be exported or installed as Workflow package resources',{resources:privatePaths});
 }
 
 export function exportWorkflowPackage(pack,resources,{packageVersion='1.0.0'}={}){
+  requirePublicPackageResources(resources);
+  requireWorkflowSnapshotIntegrity({workflow:pack.workflow,resources:pack.resources,provenance:pack.provenance,import_report:pack.import_report});
   const payload=payloadOf(pack,resources,packageVersion);
   return {...payload,package_sha256:digest(canonicalJSON(payload))};
 }
@@ -35,19 +42,18 @@ export function validateWorkflowPackage(bundle){
   }
   const prepared=prepareResources(resources);
   requireValue(canonicalJSON(prepared.manifest)===canonicalJSON(payload.snapshot.resources),'WORKFLOW_PACKAGE_MANIFEST','Workflow package manifest differs from its objects');
+  requirePublicPackageResources(resources);
   const snapshot={workflow:payload.snapshot.workflow,resources:payload.snapshot.resources,provenance:payload.snapshot.provenance,import_report:payload.snapshot.import_report};
-  const expectedDependencies={providers:[...(snapshot.workflow.requirements?.providers ?? [])].sort(),tools:[...(snapshot.workflow.requirements?.tools ?? [])].sort(),mcp_servers:[...(snapshot.workflow.requirements?.mcp_servers ?? [])].sort(),executables:[...(snapshot.workflow.requirements?.executables ?? [])].sort()};
-  requireValue(canonicalJSON(payload.dependencies)===canonicalJSON(expectedDependencies),'WORKFLOW_PACKAGE_DEPENDENCIES','Workflow package dependency manifest differs from its Workflow');
+  const expectedDependencies={providers:[...(snapshot.workflow.requirements?.providers ?? [])].sort(),tools:[...(snapshot.workflow.requirements?.tools ?? [])].sort(),mcp_servers:[...(snapshot.workflow.requirements?.mcp_servers ?? [])].sort(),executables:normalizeExecutableRequirements(snapshot.workflow.requirements?.executables ?? [])};
+  requireValue(canonicalJSON(payload.dependencies)===canonicalJSON(expectedDependencies),
+    'WORKFLOW_PACKAGE_DEPENDENCIES','Workflow package dependency manifest differs from its Workflow');
   requireValue(revisionHash(snapshot)===payload.snapshot.revision_hash,'WORKFLOW_PACKAGE_REVISION','Workflow package revision identity differs');
-  if(snapshot.workflow.status==='ready'){
-    requireWorkflowResourceClosure(snapshot.workflow,snapshot.resources);
-    requireCurrentConversionCertificate(snapshot.workflow,snapshot.resources,snapshot.import_report);
-  }
+  requireWorkflowSnapshotIntegrity(snapshot);
   return {package:structuredClone(payload.package),snapshot:structuredClone(payload.snapshot),resources,package_sha256};
 }
 
 export async function installWorkflowPackage(store,bundle,{source=null}={}){
   const checked=validateWorkflowPackage(bundle);
-  const provenance={...checked.snapshot.provenance,installation:{source,package_version:checked.package.version,package_sha256:checked.package_sha256,installed_at:new Date().toISOString()}};
-  return store.create(checked.snapshot.workflow,{resources:checked.resources,provenance,import_report:checked.snapshot.import_report});
+  return store.install(checked.snapshot,{resources:checked.resources,installation:{source,package_version:checked.package.version,
+    package_sha256:checked.package_sha256,installed_at:new Date().toISOString()}});
 }

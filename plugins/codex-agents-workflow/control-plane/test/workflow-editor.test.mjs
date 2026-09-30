@@ -29,10 +29,9 @@ test('resource edits create CAS Draft revisions, retain binary bytes and old res
   assert.deepEqual((await store.resources('editor', changed.revision_hash))['binary.bin'], Buffer.from([255,0,1]));
   await assert.rejects(writeEditorResource(store, { ...ref, text: 'Stale' }), { code: 'REVISION_CONFLICT' });
   await assert.rejects(writeEditorResource(store, { ...ref, resource_path: '../escape', text: 'x' }));
-  await assert.rejects(publishEditorWorkflow(store, { workflow_id: 'editor', expected_revision: changed.revision_hash }), { code: 'WORKFLOW_PUBLICATION_REVIEW' });
-  const ready = await publishEditorWorkflow(store, { workflow_id: 'editor', expected_revision: changed.revision_hash, reviewed: true }); assert.equal(ready.workflow.status, 'ready');
+  const ready = await publishEditorWorkflow(store, { workflow_id: 'editor', expected_revision: changed.revision_hash }); assert.equal(ready.workflow.status, 'ready');
   const removed = await writeEditorResource(store, { ...ref, expected_revision: ready.revision_hash, remove: true });
-  await assert.rejects(publishEditorWorkflow(store, { workflow_id: 'editor', expected_revision: removed.revision_hash, reviewed: true }), { code: 'WORKFLOW_RESOURCE_MISSING' });
+  await assert.rejects(publishEditorWorkflow(store, { workflow_id: 'editor', expected_revision: removed.revision_hash }), { code: 'WORKFLOW_RESOURCE_MISSING' });
   const history = await store.revisions('editor'); assert.deepEqual(history.map(item => item.revision), [4,3,2,1]);
   await writeFile(join(packDirectory(store.root, 'editor'), 'revisions', pack.revision_hash + '.json'), '{}');
   await assert.rejects(store.revisions('editor'));
@@ -65,7 +64,7 @@ test('graph console serves bundled assets with bounded CSP and keeps human publi
   const { root } = await fixture(t); const consoleState = await startConsole({ configPath: join(root, 'control-plane.json'), defaultConfigPath: DEFAULT_CONFIG_PATH, open: false, port: 0 }); t.after(stopConsole);
   const base = `http://127.0.0.1:${consoleState.port}`;
   const html = await fetch(base + '/workflows'); assert.equal(html.status, 200); assert.match(html.headers.get('content-security-policy'), /script-src 'self'/); assert.match(html.headers.get('content-security-policy'), /style-src-attr 'unsafe-inline'/);
-  for (const asset of ['/workflows.js','/workflows.css']) { const response = await fetch(base + asset); assert.equal(response.status, 200); assert((await response.text()).length > 1000); }
+  for (const asset of ['/workflows.js','/workflows.css']) { const response = await fetch(base + asset); assert.equal(response.status, 200); const source=await response.text(); assert(source.length > 1000); if(asset==='/workflows.js'){assert.match(source,/customize_role/);assert.match(source,/New role/);} }
   assert.equal((await fetch(base + '/web-src/main.tsx')).status, 404);
   assert.equal((await fetch(base + '/api/workflow/publish', { method: 'POST', body: '{}' })).status, 401);
 });

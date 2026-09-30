@@ -1,4 +1,4 @@
 interface:
-  display_name: "Codex Agents Workflow Orchestration"
-  short_description: "Coordinate native agents when no Workflow fits"
-  default_prompt: "Use $orchestration to declare a SELECTIVE ROUTE before task tools; select the implementation and review route appropriate to the task."
+  display_name: "Workbench Roles"
+  short_description: "Automatically assign configured helpers in ordinary tasks"
+  default_prompt: "Use $orchestration automatically when no Workflow matches and an enabled Workbench Role would materially help."

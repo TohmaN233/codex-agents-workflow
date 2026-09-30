@@ -13,7 +13,7 @@ const provider = {
   enabled: true,
   capabilities: { read: true, write: true },
   requires_user_approval: false,
-  config: { agent_type: 'codex_workflow_luna_implementer', model: 'gpt-5.6-luna', reasoning_effort: 'max', role: 'implementer' },
+  config: { agent_type: 'default', model: 'gpt-6-luna', reasoning_effort: 'max', role: 'implementer' },
 };
 const adapter = { execution: 'codex_thread', expected_model: provider.config.model, expected_reasoning_effort: provider.config.reasoning_effort };
 
@@ -64,8 +64,8 @@ test('execution envelopes distinguish thread/main snapshots from the managed Pro
   assert.equal(thread.thread.protocol_version, 2);
 
   const main = envelopeFor({ id: 'work', type: 'agent', executor: { kind: 'main' }, access: 'read_only', resources: ['source/SKILL.md'] });
-  assert.deepEqual(main.resource_access, { reader: 'host_inline_snapshot', paths: ['source/SKILL.md'] });
-  assert.match(main.prompt_template, /agent_packet\.resources/);
+  assert.deepEqual(main.resource_access, { reader: 'read_workflow_resource', paths: ['source/SKILL.md'] });
+  assert.match(main.prompt_template, /read_workflow_resource/);
 
   const managed = envelopeFor({ id: 'work', type: 'agent', executor: { kind: 'provider', provider_id: provider.id }, access: 'read_only', resources: ['source/SKILL.md'] });
   assert.deepEqual(managed.resource_access, { reader: 'read_workflow_resource', paths: ['source/SKILL.md'] });

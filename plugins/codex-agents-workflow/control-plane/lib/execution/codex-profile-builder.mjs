@@ -15,10 +15,12 @@ export const STRICT_SETTINGS = Object.freeze({
   project_doc_fallback_filenames: [], 'agents.enabled': false,
   'orchestrator.skills.enabled': false, 'orchestrator.mcp.enabled': false,
   ...Object.fromEntries(['apps', 'browser_use', 'browser_use_external', 'browser_use_full_cdp_access',
-    'code_mode', 'code_mode_host', 'computer_use', 'goals', 'hooks', 'image_generation', 'in_app_browser',
+    'code_mode', 'computer_use', 'goals', 'hooks', 'image_generation', 'in_app_browser',
     'memories', 'multi_agent', 'multi_agent_v2', 'plugins', 'remote_plugin', 'shell_tool', 'shell_snapshot',
     'skill_mcp_dependency_install', 'skill_search', 'tool_suggest', 'unified_exec', 'workspace_dependencies']
     .map(key => ['features.' + key, false])),
+  // Dynamic Workflow tools need the App Server's host transport; ambient code mode remains disabled.
+  'features.code_mode_host': true,
 });
 const settingLines = settings => Object.entries(settings).map(([key, value]) => `${key} = ${JSON.stringify(value)}`);
 export const STRICT_CONFIG = settingLines(STRICT_SETTINGS).join('\n') + '\n';
@@ -86,17 +88,54 @@ export async function buildCodexProfile({ parent, binary, expectedBinaryHash, mo
   }
 }
 
-// Public model/list metadata supplies identity and supported efforts. The other
-// values below are deliberate local tool/context restrictions, not inferred
-// provider capabilities or copies of the user's private model cache.
+// Public model/list metadata supplies identity and supported efforts. The
+// The context window and image-detail capability come from the exact model's
+// observed metadata; the remaining fields below are local tool restrictions.
+async function observedModelCapabilities(profile, model) {
+  requireValue(Array.isArray(model.inputModalities) && model.inputModalities.length > 0
+    && model.inputModalities.includes('text') && new Set(model.inputModalities).size === model.inputModalities.length
+    && model.inputModalities.every(value => ['text', 'image', 'audio'].includes(value)),
+  'CODEX_MODEL_MODALITY', 'Authenticated model returned invalid input modalities');
+  // model/list omits contextWindow and original-image support in current App
+  // Server releases. Read only those fields from its freshly owned cache.
+  let window=model.contextWindow,max=model.maxContextWindow;
+  let observed;
+  if(window===undefined || model.inputModalities.includes('image')){
+    const path=join(profile.home,'models_cache.json');await noSymlinks(path);
+    const info=await lstat(path);
+    requireValue(info.isFile() && info.size>0 && info.size<=4*1024*1024,'CODEX_MODEL_CONTEXT','Observed model cache must be a bounded regular file');
+    const cache=JSON.parse(await readFile(path,'utf8'));
+    requireValue(Array.isArray(cache?.models) && cache.models.length<=1000,'CODEX_MODEL_CONTEXT','Observed model cache is malformed');
+    const matches=cache.models.filter(item=>item?.slug===model.model);
+    requireValue(matches.length===1,'CODEX_MODEL_CONTEXT','Authenticated model has no unique observed context metadata');
+    observed=matches[0];
+    if(window===undefined){window=observed.context_window;max=observed.max_context_window;}
+  }
+  if(max===null)max=undefined;
+  requireValue(Number.isSafeInteger(window) && window>0 && (max===undefined || Number.isSafeInteger(max) && max>=window),
+    'CODEX_MODEL_CONTEXT','Observed model context window is invalid');
+  let original=false;
+  if(model.inputModalities.includes('image')){
+    requireValue(Array.isArray(observed?.input_modalities)
+      && observed.input_modalities.length===model.inputModalities.length
+      && model.inputModalities.every(value=>observed.input_modalities.includes(value))
+      && typeof observed.supports_image_detail_original==='boolean',
+    'CODEX_MODEL_MODALITY','Observed image capability does not match the authenticated model');
+    original=observed.supports_image_detail_original;
+  }
+  return {context_window:window,...(max===undefined?{}:{max_context_window:max}),
+    input_modalities:[...model.inputModalities],supports_image_detail_original:original};
+}
+
 export async function pinObservedModel(profile, model) {
   requireValue(model?.model === profile.model && Array.isArray(model.supportedReasoningEfforts) && model.supportedReasoningEfforts.some(item => item.reasoningEffort === profile.effort), 'CODEX_MODEL_UNAVAILABLE', 'The pinned model/effort was not returned by this App Server');
+  const capabilities=await observedModelCapabilities(profile,model);
   const catalog = { models: [{ slug: model.model, display_name: model.displayName, description: model.description,
     default_reasoning_level: model.defaultReasoningEffort, supported_reasoning_levels: model.supportedReasoningEfforts.map(item => ({ effort: item.reasoningEffort, description: item.description })),
     visibility: 'list', supported_in_api: true, priority: 0, base_instructions: STRICT_INSTRUCTIONS,
     shell_type: 'disabled', supports_parallel_tool_calls: false, support_verbosity: false,
-    truncation_policy: { mode: 'tokens', limit: 10000 }, experimental_supported_tools: [], input_modalities: ['text'],
-    supports_image_detail_original: false, use_responses_lite: false, tool_mode: 'direct', node_repl_disabled: true, context_window: 32000,
+    truncation_policy: { mode: 'tokens', limit: 10000 }, experimental_supported_tools: [],
+    use_responses_lite: false, tool_mode: 'direct', node_repl_disabled: true, ...capabilities,
   }] };
   const path = join(profile.home, 'models.json'); await writeDurableJSON(path, catalog);
   const configPath = join(profile.home, 'config.toml'); const previous = await readFile(configPath, 'utf8');

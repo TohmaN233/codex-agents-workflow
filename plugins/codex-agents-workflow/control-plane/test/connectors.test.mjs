@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { dirname, join } from 'node:path';
@@ -9,7 +10,9 @@ import test from 'node:test';
 
 import { loadConfig, saveConfig } from '../lib/config.mjs';
 import { ConnectorRegistry } from '../connectors/registry.mjs';
+import { GrokAcpConnector, stopOwnedProcess } from '../connectors/grok-acp.mjs';
 import { ConnectorTaskStore } from '../connectors/task-store.mjs';
+import { AttemptAdmissionRegistry } from '../lib/execution/attempt-admission.mjs';
 import { captureWorkspaceSnapshot } from '../connectors/scope-guard.mjs';
 import {
   cursorCreateAgentExpression,
@@ -21,6 +24,36 @@ import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const fakeSource = join(here, 'fixtures', 'fake-grok.mjs');
+
+test('Grok startup kill is not a confirmed stop until the owned process exits', async () => {
+  const stuck = new EventEmitter(); stuck.exitCode = null; stuck.signalCode = null;
+  let kills = 0; stuck.kill = () => { kills++; return true; };
+  await assert.rejects(stopOwnedProcess(stuck, 'stuck Grok', 20), { code: 'CONNECTOR_PROCESS_STOP_PENDING' });
+  assert.equal(kills, 1);
+  const exiting = new EventEmitter(); exiting.exitCode = null; exiting.signalCode = null;
+  exiting.kill = () => { queueMicrotask(() => { exiting.exitCode = 0; exiting.emit('exit', 0); }); return true; };
+  await stopOwnedProcess(exiting, 'exiting Grok', 20);
+});
+
+test('connector startup paused in durable reservation cannot spawn after its Run is revoked', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'connector-admission-'));
+  t.after(async () => { await import('node:fs/promises').then(({ rm }) => rm(root, { recursive: true, force: true })); });
+  const workspace = join(root, 'workspace'); await mkdir(workspace);
+  await execFileAsync('git', ['-C', workspace, 'init', '-q']);
+  let release; const held = new Promise(resolve => { release = resolve; });
+  let entered; const reserved = new Promise(resolve => { entered = resolve; });
+  let spawns = 0; const updates = [];
+  const connector = new GrokAcpConnector({ configPath: join(root, 'config.json'), env: { GROK_BIN: process.execPath },
+    store: { async create() { entered(); await held; return { task_id: 'exact-attempt' }; }, async update(_id, value) { updates.push(value); } },
+    spawnImpl: () => { spawns++; throw new Error('revoked connector must not spawn'); } });
+  const registry = new AttemptAdmissionRegistry(); const admission = registry.begin('run-a', 'node-a', 'exact-attempt', 'connector');
+  const pending = assert.rejects(connector.start({ provider: { id: 'grok', capabilities: { read: true, write: false }, config: { binary_env: 'GROK_BIN' } },
+    stage: { read_only: true }, prompt: 'fixture', workspace, taskTypeId: 'fixture', stageId: 'node-a', taskId: 'exact-attempt',
+    assertActive: admission.assertActive, signal: admission.controller.signal }), { code: 'ATTEMPT_STOPPED' });
+  await reserved; registry.fenceRun('run-a'); release(); await pending;
+  assert.equal(spawns, 0);
+  assert.equal(updates.at(-1).state, 'failed');
+});
 
 test('independent connector stores merge durable task records under the cross-process lock', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'sol-task-store-lock-'));

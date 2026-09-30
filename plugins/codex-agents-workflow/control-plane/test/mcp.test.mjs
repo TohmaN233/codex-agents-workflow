@@ -10,6 +10,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import { createStdioRequestScheduler } from '../server.mjs';
+import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';
 import { buildBootstrapSource, canonicalLf } from '../../scripts/build-mcp-entry.mjs';
 
 const controlDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -20,6 +21,7 @@ test('plugin MCP uses a stable parent and fresh registry resolution with the glo
   const manifest = JSON.parse(await readFile(join(pluginDir, '.mcp.json'), 'utf8'));
   const server = manifest.mcpServers['codex-agents-workflow'];
   assert.equal(server.enabled, true);
+  assert.equal(server.tool_timeout_sec,3660);
   assert.equal(server.cwd, '../../..');
   const bootstrap=await readFile(join(pluginDir,'scripts/mcp-bootstrap.cjs'),'utf8');
   // Compare the exact canonical source used by the builder: CRLF checkout
@@ -35,22 +37,28 @@ test('plugin MCP uses a stable parent and fresh registry resolution with the glo
 test('routing policy leaves the primary model to the host and never auto-falls back', async () => {
   const controlSkill = await readFile(join(pluginDir, 'skills', 'control-plane', 'SKILL.md'), 'utf8');
   const nativeSkill = await readFile(join(pluginDir, 'skills', 'orchestration', 'SKILL.md'), 'utf8');
-  const legacySkill = await readFile(join(pluginDir, 'skills', 'control-plane', 'references', 'v6-control-plane.md'), 'utf8');
   assert.doesNotMatch(controlSkill, /use the native[\s\S]{0,100}workflow or stay solo/i);
   assert.match(controlSkill, /Report the observed error/i);
   assert.doesNotMatch(nativeSkill, /ask the user to confirm[\s\S]{0,80}stop[\s\S]{0,40}until confirmed/i);
-  for (const skill of [controlSkill, nativeSkill, legacySkill]) {
+  for (const skill of [controlSkill, nativeSkill]) {
     assert.doesNotMatch(skill, /recommended primary|qualifying primary|confirm the primary session|GPT-5\.6 Luna never qualifies/i);
   }
-  assert.match(legacySkill, /delegate is the default/i);
-  assert.match(legacySkill, /full[\s\S]{0,120}(difficult|high-risk)/i);
+  assert.match(nativeSkill, /user does not need to ask\s+for a Role or name one/i);
+  assert.match(nativeSkill, /longest supported\s+timeout/i);
   assert.doesNotMatch(controlSkill, /legacy|version: [67]|\bv[67]\b/);
-  const recovery = await readFile(join(pluginDir, 'skills/control-plane/references/recovery.md'), 'utf8');
-  for (const operation of ['workflow_start', 'workflow_claim_node', 'workflow_dispatch', 'workflow_complete_node', 'workflow_reattach_connector']) assert((controlSkill + recovery).includes(operation));
+  const toolNames=new Set(workflowToolDefinitions().map(tool=>tool.name));
+  for (const operation of ['workflow_start', 'workflow_claim_node', 'workflow_dispatch', 'workflow_complete_node', 'workflow_reattach_connector']) assert(toolNames.has(operation));
+  const workflowStart=workflowToolDefinitions().find(tool=>tool.name==='workflow_start');
+  for(const hostField of ['main_actor','native_parent_thread_id','revision_hash','run_id','control_token'])
+    assert.equal(Object.hasOwn(workflowStart.inputSchema.properties,hostField),false,hostField);
+  for(const continuation of ['workflow_native_next','workflow_native_spawned_batch','workflow_native_followed_up']){
+    const schema=workflowToolDefinitions().find(tool=>tool.name===continuation).inputSchema;
+    assert.deepEqual(schema.required,[]);assert.deepEqual(schema.properties,{});
+  }
   const connection = await readFile(join(pluginDir, 'skills/control-plane/references/connection.md'), 'utf8');
   assert.match(connection, /Never claim connection recovery before a host tool call\s+succeeds/i);
-  assert.match(controlSkill, /Never fabricate a receipt or silently substitute/);
-  assert.match(nativeSkill, /delegate is the default/i);
+  assert.match(controlSkill, /never (?:fabricate|invent)[\s\S]{0,80}receipt[\s\S]{0,80}(?:substitute|fallback)/i);
+  assert.match(nativeSkill, /user does not need to ask\s+for a Role or name one/i);
 });
 
 function makeClient(child) {

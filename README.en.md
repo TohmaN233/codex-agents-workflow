@@ -1,204 +1,182 @@
 # Codex Agents Workflow
 
-**Turn a complex task into a workflow with configurable models, parallel execution, approval pauses, and reuse.**
+**Turn a growing process prompt into an executable, reviewable, recoverable runtime.**
 
-This is an upgraded version of **sol-subagent-control**: it has evolved from coordinating sub-agent assignments into a Workflow plugin with a visual workbench. Convert existing Skills into flowcharts, assign models and reasoning effort to each node, have the main agent schedule sub-agents by dependency, or create and continue independent Codex tasks, then review the results.
+A process-oriented Skill can tell an agent what to do, but it is still instruction text loaded into model context. As a task grows, the main session carries the user conversation, the complete Skill, intermediate results, and failure history. Delegating steps to subagents does not automatically reduce Main-agent tokens either: if Main keeps polling progress, relaying outputs, and coordinating retries, it continues to spend tokens while the child works.
 
-[Chinese](README.md) · [English](README.en.md) · [Chinese tutorial](docs/TUTORIAL.zh-CN.md) · [English guide](docs/TUTORIAL.md)
+Codex Agents Workflow separates those responsibilities. A Workflow declares semantic steps and dependencies. The Host owns scheduling, mechanical fields, state, event waits, and recovery. Each agent node receives only the material required for its current step. This is a local workflow runtime, not a wrapper that merely spawns more agents.
 
-## Why build this
+[中文](README.md) · [English](README.en.md) · [Guide](docs/TUTORIAL.md) · [Full experiment report](docs/EXPERIMENT_RESULTS.md)
 
-Astra is powerful and expensive. There is no need to hand material organization, clearly scoped edits, batch processing, and final decisions all to the same high-cost model.
+![The current workflow library separates Roles from Workflows](docs/assets/tutorial/workbench-library.png)
 
-Workflows let you make the division of labor explicit: assign routine steps to a lighter model, complex analysis to a stronger one, and important checks to an independent reviewer; the main agent handles understanding the goal, coordination, user feedback, and final acceptance. Each subtask works in its own context, while the main session collects the necessary results and evidence, reducing the amount of intermediate work that crowds the main agent's context.
+## Why process Skills need a runtime
 
-Assigning each step to the right model controls the cost of the overall task and reduces the intermediate context the main session needs to carry.
+Skills remain a good fit for a single bounded action. Their limits become visible in workflows with dependencies, fanout, repair, waiting, and persistent state:
 
-| Work | How to assign it |
-| --- | --- |
-| Clearly scoped implementation, asset organization, routine validation | Configure a sub-agent suited to routine work |
-| Cross-file decisions, complex plans, difficult analysis | Configure a stronger model for that node |
-| Independent checks | Use a separate read-only review node |
-| Steps that require your decision | Add a user approval node |
-| Work that requires continued edits to the same plan | Create a Codex task and have later nodes continue the same task |
-| Overall coordination and final acceptance | Leave it to the current main agent; Codex determines its model |
+- **Prompt text does not isolate context.** Later steps often see unrelated history, source material, and intermediate output.
+- **Subagents do not automatically save Main tokens.** Early runs showed Main repeatedly polling while child agents worked; delegation alone did not make Main quiet.
+- **Handoffs can become copying work.** Agents reread the same files, relay large outputs, or transcribe IDs, paths, hashes, and bindings.
+- **A local failure can expand.** One failed shard should not force nine successful shards to run again.
+- **Prompt constraints are not deterministic delivery.** Path resolution, dependency checks, schemas, permissions, artifacts, and recovery points belong in code.
 
-Models are not hard-coded by these descriptions. You choose the concrete configuration in the workbench, and each new run keeps those bindings fixed; it does not silently switch to another model when one fails.
+This plugin moves those responsibilities into the Host. When no actionable event exists, Main stops reasoning. The Host holds an event wait for up to one hour and resumes the execution chain immediately when the Run completes, fails, needs attention, receives a subagent result, or records a handoff. The agent does not need a short polling loop to ask whether the work is done.
 
-### Four-task comparison
+## What two experiments showed
 
-Across 40 isolated, hidden-judge runs, node-scoped Workflow execution (`W-main`) used **42.9% fewer total tokens** on average than loading the frozen Skill directly (`S-main`), with mean hidden-test scores of **0.9618 vs 0.9722**. The four task-level reductions were **52.1% / 38.7% / 38.1% / 43.1%**. Node-scoped projection also used **28.1% fewer tokens** than preloading the complete Workflow (`W-control`). This is evidence from four implementation-qualified tasks, not a universal claim about every Skill. [See the results and limitations](docs/EXPERIMENT_RESULTS.md).
+These are two concrete case studies, not a promise that every Workflow saves tokens. Token totals include cached input. See the [experiment report](docs/EXPERIMENT_RESULTS.md) for arm definitions, judging rules, and machine-readable sources.
 
-## What it can do
+### Experiment 1: four simple tasks, with every semantic node running as Main
 
-- **Visual orchestration**: Edit steps, connections, conditions, parallel branches, and manual approval points.
-- **Two built-in authoring Workflows**: `skill2workflow` converts a Skill snapshot and `build_workflow` starts from a brief; both use the same compact semantic contract, Host compiler, and one-semantic-delta repair boundary.
-- **Host-owned mechanics**: The model describes activities, data dependencies, control groups, and source dispositions. The Host deterministically creates node/edge IDs, the root, bindings, JSON Schema, executors, permissions, certificates, and package fields.
-- **Installable Workflow packages**: Export a pinned revision with content hashes, resource inventory, and dependency manifest, then install it from local JSON or HTTPS. Installation neither installs dependencies nor starts a Run.
-- **Configure each node separately**: Set the model and reasoning effort for native sub-agents; connect configured execution backends such as Cursor and Grok.
-- **Thread control**: The main session can create an independent Codex task, wait for it to finish, then pass new material to the original task to continue the work.
-- **Run history and acceptance**: View node status, approvals, outputs, and errors; each run is pinned to a specific version, and editing a workflow does not rewrite existing runs.
-- **Chinese / English switching**: Model settings and the workflow workbench share a Chinese / English selector and preserve unsaved drafts. Names, prompts, and model IDs that you enter yourself are not translated.
+The Wyckoff-position, earthquake-plate, lake-warming, and video-silence tasks compared:
 
-The workbench is for configuration and inspection, and **you can also invoke workflows directly from Codex using natural language**.
+- `N-main`: Main runs directly, with neither Skill nor Workflow.
+- `S-main`: Main runs with the frozen Skill.
+- `W-main`: the converted Workflow runs, and every Main node receives a fresh node-scoped context containing only its declared resources.
 
-## Get set up
+Every arm used `gpt-5.6-terra / medium`; `W-main` did not gain a cheaper submodel. The 40 valid isolated results include 12 runs in each primary arm and four full-preload Workflow control runs.
 
-You need Codex with support for plugins and the related task tools, Node.js 20+, and Git. Cursor / Grok are optional integrations; native Codex sub-agents work without them installed.
+| Arm | Mean tokens per run | Mean hidden-test score | Strict passes |
+| --- | ---: | ---: | ---: |
+| No Skill (`N-main`) | 573,982 | 37.78% | 0/12 |
+| Skill (`S-main`) | 527,807 | 97.22% | 9/12 |
+| Workflow (`W-main`) | **287,459** | **97.22%** | **9/12** |
 
-The local clone installation below makes it easy to find the launcher scripts and examples:
+At identical measured quality, `W-main` used **45.5% fewer tokens** than `S-main` and **49.9% fewer** than `N-main`. Node-scoped projection also used **31.4% fewer tokens** than the control that preloaded the complete Workflow packet into Main.
+
+No subagent produced this advantage. The saving came from **isolating Main-node context**: the same Main model still made the semantic decisions, but each step stopped inheriting the full parent conversation and every other node's raw material.
+
+### Experiment 2: a 31-card Zenonzard implementation with multiple agents
+
+Zenonzard was a longer code-production task. The Workflow assigned work across Sol and Luna, then applied a strict card-by-card semantic review.
+
+| Implementation | Total tokens | API-equivalent cost | Strict semantic pass |
+| --- | ---: | ---: | ---: |
+| Skill | 28,122,593 | $6.9240 | 20/31 (64.52%) |
+| Workflow | 33,900,996 | **$3.3929** | **28/31 (90.32%)** |
+
+The Workflow used **20.55% more total tokens** and improved the strict pass rate by **25.80 percentage points**. At the model prices recorded for the experiment, its API-equivalent cost was **51.00% lower**. A later source audit corrected the remaining three cards, so the current checkout is 31/31; that later repair does not retroactively change the experimental 28/31 result.
+
+This result matters just as much as the first one: **using more subagents does not imply fewer total tokens.** Repeated project and task-context reads by the Luna nodes were visible in the ledger. Host-owned silent event waits remove Main's polling cost; they do not erase the reading and reasoning cost inside the child agents themselves. The plugin therefore treats parallelism and model routing as tools for quality, isolation, and throughput rather than automatic token optimizations.
+
+## How it works
+
+```mermaid
+flowchart LR
+    U[User task] --> M[Control Main]
+    M --> H[Host scheduler and event wait]
+    H --> A[Node A<br/>fresh context]
+    H --> B[Node B<br/>fresh context]
+    H --> C[Node C<br/>fresh context]
+    A --> F[(Local artifacts and structured results)]
+    B --> F
+    C --> F
+    F --> H
+    H --> M
+```
+
+### 1. Node-scoped context isolation
+
+Whether a node uses Main or a native subagent, it receives only its declared inputs, resources, tools, workspace, and references to predecessor results. It does not automatically inherit the parent chat, ambient Skill directories, or raw transcripts from other nodes. Isolating irrelevant material does not remove Codex's basic reading, writing, image, or coding abilities; capabilities required by the task must remain available to the node.
+
+### 2. Host-owned mechanics
+
+Agents return semantic decisions. The Host generates and validates IDs, paths, hashes, node bindings, result schemas, dependency manifests, task packets, and recovery records. A model never has to transcribe random fields, and one malformed character does not justify regenerating an entire graph.
+
+### 3. Silent Main waiting
+
+After delegation, Main yields the wait to the Host. The Host holds an event wait for up to one hour and resumes immediately on an actionable event. A timeout renews the same continuation instead of making Main reread state every few seconds.
+
+### 4. Artifacts stay on disk
+
+Execution nodes write code and outputs directly into the assigned workspace, then return a short status and file location. Large files, full logs, and batch results are not repeatedly relayed through agent messages.
+
+### 5. Retry only the failed unit
+
+Parallel nodes keep separate inputs, attempts, artifacts, and results. Successful shards remain accepted; a repair receives only the failed items and their evidence.
+
+### 6. Roles work automatically in ordinary tasks
+
+A Role is a saved way for Main to call one helper. It says what work fits, which Provider to use, what the helper may change, and what instructions it receives. Once the plugin is loaded, Main automatically selects an enabled Role when delegation would help. The user does not need to name a Role or start a Workflow.
+
+After assigning the work, Main continues anything useful that does not depend on the helper. When the next step does depend on it, Main enters an event wait of up to one hour. Completion, failure, or a request for input wakes Main immediately. Main then inspects the actual changes and verification evidence before accepting the result. The plugin supplies this automatic selection, independent work, silent waiting, and acceptance behavior.
+
+Workflows and Roles stay separate. Main follows the calling chat’s current model and reasoning selection; standalone Workbench launches follow Codex settings, with no fixed plugin Main model. A Workflow node pins its Provider, node task, inputs, and access. Workflow generation may use model suitability to choose a Provider, but a running node never receives another Role prompt. Editing or disabling a Role later cannot change or block an already generated Workflow.
+
+### 7. Threads: continue the same Codex task when needed
+
+Here, a Thread means an independently visible Codex task or chat. It is not an operating-system thread or an ordinary one-shot native subagent. A Thread node must use a native Codex Provider.
+
+A `start` node creates a task and records the exact returned `thread_id`. A later `continue` node must reference a successfully completed upstream Thread node. The runtime uses `send_message_to_thread` to deliver new material to that same task, then uses `wait_threads` and `read_thread` to collect the completion that matches the handoff. Run recovery reconnects to that exact task instead of selecting the most recent conversation or creating a replacement.
+
+Threads are useful when a later stage truly needs the same conversation's internal state—for example, when one task investigates first and continues reasoning after another branch supplies new evidence. They preserve more context and create long-lived visible tasks in the sidebar, so the default Workflows do not use them. Ordinary steps use native agents and local artifact references; custom or generated Workflows can select the Thread `start` and `continue` lifecycles when continuity is required.
+
+## The current workbench
+
+The workbench separates Roles from Workflows. A Role is a directly assignable single-agent behavior profile. A Workflow is a task graph with dependencies, fanout, tools, and human gates. Models, permissions, resources, versions, Run records, and install packages remain inspectable in one place.
+
+![Current Workflow canvas and property inspector](docs/assets/tutorial/workbench-editor.png)
+
+A fresh installation contains two foundational Workflows:
+
+- **Skill to Workflow** converts one pinned Skill snapshot into an editable Workflow.
+- **Build Workflow** creates a reviewable, publishable Workflow from a brief.
+
+Math, Zenonzard, and video-use do not populate the default library. They live in the [optional examples directory](plugins/codex-agents-workflow/examples/workflows/README.md), where they can be installed directly or used as references for new Workflow generation.
+
+## Quick start
+
+You need a plugin-capable Codex installation, Node.js 20+, and Git.
 
 ```sh
 git clone https://github.com/TohmaN233/codex-agents-workflow.git
 cd codex-agents-workflow
 codex plugin marketplace add .
 codex plugin add codex-agents-workflow@codex-agents-workflow
-node plugins/codex-agents-workflow/scripts/install-agents.mjs
 ```
 
-After installation, open a new Codex task so it loads the plugin's Skills and tools.
-
-### Open the workbench
-
-The simplest way is to tell Codex directly:
+Start a new Codex task after installation and say:
 
 ```text
-Use $codex-agents-workflow:workflow-control-plane to open the workbench.
+Use $codex-agents-workflow:workflow-control-plane and open the workbench.
 ```
 
-You can also open it manually from the repository you just cloned. On Windows, double-click:
-
-```text
-plugins\codex-agents-workflow\scripts\open-control-console.cmd
-```
-
-Or run it from the repository directory:
+Or start the local console manually:
 
 ```powershell
 .\plugins\codex-agents-workflow\scripts\open-control-console.cmd
 ```
 
-On macOS / Linux, run this from the repository root:
-
 ```sh
 sh plugins/codex-agents-workflow/scripts/open-control-console.sh
 ```
 
-The Windows launcher opens the installed plugin; the `.sh` script launches the workbench from the current clone. Node.js 20+ is required, and the terminal process must remain running after launch.
+Common entry points:
 
-![Select a model for an execution node in the workbench](docs/assets/tutorial/workbench-node-model.png)
+1. **Existing Skill:** choose “Import from Skill,” pin its source revision, generate a draft, review it, and publish.
+2. **Start from a requirement:** open Build Workflow, provide a brief, and edit the Host-compiled graph.
+3. **Install an example:** choose “Install Workflow” and select a `*.workflow-package.json` file from `examples/workflows`.
+4. **Run directly:** name a published Workflow and task goal in Codex. The Run stops at explicit human gates when a decision is required.
 
-## Step 1: Configure models, then generate automatically
+## Release defaults
 
-**The model configuration in the workbench must be usable before you can click the button to generate a Workflow.** The model used by the current main session does not mean the workbench already has a generator and reviewer configured.
+| Item | Default |
+| --- | --- |
+| Native Codex Providers | Enabled |
+| External Providers | Disabled |
+| Cross-review Role | Disabled; can be enabled independently |
+| GPT reviewer Role | Disabled; reuses the `chatgpt-web-pro` Provider |
+| Built-in Workflows | Skill to Workflow, Build Workflow |
+| Math / Zenonzard / video-use | Optional installs |
 
-1. Open **Provider settings** in the upper-right. Enable the native model configurations you need, enter the model ID, reasoning effort, and read/write capabilities, then save.
-2. After importing a Skill, open **Import review → Advanced options: execution settings, routing rules, and import diagnostics**.
-3. Select **Default generation executor (registered model configuration)** and **Review executor (registered model configuration)**. This uses the registered native model configurations; Cursor / Grok do not serve as the generator for this automatic conversion button.
-4. Check the `skill2workflow` routing rules: assign suitable Providers to responsibilities such as planning, routine execution, and complex execution. The generation model only performs the conversion; it does not automatically become the model for every execution node.
-5. Return to the top and click **Generate Workflow automatically**. The page shows semantic planning, Host compilation, review, and—only when needed—one semantic delta repair. Mechanical fields such as IDs and bindings do not trigger full model rewrites. It reuses the current Codex login by default; if a login, model, or capability is missing, it shows what needs attention.
+## Boundaries
 
-Enabling a Provider or saving the configuration does not itself start a model call. The corresponding task begins only after you click Generate, start a run, or explicitly ask Codex to execute it.
+- The four simple tasks and Zenonzard are case studies, not evidence that every Workflow saves tokens.
+- A complex multi-agent Workflow may spend more tokens to gain quality, concurrency, or lower monetary cost; Zenonzard is the counterexample.
+- Threads are reserved for processes that genuinely need the same visible conversation state across stages. Ordinary work defaults to native agents and local artifact handoffs.
+- Strict mode excludes unrelated context and ambient Skills; it does not remove basic capabilities required to complete a node.
 
-## Example 1: Convert a Skill into a workflow
-
-Use the open-source video-editing Skill [browser-use/video-use](https://github.com/browser-use/video-use) as an example. Install it according to the source repository's instructions, then import it into the workbench. Its [SKILL.md](https://github.com/browser-use/video-use/blob/main/SKILL.md) defines steps for checking the materials, proposing a plan, asking the user, creating a preview, and delivering the final result.
-
-1. In the workflow library, click **Import from Skill**.
-2. Scan the default Codex directory or enter the folder where you store Skills.
-3. Find the target and click **Import this version**. The plugin keeps a snapshot of this version's instructions and resources; the source Skill is not modified.
-4. Configure generation and review models as in the previous section, then click **Generate Workflow automatically**.
-5. Check the generated steps, dependencies, user approval points, and itemized review checklist. After confirming, save it as an editable draft and adjust each node on the canvas.
-6. Save and publish; a successful publish only means the workflow is ready to launch, and **does not start the video edit immediately**.
-
-![Skill to workflow: automatic generation and review progress](docs/assets/tutorial/skill2workflow-generation.png)
-
-You can view progress during generation and review; once complete, return to the canvas to edit the nodes.
-
-![Confirmation, production, and validation flow after converting video-use](docs/assets/tutorial/workbench-video.png)
-
-The conversion turns the execution order in a Skill into explicit dependencies, turns “ask the user before producing” into a node that pauses, and separates independent work that can run in parallel. The model returns a compact semantic plan and the Host deterministically creates the graph and runtime fields; a human still confirms semantic fidelity and the availability of required tools and resources before publishing.
-
-If you prefer not to operate the UI, you can tell Codex directly:
-
-```text
-Use $codex-agents-workflow:workflow-control-plane.
-Import the video-use Skill from the directory I specify and convert it into a Workflow.
-Assign nodes according to the model configuration saved in the workbench, and preserve the original Skill's approval steps.
-Show me the generated draft first; do not execute the video task yet.
-```
-
-## Example 2: Run video-use directly in Codex
-
-This example uses the workflow converted from [browser-use/video-use](https://github.com/browser-use/video-use). The source Skill is installed separately and is not bundled with this plugin; you can also use your own writing, translation, research, or code-related Skill.
-
-```text
-Use $codex-agents-workflow:workflow-control-plane.
-Call the published video-use Workflow to edit an introductory video for YN Translation Workshop.
-The footage is in D:/demo/recordings, and the requirements are in 剪辑需求.txt in that directory.
-Run the nodes configured in the Workflow, and stop to ask me when my confirmation is needed for the plan or preview.
-```
-
-The three images below come from [an actual usage session](https://chatgpt.com/s/cx_6aa1e1db569c8191a4f7f2c394d53d4c). They show the process of “calling a workflow → delegation → user approval → returning a preview.”
-
-### 1. Delegate through the workflow
-
-The main agent finds `video-use`, assigns the asset check to the Terra node specified by the workflow, and asks the user to provide their sound preferences.
-
-![The main agent delegates asset checks through the Workflow](docs/assets/tutorial/video-workflow-delegation.png)
-
-### 2. Ask the user at the approval point
-
-After the editing plan is assembled, the workflow pauses at the approval step before production and continues after approval.
-
-![Production continues after the plan is approved](docs/assets/tutorial/video-workflow-approval.png)
-
-### 3. Return a preview and wait for final approval
-
-After production, it returns the full version and four short clips. The user can review the previews, request changes, or approve the final version.
-
-![The workflow returns previews of five videos and asks whether to finalize](docs/assets/tutorial/video-workflow-preview.png)
-
-## Example 3: Mathematical research—when is it worth keeping a task
-
-The built-in **Mathematical Research Hybrid** example first runs literature, tool, analogy, and counterexample investigations in parallel, then explores different routes in parallel. Independent work uses one-off sub-agents. Based on the results, the main agent proposes either a one-time summary or continued research, and the workflow enters the corresponding branch only after the user approves the plan; continued research creates and continues a Codex task that preserves the research state. To adjust the proposal, give feedback in the session first, then confirm the revised plan.
-
-![Parallel route exploration and node model settings for mathematical research](docs/assets/tutorial/workbench-math.png)
-
-When this definition is already in the workflow library, you can call it directly:
-
-```text
-Use Mathematical Research Hybrid to investigate the proposition below.
-First state the assumptions and possible counterexamples, then independently investigate different proof routes.
-I will decide whether continued research needs a task after reviewing the routes.
-Finally, distinguish proven results, experimental observations, and questions that remain unresolved.
-```
-
-You can also ask Codex to add this built-in mathematical example, then adjust each node's model and research instructions in the workbench.
-
-## What is the new Thread control?
-
-Here, thread means an **independently visible task / session in Codex**, not an operating-system thread.
-
-A regular sub-agent is suited to “given the materials, complete this step, and return the result.” An independent task is suited to “prepare first, wait for another branch to finish, then continue the same work with the new information.” For example, prepare the prompt and image in parallel, then continue the original image task when the prompt is ready instead of creating a new task that loses the context.
-
-The workflow records the task identity so later nodes continue the same task. You can see and continue these tasks in Codex; the main agent handles handing work between branches and final acceptance.
-
-## Configuration, updates, and more details
-
-Model configuration is stored in a user-level directory: `~/.codex/codex-agents-workflow/control-plane.json` by default; when `CODEX_HOME` is set, that directory is used. Workflows and run data are managed in the same user configuration system, so you do not need to commit your workflow library to GitHub.
-
-The model combinations and workflows in this README are examples. The workbench runs according to your configuration; model availability depends on the actual Codex account, version, and connected clients.
-
-- [Complete Chinese guide: launch, generate, run, and troubleshoot](docs/TUTORIAL.zh-CN.md)
-- [English guide](docs/TUTORIAL.md)
-- [Connector contract](plugins/codex-agents-workflow/skills/control-plane/references/provider-contracts.md)
-
-## How to continue after a session is interrupted
-
-Keep the original run ID and tell Codex directly: “I authorize you to resume control of this run, verify the existing tasks and artifacts, and continue.” The main session can take over without copying control credentials. The workbench also has a **Take over and pause Run** button.
-
-After recovery, continue from the original tasks and artifacts; completed steps do not need to run again.
+Further reading: [full experiment data](docs/EXPERIMENT_RESULTS.md) · [guide](docs/TUTORIAL.md) · [Provider contracts](plugins/codex-agents-workflow/skills/control-plane/references/provider-contracts.md)
 
 ## License
 

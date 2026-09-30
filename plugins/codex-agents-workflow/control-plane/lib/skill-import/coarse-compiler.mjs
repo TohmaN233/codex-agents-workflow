@@ -4,6 +4,8 @@ import { digest, canonicalJSON, prepareResources } from '../workflow-revisions.m
 import { readSkillSnapshot } from './skill-reader.mjs';
 import { analyzeSkillDependencies } from './dependency-reader.mjs';
 
+export const COARSE_FINAL_PROMPT = 'Review the node result against the pinned source Skill and the user task {{task}}. Verify evidence and explicitly accept or reject the complete Workflow. Only the main controller can grant final acceptance.';
+
 export function compileCoarseSkill(snapshot, { id, name = snapshot.metadata.name, providerId, role = 'advisor' } = {}) {
   const analysis = analyzeSkillDependencies(snapshot); const workflow = createDraft(id, name);
   workflow.skill_policy.mode = 'cooperative'; workflow.skill_policy.implicit = 'allow';
@@ -13,14 +15,14 @@ export function compileCoarseSkill(snapshot, { id, name = snapshot.metadata.name
   if (providerId) workflow.requirements.providers = [providerId];
   workflow.import_status = { mode: 'coarse', source_hash: snapshot.source_hash, classification: analysis.classification,
     unresolved: analysis.unresolved, source_independent: false, relocation_evidence: null };
-  const shared = { access: 'read_only', approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: { task: '/inputs/task' } };
+  const shared = { access: 'read_only', approval: { required: false }, retry: { max_attempts: 3 }, input_bindings: { task: '/inputs/task' } };
   workflow.nodes = [
     { id: 'start', type: 'start' },
     { ...shared, access: 'bounded_write', path_scope:{binding:'run.allowed_paths'}, id: 'instructions', type: 'agent', role, executor: providerId ? { kind: 'provider', provider_id: providerId } : { kind: 'main' },
       prompt_template: 'Read the pinned Workflow resource source/SKILL.md using read_workflow_resource and apply its complete instructions to this task: {{task}}. Resolve its local references within the pinned source/ resources. Report unmet requirements instead of inventing tools or accessing the original Skill.',
       resources: Object.keys(snapshot.files).sort(), origin: { kind: 'source', source_span: { resource: 'source/SKILL.md', start_line: snapshot.instructions_start_line, end_line: snapshot.files['source/SKILL.md'].toString().split('\n').length } } },
     { ...shared, id: 'final', type: 'agent', role: 'finalizer', executor: { kind: 'main' }, input_bindings: { task: '/inputs/task', instruction_result: '/nodes/instructions/output' },
-      prompt_template: 'Review the node result against the pinned source Skill and the user task {{task}}. Verify evidence and explicitly accept or reject the complete Workflow. Only the main controller can grant final acceptance.', resources: Object.keys(snapshot.files).sort() },
+      prompt_template: COARSE_FINAL_PROMPT, resources: Object.keys(snapshot.files).sort() },
     { id: 'end', type: 'end' },
   ];
   workflow.edges = [['start', 'instructions'], ['instructions', 'final'], ['final', 'end']].map(([source, target]) => ({ id: source + '-' + target, source, target }));

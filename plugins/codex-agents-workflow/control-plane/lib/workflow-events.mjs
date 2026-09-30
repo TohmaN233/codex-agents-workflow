@@ -7,8 +7,11 @@ import { syncDirectory } from './workflow-store.mjs';
 
 const MAX_JOURNAL = 128 * 1024 * 1024;
 const MAX_EVENT = 4 * 1024 * 1024;
-export const EVENT_KINDS = new Set(['generation_repair', 'generation_projection', 'generation_review_recheck', 'started', 'claim', 'complete', 'fail', 'retry', 'cancel', 'pause', 'resume', 'approve', 'dispatch_intent', 'dispatch_receipt', 'host_tool_intent', 'host_tool_receipt', 'usage', 'executor_event', 'recover', 'control_recovery', 'child_intent', 'child_started']);
-for (const kind of ['reattach', 'connector_control', 'parallel_intent', 'parallel_base', 'parallel_branch', 'parallel_ready', 'parallel_proposal', 'parallel_apply_intent', 'parallel_integrated', 'parallel_error', 'parallel_cleanup']) EVENT_KINDS.add(kind);
+// Runtime registration is Host state. Rebinding never rewrites the initial pin.
+const ENVIRONMENT_EVENTS = ['runtime_environment_attention', 'runtime_environment_rebound'];
+export const EVENT_KINDS = new Set(['generation_repair', 'generation_projection', 'generation_review_recheck', 'started', 'claim', 'complete', 'fail', 'retry', 'cancel', 'pause', 'resume', 'approve', 'dispatch_intent', 'dispatch_receipt', 'host_tool_intent', 'host_tool_receipt', 'usage', 'executor_event', 'completion_turn', 'native_agent_rejection', 'native_serial_result', 'native_parallel_result', 'native_item_results', 'managed_native_results', 'recover', 'control_recovery', 'child_intent', 'child_started']);
+for (const kind of ENVIRONMENT_EVENTS) EVENT_KINDS.add(kind);
+for (const kind of ['reattach', 'connector_control', 'execution_drain', 'parent_execution_lost', 'host_main_advance_failed', 'host_main_worker_start_failed', 'workspace_input_bound', 'parallel_intent', 'parallel_base', 'parallel_branch', 'parallel_ready', 'parallel_proposal', 'parallel_apply_intent', 'parallel_integrated', 'parallel_error', 'parallel_cleanup']) EVENT_KINDS.add(kind);
 
 export function decodeEvents(bytes, { allowTornTail = false } = {}) {
   const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);

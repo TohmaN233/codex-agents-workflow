@@ -1,0 +1,394 @@
+{
+  "schema": "zenonzard-rollout-usage/v2",
+  "run_id": "e4676a11-efa2-456e-9a6e-91ae1cc91b57",
+  "run_status": "completed",
+  "selected_nodes": null,
+  "controller_scope": {
+    "thread_id": "01a0e8e3-b3f1-7ec3-b318-927fc6e1f380",
+    "start": "2026-09-28T16:40:57.915Z",
+    "end": "2026-09-28T17:37:07.107Z",
+    "source": "Run journal native_parent_thread_id and node completion events"
+  },
+  "pricing": {
+    "basis": "OpenAI Standard rates; requests above 272K input use the documented long-context multipliers",
+    "rates_per_million": {
+      "gpt-6-sol": {
+        "input": 2.0,
+        "cached": 0.2,
+        "cache_write": 2.5,
+        "output": 10.0
+      },
+      "gpt-6-luna": {
+        "input": 0.1,
+        "cached": 0.01,
+        "cache_write": 0.125,
+        "output": 0.5
+      }
+    }
+  },
+  "controller": {
+    "thread_id": "01a0e8e3-b3f1-7ec3-b318-927fc6e1f380",
+    "node_id": "controller",
+    "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T12-40-31-01a0e8e3-b3f1-7ec3-b318-927fc6e1f380.jsonl",
+    "models": [
+      "gpt-6-sol"
+    ],
+    "responses": 44,
+    "usage": {
+      "input_tokens": 2454768,
+      "cached_input_tokens": 2424576,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 6861,
+      "reasoning_output_tokens": 336,
+      "total_tokens": 2461629,
+      "uncached_input_tokens": 30192
+    },
+    "api_equivalent_usd": 0.6139092,
+    "api_equivalent_usd_by_model": {
+      "gpt-6-sol": 0.6139092
+    },
+    "max_request_input_tokens": 63291,
+    "long_context_responses": 0,
+    "measurement_window": {
+      "start": "2026-09-28T16:40:57.915Z",
+      "end": "2026-09-28T17:37:07.107Z"
+    }
+  },
+  "controller_included": true,
+  "native_sessions": [
+    {
+      "thread_id": "01a0e8e4-8642-7c31-9391-4b2c7fe9a75a",
+      "node_id": "activity_005r",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T12-41-25-01a0e8e4-8642-7c31-9391-4b2c7fe9a75a.jsonl",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "responses": 12,
+      "usage": {
+        "input_tokens": 809416,
+        "cached_input_tokens": 732160,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 13235,
+        "reasoning_output_tokens": 7731,
+        "total_tokens": 822651,
+        "uncached_input_tokens": 77256
+      },
+      "api_equivalent_usd": 0.0216647,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-luna": 0.0216647
+      },
+      "max_request_input_tokens": 89181,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "thread_id": "01a0e8e4-cbbf-7b02-8a12-7b71d50362cd",
+      "node_id": "activity_005r",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T12-41-43-01a0e8e4-cbbf-7b02-8a12-7b71d50362cd.jsonl",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "responses": 12,
+      "usage": {
+        "input_tokens": 945011,
+        "cached_input_tokens": 848896,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 16968,
+        "reasoning_output_tokens": 8611,
+        "total_tokens": 961979,
+        "uncached_input_tokens": 96115
+      },
+      "api_equivalent_usd": 0.02658446,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-luna": 0.02658446
+      },
+      "max_request_input_tokens": 118733,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "thread_id": "01a0e8e9-1221-7fc0-b970-83df13b6f5e8",
+      "node_id": "activity_005r",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T12-46-23-01a0e8e9-1221-7fc0-b970-83df13b6f5e8.jsonl",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "responses": 21,
+      "usage": {
+        "input_tokens": 2231367,
+        "cached_input_tokens": 2078464,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 36248,
+        "reasoning_output_tokens": 27286,
+        "total_tokens": 2267615,
+        "uncached_input_tokens": 152903
+      },
+      "api_equivalent_usd": 0.05419894,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-luna": 0.05419894
+      },
+      "max_request_input_tokens": 157772,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "thread_id": "01a0e8f4-a153-7b43-b844-6c0d3b978d20",
+      "node_id": "activity_005ri",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T12-59-01-01a0e8f4-a153-7b43-b844-6c0d3b978d20.jsonl",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "responses": 24,
+      "usage": {
+        "input_tokens": 1716582,
+        "cached_input_tokens": 1629184,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 21682,
+        "reasoning_output_tokens": 15161,
+        "total_tokens": 1738264,
+        "uncached_input_tokens": 87398
+      },
+      "api_equivalent_usd": 0.03587264,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-luna": 0.03587264
+      },
+      "max_request_input_tokens": 98766,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "thread_id": "01a0e8fc-06e9-7b63-b50d-33fbededed7e",
+      "node_id": "activity_005",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T13-07-06-01a0e8fc-06e9-7b63-b50d-33fbededed7e.jsonl",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "responses": 22,
+      "usage": {
+        "input_tokens": 1658966,
+        "cached_input_tokens": 1568256,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 34278,
+        "reasoning_output_tokens": 26239,
+        "total_tokens": 1693244,
+        "uncached_input_tokens": 90710
+      },
+      "api_equivalent_usd": 0.04189256,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-luna": 0.04189256
+      },
+      "max_request_input_tokens": 104176,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "thread_id": "01a0e907-01cf-70a2-a4d5-aef9267adebc",
+      "node_id": "activity_007",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T13-19-05-01a0e907-01cf-70a2-a4d5-aef9267adebc.jsonl",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "responses": 39,
+      "usage": {
+        "input_tokens": 3284283,
+        "cached_input_tokens": 3166848,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 11885,
+        "reasoning_output_tokens": 3784,
+        "total_tokens": 3296168,
+        "uncached_input_tokens": 117435
+      },
+      "api_equivalent_usd": 0.9870896,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-sol": 0.9870896
+      },
+      "max_request_input_tokens": 110840,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "thread_id": "01a0e90d-22ff-7a12-8ea6-2731b8be4d01",
+      "node_id": "activity_007r",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T13-25-47-01a0e90d-22ff-7a12-8ea6-2731b8be4d01.jsonl",
+      "models": [
+        "gpt-6-luna"
+      ],
+      "responses": 22,
+      "usage": {
+        "input_tokens": 1548671,
+        "cached_input_tokens": 1472000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 17391,
+        "reasoning_output_tokens": 11656,
+        "total_tokens": 1566062,
+        "uncached_input_tokens": 76671
+      },
+      "api_equivalent_usd": 0.0310826,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-luna": 0.0310826
+      },
+      "max_request_input_tokens": 92622,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    {
+      "thread_id": "01a0e913-9c17-7443-9eb1-f65996493652",
+      "node_id": "activity_007v",
+      "rollout": "C:\\Users\\tgy23\\.codex\\sessions\\2026\\09\\28\\rollout-2026-09-28T13-32-51-01a0e913-9c17-7443-9eb1-f65996493652.jsonl",
+      "models": [
+        "gpt-6-sol"
+      ],
+      "responses": 22,
+      "usage": {
+        "input_tokens": 1494474,
+        "cached_input_tokens": 1424512,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 7286,
+        "reasoning_output_tokens": 1675,
+        "total_tokens": 1501760,
+        "uncached_input_tokens": 69962
+      },
+      "api_equivalent_usd": 0.4976864,
+      "api_equivalent_usd_by_model": {
+        "gpt-6-sol": 0.4976864
+      },
+      "max_request_input_tokens": 91128,
+      "long_context_responses": 0,
+      "measurement_window": {
+        "start": null,
+        "end": null
+      }
+    }
+  ],
+  "nodes": {
+    "activity_005": {
+      "sessions": 1,
+      "responses": 22,
+      "usage": {
+        "input_tokens": 1658966,
+        "cached_input_tokens": 1568256,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 34278,
+        "reasoning_output_tokens": 26239,
+        "total_tokens": 1693244,
+        "uncached_input_tokens": 90710
+      },
+      "api_equivalent_usd": 0.04189256
+    },
+    "activity_005r": {
+      "sessions": 3,
+      "responses": 45,
+      "usage": {
+        "input_tokens": 3985794,
+        "cached_input_tokens": 3659520,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 66451,
+        "reasoning_output_tokens": 43628,
+        "total_tokens": 4052245,
+        "uncached_input_tokens": 326274
+      },
+      "api_equivalent_usd": 0.1024481
+    },
+    "activity_005ri": {
+      "sessions": 1,
+      "responses": 24,
+      "usage": {
+        "input_tokens": 1716582,
+        "cached_input_tokens": 1629184,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 21682,
+        "reasoning_output_tokens": 15161,
+        "total_tokens": 1738264,
+        "uncached_input_tokens": 87398
+      },
+      "api_equivalent_usd": 0.03587264
+    },
+    "activity_007": {
+      "sessions": 1,
+      "responses": 39,
+      "usage": {
+        "input_tokens": 3284283,
+        "cached_input_tokens": 3166848,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 11885,
+        "reasoning_output_tokens": 3784,
+        "total_tokens": 3296168,
+        "uncached_input_tokens": 117435
+      },
+      "api_equivalent_usd": 0.9870896
+    },
+    "activity_007r": {
+      "sessions": 1,
+      "responses": 22,
+      "usage": {
+        "input_tokens": 1548671,
+        "cached_input_tokens": 1472000,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 17391,
+        "reasoning_output_tokens": 11656,
+        "total_tokens": 1566062,
+        "uncached_input_tokens": 76671
+      },
+      "api_equivalent_usd": 0.0310826
+    },
+    "activity_007v": {
+      "sessions": 1,
+      "responses": 22,
+      "usage": {
+        "input_tokens": 1494474,
+        "cached_input_tokens": 1424512,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 7286,
+        "reasoning_output_tokens": 1675,
+        "total_tokens": 1501760,
+        "uncached_input_tokens": 69962
+      },
+      "api_equivalent_usd": 0.4976864
+    }
+  },
+  "native_totals": {
+    "usage": {
+      "input_tokens": 13688770,
+      "cached_input_tokens": 12920320,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 158973,
+      "reasoning_output_tokens": 102143,
+      "total_tokens": 13847743,
+      "uncached_input_tokens": 768450
+    },
+    "api_equivalent_usd": 1.6960719
+  },
+  "all_online_totals": {
+    "usage": {
+      "input_tokens": 16143538,
+      "cached_input_tokens": 15344896,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 165834,
+      "reasoning_output_tokens": 102479,
+      "total_tokens": 16309372,
+      "uncached_input_tokens": 798642
+    },
+    "api_equivalent_usd": 2.3099811
+  }
+}

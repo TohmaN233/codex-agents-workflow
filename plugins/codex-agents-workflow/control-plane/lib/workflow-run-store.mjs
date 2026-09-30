@@ -7,6 +7,7 @@ import { canonicalJSON, digest, LIMITS } from './workflow-revisions.mjs';
 import { appendEvent, readEvents, replayEvents, statePatch, recoverEventTail, writeDurableJSON } from './workflow-events.mjs';
 
 const runWriters = new Map();
+export const EXECUTOR_RESULT_MAX_BYTES = 256 * 1024;
 function serializeRun(root, action) {
   const key = process.platform === 'win32' ? root.toLowerCase() : root;
   const operation = (runWriters.get(key) ?? Promise.resolve()).then(action);
@@ -56,7 +57,7 @@ export class WorkflowRunStore {
 
   async saveExecutorResult(id, attemptId, result) {
     workflowId(attemptId); const bytes = canonicalJSON(result);
-    requireValue(Buffer.byteLength(bytes) <= 256 * 1024, 'EXECUTOR_RESULT_LIMIT', 'Executor result exceeds the durable artifact limit');
+    requireValue(Buffer.byteLength(bytes) <= EXECUTOR_RESULT_MAX_BYTES, 'EXECUTOR_RESULT_LIMIT', 'Executor result exceeds the durable artifact limit');
     const sha256 = digest(bytes); const artifact = `executor-${attemptId}-${sha256}.json`;
     const root = this.directory(id); const path = insideRoot(root, join(root, artifact));
     await this.withRunWriter(id, async () => {
@@ -74,7 +75,7 @@ export class WorkflowRunStore {
   async readExecutorResult(id, attemptId, sha256) {
     workflowId(attemptId); requireValue(/^[a-f0-9]{64}$/.test(sha256), 'EXECUTOR_RESULT_ID', 'Result needs an exact content pin');
     const path = join(this.directory(id), `executor-${attemptId}-${sha256}.json`); await noSymlinks(path);
-    const stat = await lstat(path); requireValue(stat.isFile() && stat.nlink === 1 && stat.size <= 256 * 1024, 'EXECUTOR_RESULT_LIMIT', 'Result artifact must be a bounded regular file');
+    const stat = await lstat(path); requireValue(stat.isFile() && stat.nlink === 1 && stat.size <= EXECUTOR_RESULT_MAX_BYTES, 'EXECUTOR_RESULT_LIMIT', 'Result artifact must be a bounded regular file');
     const bytes = await readFile(path); requireValue(digest(bytes) === sha256, 'EXECUTOR_RESULT_CORRUPT', 'Result artifact differs from its journal pin');
     return JSON.parse(bytes.toString('utf8'));
   }
@@ -172,6 +173,35 @@ export class WorkflowRunStore {
       return { state: next, pins: current.pins, sequence: event.sequence };
     });
     });
+  }
+
+  // Successful authoring Runs pin the private source bundle.  Once a reviewed
+  // source-free conversion is committed, retain neither the journal nor its
+  // resource objects.  Exact pinned identities prevent this internal cleanup
+  // primitive from becoming a general Run-deletion API.
+  async purge(id, { expected_workflow_id, expected_revision, expected_source_workflow_id, expected_source_revision, allow_missing = false } = {}) {
+    requireValue(typeof allow_missing === 'boolean', 'RUN_PURGE_POLICY', 'Run purge missing policy must be explicit');
+    const root = this.directory(id);
+    return serializeRun(root, () => this.writer.withWriter(async () => {
+      let current;
+      try { current = await this.read(id); }
+      catch (error) {
+        if (allow_missing && error.code === 'ENOENT') return { run_id: id, purged: false, missing: true };
+        throw error;
+      }
+      const provenance = current.pins.root.provenance;
+      requireValue(current.state.status === 'succeeded' && provenance?.kind === 'authoring_workflow_run',
+        'RUN_PURGE_STATE', 'Only a succeeded current authoring Run can be permanently purged');
+      requireValue(current.pins.root.workflow.id === expected_workflow_id && current.pins.root.revision_hash === expected_revision,
+        'RUN_PURGE_IDENTITY', 'Run-pinned authoring Workflow identity changed before purge');
+      requireValue(provenance.source_workflow_id === expected_source_workflow_id && provenance.source_revision === expected_source_revision,
+        'RUN_PURGE_SOURCE', 'Run-pinned source identity changed before purge');
+      await noSymlinks(root); const info = await lstat(root);
+      requireValue(info.isDirectory() && !info.isSymbolicLink(), 'RUN_PURGE_TARGET', 'Run purge target must be one exact Run directory');
+      await rm(insideRoot(this.root, root), { recursive: true, maxRetries: 3, retryDelay: 100 });
+      await syncDirectory(this.root);
+      return { run_id: id, purged: true, sequence: current.sequence };
+    }));
   }
 
   async list() {

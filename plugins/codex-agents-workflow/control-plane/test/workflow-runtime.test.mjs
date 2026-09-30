@@ -4,13 +4,16 @@ import { mkdtemp, mkdir, rm, rmdir, writeFile, readFile, appendFile } from 'node
 import { tmpdir } from './physical-tempdir.mjs';
 import { join, resolve } from 'node:path';
 import { WorkflowStore } from '../lib/workflow-store.mjs';
-import { WorkflowRuntime } from '../lib/workflow-runtime.mjs';
+import { WorkflowRuntime, resolvedSubagentPlan } from '../lib/workflow-runtime.mjs';
 import { createDraft } from '../lib/workflow-schema.mjs';
 import { canonicalJSON, digest } from '../lib/workflow-revisions.mjs';
 import { decodeEvents } from '../lib/workflow-events.mjs';
 import { compilePrompt } from '../lib/workflow-executor.mjs';
+import { createCodexToolBroker } from '../lib/execution/codex-tool-broker.mjs';
+import { WORKSPACE_SOURCE_LOCATIONS, WORKSPACE_SOURCE_LOCATIONS_SCHEMA, WORKSPACE_SOURCE_LOCATION_RULES } from '../lib/workspace-source-locations.mjs';
+import { reattachAttempt } from '../lib/workflow-recovery.mjs';
 
-const agent = id => ({ id, type: 'agent', executor: { kind: 'main' }, role: 'implementer', access: 'read_only', prompt_template: '{{task}}', approval: { required: false }, retry: { max_attempts: 3 }, input_bindings: {} });
+const agent = id => ({ id, type: 'agent', executor: { kind: 'provider', provider_id: 'fixture-provider' }, role: 'implementer', access: 'read_only', prompt_template: '{{task}}', approval: { required: false }, retry: { max_attempts: 3 }, input_bindings: {} });
 const edge = (source, target, label) => ({ id: source + '-' + target, source, target, ...(label ? { label } : {}) });
 function definition(kind = 'sequential') {
   const workflow = { ...createDraft('example', 'Runtime test'), status: 'ready', finalization: { required: true, node_id: 'final' }, skill_policy: { mode: 'cooperative', implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] } };
@@ -18,33 +21,295 @@ function definition(kind = 'sequential') {
     kind === 'parallel' ? { id: 'fork', type: 'parallel', join_id: 'join', failure_policy: 'collect' } : { id: 'fork', type: 'condition', cases: [{ label: 'yes', when: { op: 'eq', args: [{ path: '/inputs/choice' }, { value: true }] } }], default_label: 'no' },
     agent('a'), agent('b'), ...(kind === 'parallel' ? [{ id: 'join', type: 'join', parallel_id: 'fork' }] : []),
   ];
-  workflow.nodes = [{ id: 'start', type: 'start' }, ...controls, { ...agent('final'), role: 'finalizer' }, { id: 'end', type: 'end' }];
+  workflow.nodes = [{ id: 'start', type: 'start' }, ...controls, { ...agent('final'), executor: { kind: 'main' }, role: 'finalizer' }, { id: 'end', type: 'end' }];
   workflow.edges = kind === 'sequential' ? [edge('start', 'work'), edge('work', 'final'), edge('final', 'end')] : [edge('start', 'fork'), edge('fork', 'a', 'yes'), edge('fork', 'b', 'no'), edge('a', kind === 'parallel' ? 'join' : 'final'), edge('b', kind === 'parallel' ? 'join' : 'final'), ...(kind === 'parallel' ? [edge('join', 'final')] : []), edge('final', 'end')];
   return workflow;
 }
 async function fixture(t, workflow = definition(), options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'workflow-runtime-')); const workspace = join(root, 'workspace'); await mkdir(workspace);
   t.after(async () => { assert(resolve(root).startsWith(resolve(tmpdir()) + (process.platform === 'win32' ? '\\' : '/'))); await rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 }); });
-  const store = await new WorkflowStore(join(root, 'packs'), { validationContext: options.context ?? {} }).initialize();
+  const fixtureProvider = { id: 'fixture-provider', kind: 'openai_compatible', enabled: true, capabilities: { read: true, write: true }, config: { role: 'implementer' } };
+  const context = { ...(options.context ?? {}), providers: [fixtureProvider, ...((options.context?.providers ?? []).filter(provider => provider.id !== fixtureProvider.id))] };
+  const store = await new WorkflowStore(join(root, 'packs'), { validationContext: context }).initialize();
   await store.create(workflow, { resources: { 'instructions/task.md': 'Pinned synthetic task' } });
-  const runtimeOptions = { workflowStore: store, runRoot: join(root, 'runs'), ...options };
+  const runtimeOptions = { workflowStore: store, runRoot: join(root, 'runs'), ...options, context };
   const runtime = await new WorkflowRuntime(runtimeOptions).initialize();
   return { root, workspace, store, runtime, runtimeOptions, start: extra => runtime.start({ workflow_id: workflow.id, workspace, access: 'read_only', main_actor: 'root', ...extra }) };
 }
 const payload = (output = {}, extra = {}) => ({ status: 'succeeded', summary: 'Verified by synthetic executor', structured_output: output, artifacts: [], evidence: [{ check: 'fake executor', passed: true }], changed_paths: [], outside_paths: [], ...extra });
 
+test('a declared project_root input inherits the exact Run workspace before node binding', async t => {
+  const workflow = definition();
+  workflow.inputs_schema = { type: 'object', properties: { project_root: { type: 'string' } }, required: ['project_root'], additionalProperties: true };
+  workflow.nodes.find(node => node.id === 'work').input_bindings.project_root = '/inputs/project_root';
+  const f = await fixture(t, workflow);
+  const run = await f.start({ inputs: {} });
+  assert.equal(run.inputs.project_root, f.workspace);
+  assert.equal((await f.runtime.runs.read(run.run_id)).state.inputs.project_root, f.workspace);
+});
+
+test('Run creation rejects a required artifact outside the granted write scope', async t => {
+  const workflow=definition(),work=workflow.nodes.find(node=>node.id==='work');
+  work.access='bounded_write';work.path_scope={binding:'run.allowed_paths'};
+  work.required_artifacts=[{requirement_id:'final_report',path:'results/final_report.json'}];
+  const f=await fixture(t,workflow);
+  await assert.rejects(f.start({access:'bounded_write',allowed_paths:['other']}),{code:'REQUIRED_ARTIFACT_SCOPE'});
+  assert.deepEqual(await f.runtime.runs.list(),[]);
+});
+
+test('Run creation validates direct-input fan-out write paths before any Agent dispatch', async t => {
+  const workflow=definition(),work=workflow.nodes.find(node=>node.id==='work');
+  workflow.inputs_schema={type:'object',additionalProperties:false,required:['items'],properties:{items:{type:'array',minItems:1,maxItems:1,items:{type:'object',additionalProperties:false,required:['write_paths'],properties:{write_paths:{type:'array',minItems:1,items:{type:'string'}}}}}}};
+  work.access='bounded_write';work.path_scope={binding:'run.allowed_paths'};work.input_bindings={items:'/inputs/items'};
+  work.subagent_count='auto';work.fanout={input:'items',item_name:'item',result_output:'results',distribution:'one_per_item',scheduling:'parallel',join:'all_required',write_paths_field:'write_paths'};
+  work.outputs_schema={type:'object',additionalProperties:false,required:['results'],properties:{results:{type:'array',items:{type:'string'}}}};
+  workflow.nodes.find(node=>node.id==='final').input_bindings={results:'/nodes/work/output/results'};
+  const f=await fixture(t,workflow);
+  await assert.rejects(f.start({access:'bounded_write',allowed_paths:['allowed'],inputs:{items:[{write_paths:['outside/card.ts']}]}}),{code:'SUBAGENT_ITEM_WRITE_PATHS'});
+  assert.deepEqual(await f.runtime.runs.list(),[]);
+  const run=await f.start({access:'bounded_write',allowed_paths:['allowed'],inputs:{items:[{write_paths:['allowed/card.ts']}]}});
+  assert.equal(run.status,'running');assert.equal(run.completion_satisfied,false);assert.equal(run.recovery_required,false);
+});
+
+test('marked source locations are checked at completion and before downstream claim', async t => {
+  const workflow = definition();
+  const work = workflow.nodes.find(node => node.id === 'work');
+  work.outputs_schema = { type: 'object', properties: { locations: structuredClone(WORKSPACE_SOURCE_LOCATIONS_SCHEMA) }, required: ['locations'], additionalProperties: false };
+  work.output_validators = { locations: WORKSPACE_SOURCE_LOCATIONS };
+  workflow.nodes.find(node => node.id === 'final').input_bindings.locations = '/nodes/work/output/locations';
+  const f = await fixture(t, workflow);
+  const content = 'export function sourcePoint() { return 1; }\n';
+  await writeFile(join(f.workspace, 'source.mjs'), content);
+  const run = await f.start();
+  const lease = await claim(f, run, 'work');
+  assert.equal(lease.prompt_template.split(WORKSPACE_SOURCE_LOCATION_RULES).length,2);
+  assert.equal(compilePrompt(lease,80000).split(WORKSPACE_SOURCE_LOCATION_RULES).length,2);
+  const location = { path: join(f.workspace,'source.mjs'), file_sha256: digest(content), start_line: 1, end_line: 1,
+    symbol: 'sourcePoint', usage: 'Call sourcePoint to obtain the result.' };
+  await assert.rejects(complete(f, run, lease, { locations: [{ ...location, file_sha256: '0'.repeat(64) }] }),
+    { code: 'SOURCE_LOCATION_INVALID', reason: 'file_sha256_mismatch' });
+  assert.equal((await f.runtime.get(run.run_id)).nodes.work.output, null);
+  await complete(f, run, lease, { locations: [location] });
+  const committed=await f.runtime.get(run.run_id);
+  assert.equal(committed.nodes.work.output.locations[0].path,'source.mjs');
+  await writeFile(join(f.workspace, 'source.mjs'), content + '// later edit\n');
+  await assert.rejects(claim(f, run, 'final'),
+    { code: 'SOURCE_LOCATION_STALE', reason: 'file_sha256_mismatch', producer_node_id: 'work' });
+  assert.equal((await f.runtime.get(run.run_id)).nodes.final.status, 'ready');
+  await writeFile(join(f.workspace, 'source.mjs'), content);
+  const final = await claim(f, run, 'final');
+  await writeFile(join(f.workspace, 'source.mjs'), content + '// changed after claim\n');
+  await assert.rejects(f.runtime.recordHostMainDispatchIntent(run.run_id, {
+    node_id: 'final', attempt_id: final.attempt_id, lease_token: final.lease_token,
+    request_id: 'dispatch-final-stale', envelope_hash: digest(canonicalJSON(final)), control_token: run.control_token,
+  }), { code: 'SOURCE_LOCATION_STALE', reason: 'file_sha256_mismatch' });
+  const record = await f.runtime.runs.read(run.run_id);
+  assert.equal(record.state.nodes.final.attempts.at(-1).dispatch, null);
+});
+
+async function sourceEditingRun(t, editorKind = 'provider') {
+  const workflow = definition();
+  const source = workflow.nodes.find(node => node.id === 'work');
+  source.outputs_schema = { type: 'object', properties: { locations: structuredClone(WORKSPACE_SOURCE_LOCATIONS_SCHEMA) }, required: ['locations'], additionalProperties: false };
+  source.output_validators = { locations: WORKSPACE_SOURCE_LOCATIONS };
+  const edit = { ...agent('edit'), ...(editorKind === 'main' ? { executor: { kind: 'main' } } : {}),
+    access: 'bounded_write', path_scope: { binding: 'run.allowed_paths' }, input_bindings: { locations: '/nodes/work/output/locations' } };
+  workflow.nodes.splice(2, 0, edit);
+  workflow.edges = [edge('start', 'work'), edge('work', 'edit'), edge('edit', 'final'), edge('final', 'end')];
+  const f = await fixture(t, workflow);
+  const content = 'export function sourcePoint() { return 1; }\n';
+  await writeFile(join(f.workspace, 'source.mjs'), content);
+  const run = await f.start({ access: 'bounded_write', allowed_paths: ['.'] });
+  const producer = await claim(f, run, 'work');
+  await complete(f, run, producer, { locations: [{ path: join(f.workspace, 'source.mjs'), file_sha256: digest(content), start_line: 1, end_line: 1, symbol: 'sourcePoint', usage: 'Update sourcePoint.' }] });
+  return { f, run, content };
+}
+
+test('a dispatched source-location consumer may edit its input and continue tool authorization and completion', async t => {
+  const { f, run, content } = await sourceEditingRun(t, 'main');
+  const edit = await claim(f, run, 'edit');
+  const binding = { node_id: edit.node_id, attempt_id: edit.attempt_id, lease_token: edit.lease_token, control_token: run.control_token };
+  const request_id = `dispatch-${edit.attempt_id}`;
+  const intent = { ...binding, request_id, envelope_hash: digest(canonicalJSON(edit)) };
+  await f.runtime.recordHostMainDispatchIntent(run.run_id, intent);
+  await f.runtime.recordHostMainDispatchReceipt(run.run_id, { ...binding, request_id, receipt: {
+    invocation_id: `host-main-${edit.attempt_id}`, executor: 'codex-app-server-host-main', executable_sha256: 'a'.repeat(64),
+    model: 'fixture-main', effort: 'medium', main_actor: 'root', session_id: `logical-main-${run.run_id}`, call_chain_id: `workflow-run-${run.run_id}`,
+  } });
+  await writeFile(join(f.workspace, 'source.mjs'), content + '// authorized edit\n');
+  assert.equal((await claim(f, run, 'edit')).attempt_id, edit.attempt_id);
+  assert.equal((await f.runtime.recordHostMainDispatchIntent(run.run_id, intent)).idempotent, true);
+  assert.equal((await f.runtime.execution(run.run_id, binding)).attempt_id, edit.attempt_id);
+  await mkdir(join(f.workspace, 'tools'));
+  const broker = await createCodexToolBroker({ workspace: f.workspace, access: 'bounded_write', allowedPaths: ['.'],
+    resources: [{ path: 'scripts/runner.py', bytes: 'print(1)\n', sha256: digest('print(1)\n') }],
+    authorize: () => f.runtime.execution(run.run_id, binding),
+    onOperation: metadata => f.runtime.recordExecutorEvent(run.run_id, { ...binding, event: { kind: 'tool_operation', metadata } }),
+  });
+  const result = await broker.call('materialize_workflow_resource', { path: 'scripts/runner.py', destination: 'tools/runner.py', expected_sha256: null }, 'copy-runner');
+  assert.equal(JSON.parse(result.contentItems[0].text).sha256, digest('print(1)\n'));
+  await broker.quiesce();
+  assert.equal((await complete(f, run, edit, {}, { changed_paths: ['source.mjs', 'tools/runner.py'] })).nodes.edit.status, 'succeeded');
+  assert.equal((await complete(f, run, await claim(f, run, 'final'), {}, { acceptance: { accepted: true } })).status, 'succeeded');
+});
+
+test('source-location admission rejects an edit made after claim but before dispatch', async t => {
+  const { f, run, content } = await sourceEditingRun(t);
+  const edit = await claim(f, run, 'edit');
+  await writeFile(join(f.workspace, 'source.mjs'), content + '// external pre-dispatch edit\n');
+  await assert.rejects(f.runtime.recordDispatchIntent(run.run_id, { ...edit, control_token: run.control_token,
+    request_id: `dispatch-${edit.attempt_id}`, envelope_hash: digest(canonicalJSON(edit)) }),
+  { code: 'SOURCE_LOCATION_STALE', reason: 'file_sha256_mismatch', producer_node_id: 'work' });
+  assert.equal((await f.runtime.runs.read(run.run_id)).state.nodes.edit.attempts[0].dispatch, null);
+  const restarted = await new WorkflowRuntime(f.runtimeOptions).initialize();
+  await restarted.resume(run.run_id, { control_token: run.control_token, after_restart: true });
+  await assert.rejects(reattachAttempt(restarted, run.run_id, { ...edit, control_token: run.control_token }, { kind: 'unsubmitted_claim' }),
+    { code: 'SOURCE_LOCATION_STALE', reason: 'file_sha256_mismatch' });
+});
+
+test('a dispatched source-location consumer survives exact reattachment after its authorized edit', async t => {
+  const { f, run, content } = await sourceEditingRun(t);
+  const edit = await claim(f, run, 'edit');
+  const binding = { node_id: edit.node_id, attempt_id: edit.attempt_id, lease_token: edit.lease_token, control_token: run.control_token };
+  const request_id = `dispatch-${edit.attempt_id}`;
+  await f.runtime.recordDispatchIntent(run.run_id, { ...binding, request_id, envelope_hash: digest(canonicalJSON(edit)) });
+  const receipt = { task_id: `synthetic-${edit.attempt_id}` };
+  await f.runtime.recordDispatchReceipt(run.run_id, { ...binding, request_id, receipt });
+  await writeFile(join(f.workspace, 'source.mjs'), content + '// authorized edit before restart\n');
+  const restarted = await new WorkflowRuntime(f.runtimeOptions).initialize();
+  await restarted.resume(run.run_id, { control_token: run.control_token, after_restart: true });
+  const reattached = await reattachAttempt(restarted, run.run_id, binding,
+    { kind: 'exact_dispatch_identity', attempt_id: edit.attempt_id, dispatch_request_id: request_id, receipt });
+  await restarted.resume(run.run_id, { control_token: run.control_token });
+  assert.equal((await restarted.execution(run.run_id, { ...reattached.envelope, control_token: run.control_token })).attempt_id, edit.attempt_id);
+  assert.equal((await complete({ ...f, runtime: restarted }, run, reattached.envelope, {}, { changed_paths: ['source.mjs'] })).nodes.edit.status, 'succeeded');
+});
+
+test('Host Main preserves its exact raw result receipt while handing off canonical source paths',async t=>{
+  const workflow=definition(),work=workflow.nodes.find(node=>node.id==='work');
+  work.executor={kind:'main'};
+  work.outputs_schema={type:'object',properties:{locations:structuredClone(WORKSPACE_SOURCE_LOCATIONS_SCHEMA)},required:['locations'],additionalProperties:false};
+  work.output_validators={locations:WORKSPACE_SOURCE_LOCATIONS};
+  workflow.nodes.find(node=>node.id==='final').input_bindings.locations='/nodes/work/output/locations';
+  const f=await fixture(t,workflow),content='export const identified = true;\n';
+  await writeFile(join(f.workspace,'source.mjs'),content);
+  const run=await f.start(),lease=await claim(f,run,'work');
+  const raw={path:join(f.workspace,'source.mjs'),file_sha256:digest(content),start_line:1,end_line:1,symbol:'identified',usage:'Read the identified value.'};
+  await complete(f,run,lease,{locations:[raw]});
+  const record=await f.runtime.runs.read(run.run_id),attempt=record.state.nodes.work.attempts.at(-1);
+  const saved=await f.runtime.runs.readExecutorResult(run.run_id,attempt.id,attempt.result_proposal.sha256);
+  assert.deepEqual(saved.structured_output.locations,[raw]);
+  assert.equal(record.state.nodes.work.output.locations[0].path,'source.mjs');
+  assert.equal(attempt.completion.structured_output.locations[0].path,'source.mjs');
+});
+
+test('Main correction turns consume the pinned retry budget durably across retries and cancellation', async t => {
+  const workflow = definition(); workflow.nodes.find(node => node.id === 'work').executor = { kind: 'main' };
+  const f = await fixture(t, workflow); const run = await f.start();
+  const first = await claim(f, run, 'work');
+  const reserve = (runtime, lease) => runtime.reserveHostMainTurn(run.run_id, {
+    node_id: 'work', attempt_id: lease.attempt_id, lease_token: lease.lease_token, control_token: run.control_token,
+  });
+  assert.deepEqual(await reserve(f.runtime, first), { completion_turns: 1, remaining: 2 });
+  const restarted = await new WorkflowRuntime(f.runtimeOptions).initialize();
+  assert.deepEqual(await reserve(restarted, first), { completion_turns: 2, remaining: 1 });
+  assert.equal((await restarted.runs.read(run.run_id)).state.nodes.work.attempts[0].completion_turns, 2);
+  await restarted.failNode(run.run_id, { ...first, error: { code: 'INVALID_OUTPUT', message: 'Bad source location' } });
+  await restarted.retryNode(run.run_id, { ...control(run), node_id: 'work' });
+  const second = await claim({ ...f, runtime: restarted }, run, 'work', { request_id: 'retry-work' });
+  assert.deepEqual(await reserve(restarted, second), { completion_turns: 1, remaining: 0 });
+  await restarted.failNode(run.run_id, { ...second, error: { code: 'INVALID_OUTPUT', message: 'Still invalid' } });
+  await assert.rejects(restarted.retryNode(run.run_id, { ...control(run), node_id: 'work' }), { code: 'RETRY_LIMIT' });
+  const setup = await fixture(t, workflow); const setupRun = await setup.start();
+  for (let index = 0; index < 3; index++) {
+    const lease = await claim(setup, setupRun, 'work', { request_id: `setup-${index}` });
+    assert.equal((await setup.runtime.runs.read(setupRun.run_id)).state.nodes.work.attempts[index].completion_turns, 0);
+    await setup.runtime.failNode(setupRun.run_id, { ...lease, error: { code: 'AUTH_REQUIRED', message: 'Failed before model dispatch' } });
+    if (index < 2) await setup.runtime.retryNode(setupRun.run_id, { ...control(setupRun), node_id: 'work' });
+  }
+  await assert.rejects(setup.runtime.retryNode(setupRun.run_id, { ...control(setupRun), node_id: 'work' }), { code: 'RETRY_LIMIT' });
+  const other = await fixture(t, workflow); const cancelled = await other.start(); const lease = await claim(other, cancelled, 'work');
+  await other.runtime.cancel(cancelled.run_id, control(cancelled));
+  await assert.rejects(other.runtime.reserveHostMainTurn(cancelled.run_id, { node_id: 'work', attempt_id: lease.attempt_id,
+    lease_token: lease.lease_token, control_token: cancelled.control_token }), { code: 'RUN_TERMINAL' });
+});
+
 test('task dependencies reach the executor without a host inventory launch gate',async t=>{
   const workflow=definition();workflow.requirements.executables=['python'];workflow.requirements.environment=['VIDEO_TOOL_HOME'];
-  const f=await fixture(t,workflow,{environmentResolver:async()=>({status:'ready',tools:[{name:'python',status:'found',path:join(t.name,'python')}],missing:[]})});
+  const f=await fixture(t,workflow,{environmentResolver:async()=>({status:'ready',tools:[{name:'python',status:'found',path:join(t.name,'python')}],missing:[]}),environmentVerifier:async()=>[]});
   assert.equal((await f.store.snapshot(workflow.id)).workflow.status,'ready');
   const run=await f.start();assert.equal(run.status,'running');
   const envelope=await claim(f,run,'work');
   assert.match(envelope.prompt_template,/python/);assert.match(envelope.prompt_template,/VIDEO_TOOL_HOME/);
-  assert.match(envelope.prompt_template,/report any unresolved dependency/);
+  assert.match(envelope.prompt_template,/Report unresolved dependencies with command\/error evidence/);
 });
-const claim = (f, run, nodeId, extra = {}) => f.runtime.claimNode(run.run_id, { node_id: nodeId, owner: 'root', request_id: 'claim-' + nodeId, control_token: run.control_token, ...extra });
-const complete = (f, run, envelope, output = {}, extra = {}) => f.runtime.completeNode(run.run_id, { node_id: envelope.node_id, attempt_id: envelope.attempt_id, lease_token: envelope.lease_token, completion: payload(output, extra) });
+const claim = async (f, run, nodeId, extra = {}) => {
+  const record = await f.runtime.runs.read(run.run_id);
+  const args = { node_id: nodeId, owner: 'root', request_id: 'claim-' + nodeId, control_token: run.control_token, ...extra };
+  return record.pins.root.workflow.nodes.find(node => node.id === nodeId)?.executor?.kind === 'main'
+    ? f.runtime.claimHostMain(run.run_id, args)
+    : f.runtime.claimNode(run.run_id, args);
+};
+const complete = async (f, run, envelope, output = {}, extra = {}) => {
+  const record = await f.runtime.runs.read(run.run_id);
+  const definition = record.pins.root.workflow.nodes.find(node => node.id === envelope.node_id);
+  const completion = payload(output, extra);
+  const args = { node_id: envelope.node_id, attempt_id: envelope.attempt_id, lease_token: envelope.lease_token, control_token: run.control_token };
+  const current = record.state.nodes[envelope.node_id].attempts.find(item => item.id === envelope.attempt_id);
+  if (definition?.executor?.kind !== 'main') {
+    if (definition?.executor?.kind === 'provider' && !current.dispatch) {
+      const request_id = `dispatch-${envelope.attempt_id}`;
+      await f.runtime.recordDispatchIntent(run.run_id, { ...args, request_id, envelope_hash: digest(canonicalJSON(envelope)) });
+      await f.runtime.recordDispatchReceipt(run.run_id, { ...args, request_id, receipt: { task_id: `fixture-${envelope.attempt_id}` } });
+    }
+    return f.runtime.completeNode(run.run_id, { ...args, completion });
+  }
+  if (!current.dispatch) {
+    const request_id = `dispatch-${envelope.attempt_id}`;
+    await f.runtime.recordHostMainDispatchIntent(run.run_id, { ...args, request_id, envelope_hash: digest(canonicalJSON(envelope)) });
+    await f.runtime.recordHostMainDispatchReceipt(run.run_id, { ...args, request_id, receipt: {
+      invocation_id: `host-main-${envelope.attempt_id}`, executor: 'codex-app-server-host-main', executable_sha256: 'a'.repeat(64),
+      model: 'fixture-main', effort: 'medium', main_actor: 'root', session_id: `logical-main-${run.run_id}`, call_chain_id: `workflow-run-${run.run_id}`,
+    } });
+  }
+  const proposal = structuredClone(completion); delete proposal.acceptance;
+  const saved = await f.runtime.runs.saveExecutorResult(run.run_id, envelope.attempt_id, proposal);
+  await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'result_proposed', metadata: { ...saved, final_acceptance_required: true } } });
+  return f.runtime.completeHostMainResult(run.run_id, args, { accepted: extra.acceptance?.accepted });
+};
+
+test('a per-item node retry inherits accepted item results into the new attempt',async t=>{
+  const workflow=definition(),work=workflow.nodes.find(node=>node.id==='work');
+  work.executor={kind:'provider',provider_id:'native-provider'};
+  workflow.inputs_schema={type:'object',properties:{items:{type:'array',items:{type:'string'}}},required:['items'],additionalProperties:false};
+  work.subagent_count='auto';work.fanout={input:'items',item_name:'item',result_output:'results',distribution:'one_per_item',scheduling:'parallel',max_concurrency:2,join:'all_required',result_mode:'per_item'};
+  work.input_bindings={items:'/inputs/items'};work.outputs_schema={type:'object',properties:{results:{type:'array',items:{type:'string'}}},required:['results'],additionalProperties:false};
+  const nativeProvider={id:'native-provider',kind:'native_agent',enabled:true,capabilities:{read:true,write:true},config:{role:'implementer',model:'gpt-test',reasoning_effort:'low',inactivity_timeout_ms:0}};
+  const f=await fixture(t,workflow,{context:{providers:[nativeProvider]}}),run=await f.start({inputs:{items:['a','b','c']}}),first=await claim(f,run,'work');
+  await f.runtime.runs.mutate(run.run_id,'fail',state=>{
+    const node=state.nodes.work,attempt=node.attempts.find(item=>item.id===first.attempt_id);
+    attempt.native_item_results={0:{agent_id:'first-child',result:'done-a'},2:{agent_id:'third-child',result:'done-c'}};
+    attempt.status='failed';attempt.error={code:'ITEM_FAILED',message:'middle item failed'};attempt.finished_at=new Date().toISOString();
+    node.status='failed';node.error=attempt.error;node.active_attempt_id=null;state.status='failed';state.error=attempt.error;
+  });
+  await f.runtime.retryNode(run.run_id,{node_id:'work',control_token:run.control_token});
+  const second=await claim(f,run,'work',{request_id:'claim-work-retry'}),record=await f.runtime.runs.read(run.run_id);
+  const retryAttempt=record.state.nodes.work.attempts.find(item=>item.id===second.attempt_id);
+  assert.deepEqual(retryAttempt.inherited_native_item_indices,[0,2]);
+  assert.deepEqual(retryAttempt.native_item_results,{0:{agent_id:'first-child',result:'done-a'},2:{agent_id:'third-child',result:'done-c'}});
+});
 const control = run => ({ control_token: run.control_token });
+
+test('a required boolean validation result fails at the Host boundary',async t=>{
+  const workflow=definition(),work=workflow.nodes.find(node=>node.id==='work');
+  work.outputs_schema={type:'object',properties:{passed:{type:'boolean'}},required:['passed'],additionalProperties:false};
+  work.completion_contract={on_missing:'block',outcome:'validated_artifact',fail_on_false:['passed']};
+  const f=await fixture(t,workflow),run=await f.start(),lease=await claim(f,run,'work');
+  const result=await complete(f,run,lease,{passed:false});
+  assert.equal(result.status,'failed');
+  assert.equal(result.nodes.work.error.code,'WORKFLOW_VALIDATION_FALSE');
+  assert.notEqual(result.nodes.final.status,'ready');
+});
 
 test('whole-workspace dot scope accepts relative outputs but never parent traversal', async t => {
   const workflow = definition();
@@ -56,6 +321,73 @@ test('whole-workspace dot scope accepts relative outputs but never parent traver
   assert.equal((await f.runtime.get(run.run_id)).nodes.work.status, 'succeeded');
 });
 
+test('auto fan-out resolves from runtime input and completion proves every dispatch plus the exact required artifact',async t=>{
+  const workflow=definition(),worker=workflow.nodes.find(node=>node.id==='work');
+  workflow.inputs_schema={type:'object',properties:{items:{type:'array',minItems:1,maxItems:32,items:{type:'string'}}},required:['items'],additionalProperties:false};
+  Object.assign(worker,{executor:{kind:'provider',provider_id:'pool-provider'},access:'bounded_write',path_scope:['out'],subagent_count:'auto',input_bindings:{items:'/inputs/items'},outputs_schema:{type:'object',properties:{results:{type:'array',items:{type:'string'}}},required:['results'],additionalProperties:false},fanout:{input:'items',item_name:'item',result_output:'results',distribution:'one_per_item',scheduling:'parallel',max_concurrency:1,join:'all_required'},required_artifacts:[{requirement_id:'rendered_output',path:'out/result.json'}]});
+  const provider={id:'pool-provider',kind:'native_agent',enabled:true,capabilities:{read:true,write:true},config:{role:'implementer'}};
+  const f=await fixture(t,workflow,{context:{providers:[provider]}}),run=await f.start({inputs:{items:['first','second']},access:'bounded_write',allowed_paths:['out']}),work=await claim(f,run,'work');
+  assert.deepEqual(work.subagents,{configured_count:'auto',resolved_count:2,fanout:worker.fanout,items:['first','second']});
+  const dispatch={...work,...control(run),request_id:'dispatch-pool',envelope_hash:digest(canonicalJSON(work))};
+  await f.runtime.recordDispatchIntent(run.run_id,dispatch);
+  await assert.rejects(f.runtime.recordDispatchReceipt(run.run_id,{...dispatch,receipt:{task_id:'pool-task'}}),{code:'SUBAGENT_POOL_RECEIPT'});
+  const dispatchIds=['task-first','task-second'],subagentPlan={resolved_count:2,input_sha256:digest(canonicalJSON(['first','second'])),assignments:[{dispatch_id:'task-first',items_sha256:digest(canonicalJSON(['first']))},{dispatch_id:'task-second',items_sha256:digest(canonicalJSON(['second']))}]};
+  await assert.rejects(f.runtime.recordDispatchReceipt(run.run_id,{...dispatch,receipt:{task_id:'pool-task',subagent_dispatch_ids:dispatchIds,subagent_plan:{...subagentPlan,input_sha256:'0'.repeat(64)}}}),{code:'SUBAGENT_POOL_RECEIPT'});
+  await f.runtime.recordDispatchReceipt(run.run_id,{...dispatch,receipt:{task_id:'pool-task',subagent_dispatch_ids:dispatchIds,subagent_plan:subagentPlan}});
+  const poolEvidence={kind:'subagent_pool',resolved_count:2,dispatch_ids:['task-first','task-second']};
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/other.json'],evidence:[poolEvidence]}),{code:'REQUIRED_ARTIFACT_MISSING'});
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json']}),{code:'SUBAGENT_POOL_EVIDENCE'});
+  const childEvidence=dispatchIds.map((dispatch_id,result_index)=>({kind:'managed_native_result',dispatch_id,result_index,result_sha256:digest(canonicalJSON(result_index===0?'a':'b')),thread_id:`thread-${result_index}`,turn_id:`turn-${result_index}`}));
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json'],evidence:[poolEvidence,...childEvidence]}),{code:'SUBAGENT_POOL_EVIDENCE'});
+  const trustedResults=childEvidence.map(({dispatch_id,result_index,result_sha256,thread_id,turn_id})=>({dispatch_id,result_index,result_sha256,thread_id,turn_id}));
+  await assert.rejects(f.runtime.recordManagedNativeResults(run.run_id,{...work,...control(run),results:trustedResults.map((item,index)=>index?item:{...item,dispatch_id:'replacement-first'})}),{code:'MANAGED_NATIVE_RESULT_RECEIPT'});
+  await f.runtime.recordManagedNativeResults(run.run_id,{...work,...control(run),results:trustedResults});
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json'],evidence:[{...poolEvidence,dispatch_ids:['replacement-first','replacement-second']},...childEvidence]}),{code:'SUBAGENT_POOL_EVIDENCE'});
+  await assert.rejects(complete(f,run,work,{results:['a']},{changed_paths:['out/result.json'],evidence:[poolEvidence,...childEvidence]}),{code:'SUBAGENT_FANOUT_RESULT'});
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json'],evidence:[poolEvidence,childEvidence[0]]}),{code:'SUBAGENT_POOL_EVIDENCE'});
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json'],evidence:[poolEvidence,...childEvidence.map(({thread_id,turn_id,...item})=>item)]}),{code:'SUBAGENT_POOL_EVIDENCE'});
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json'],evidence:[poolEvidence,{...childEvidence[0],thread_id:'substituted-thread'},childEvidence[1]]}),{code:'SUBAGENT_POOL_EVIDENCE'});
+  await assert.rejects(complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json'],evidence:[poolEvidence,{...childEvidence[0],turn_id:childEvidence[1].turn_id},{...childEvidence[1],turn_id:childEvidence[0].turn_id}]}),{code:'SUBAGENT_POOL_EVIDENCE'});
+  const done=await complete(f,run,work,{results:['a','b']},{changed_paths:['out/result.json'],evidence:[poolEvidence,...childEvidence]});
+  assert.equal(done.nodes.work.status,'succeeded');
+});
+
+test('fixed fan-out rejects more sub-Agents than runtime items before dispatch',async t=>{
+  const workflow=definition(),worker=workflow.nodes.find(node=>node.id==='work');
+  workflow.inputs_schema={type:'object',properties:{items:{}},required:['items'],additionalProperties:false};
+  Object.assign(worker,{executor:{kind:'provider',provider_id:'pool-provider'},subagent_count:3,input_bindings:{items:'/inputs/items'},outputs_schema:{type:'object',properties:{results:{type:'array',items:{type:'string'}}},required:['results'],additionalProperties:false},fanout:{input:'items',item_name:'item',result_output:'results',distribution:'partition',scheduling:'parallel',join:'all_required'}});
+  const provider={id:'pool-provider',kind:'openai_compatible',enabled:true,capabilities:{read:true,write:false},config:{role:'implementer'}};
+  const f=await fixture(t,workflow,{context:{providers:[provider]}}),run=await f.start({inputs:{items:['first','second']}});
+  await assert.rejects(claim(f,run,'work'),{code:'SUBAGENT_FANOUT_INPUT'});
+});
+
+test('automatic partition fan-out assigns at most the declared batch size per Agent', () => {
+  const definition = { subagent_count: 'auto', input_bindings: { jobs: '/inputs/jobs' },
+    fanout: { input: 'jobs', distribution: 'partition', batch_size: 20 } };
+  for (const [size, expected] of [[1, [1]], [20, [20]], [21, [20, 1]], [31, [20, 11]]]) {
+    const jobs = Array.from({ length: size }, (_, index) => index);
+    const plan = resolvedSubagentPlan(definition, { inputs: { jobs }, nodes: {} });
+    assert.equal(plan.count, expected.length);
+    assert.deepEqual(plan.assignments.map(items => items.length), expected);
+    assert.deepEqual(plan.assignments.flat(), jobs);
+  }
+});
+
+test('a producer cannot report success with an empty list required by its direct fan-out consumer', async t => {
+  const workflow = definition();
+  const producer = workflow.nodes.find(node => node.id === 'work');
+  producer.outputs_schema = { type: 'object', properties: { jobs: { type: 'array', items: { type: 'string' } } },
+    required: ['jobs'], additionalProperties: false };
+  const pool = { ...agent('pool'), subagent_count: 'auto', input_bindings: { items: '/nodes/work/output/jobs' },
+    fanout: { input: 'items', item_name: 'item', result_output: 'results', distribution: 'one_per_item', scheduling: 'parallel', join: 'all_required' },
+    outputs_schema: { type: 'object', properties: { results: { type: 'array', items: { type: 'string' } } }, required: ['results'], additionalProperties: false } };
+  workflow.nodes.splice(workflow.nodes.findIndex(node => node.id === 'final'), 0, pool);
+  workflow.edges = [edge('start', 'work'), edge('work', 'pool'), edge('pool', 'final'), edge('final', 'end')];
+  const f = await fixture(t, workflow), run = await f.start(), lease = await claim(f, run, 'work');
+  await assert.rejects(complete(f, run, lease, { jobs: [] }), { code: 'SUBAGENT_FANOUT_INPUT' });
+  assert.equal((await f.runtime.get(run.run_id)).nodes.pool.status, 'pending');
+});
+
 test('executor event journal accepts narrow metadata under controller authority and never revives a cancelled lease', async t => {
   const f = await fixture(t); const run = await f.start(); const work = await claim(f, run, 'work');
   const args = { node_id: work.node_id, attempt_id: work.attempt_id, lease_token: work.lease_token, control_token: run.control_token,
@@ -64,11 +396,17 @@ test('executor event journal accepts narrow metadata under controller authority 
   await assert.rejects(f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'codex_event', metadata: { authUrl: 'sensitive' } } }), { code: 'EXECUTOR_EVENT_SCHEMA' });
   await assert.rejects(f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'session_state', metadata: { status: { authUrl: 'sensitive' } } } }), { code: 'EXECUTOR_EVENT_SCHEMA' });
   await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'tool_operation', metadata: { call_id: 'bad-range', tool: 'read_workflow_resource_range', path: 'source/SKILL.md', phase: 'rejected', code: 'CODEX_RESOURCE_RANGE', diagnostic: 'Requested range exceeds the host bound' } } });
+  await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'tool_operation', metadata: { call_id: 'materialize', tool: 'materialize_workflow_resource', path: 'tools/runner.py', phase: 'intent', before_sha256: null, after_sha256: digest('runner'), source_sha256: digest('runner') } } });
   await assert.rejects(f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'tool_operation', metadata: { call_id: 'bad-evidence', tool: 'read_workflow_resource_range', path: 'source/SKILL.md', phase: 'read' } } }), { code: 'EXECUTOR_EVENT_SCHEMA' });
+  await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'semantic_blocked', metadata: { correction: 0, reason: 'recoverable tool error', thread_id: 'thread-1', turn_id: 'turn-1' } } });
+  await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'required_artifacts_missing', metadata: { correction: 0, paths: 'compressed_video.mp4, compression_report.json', thread_id: 'thread-1', turn_id: 'turn-1' } } });
   await f.runtime.recordExecutorEvent(run.run_id, args);
+  await f.runtime.recordExecutorEvent(run.run_id,{...args,event:{kind:'tool_operation',metadata:{call_id:'image',tool:'view_workspace_image',path:'card.png',phase:'read',sha256:'a'.repeat(64),mime:'image/png',bytes:123}}});
+  await f.runtime.recordExecutorEvent(run.run_id,{...args,event:{kind:'scope_violation',metadata:{artifact:'artifact-scope.bin',sha256:'b'.repeat(64),bytes:100,changed_count:2,outside_count:1}}});
+  await f.runtime.recordExecutorEvent(run.run_id,{...args,event:{kind:'workspace_unreadable_authorized_path',metadata:{path:'work/tmp/private',kind:'directory',error_code:'EPERM',coverage:'authorized_boundary_only',dev:'3392694177',ino:'1688849860430969',birthtime_ms:'1790457251294.8755',phase:'completion'}}});
   await f.runtime.cancel(run.run_id, control(run));
   await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'session_state', metadata: { status: 'cancelled' } } });
-  const state = await f.runtime.get(run.run_id); assert.equal(state.status, 'cancelled'); assert.equal(state.nodes.work.attempts[0].executor_event_count, 3);
+  const state = await f.runtime.get(run.run_id); assert.equal(state.status, 'cancelled'); assert.equal(state.nodes.work.attempts[0].executor_event_count, 9);
   await assert.rejects(f.runtime.execution(run.run_id, args), { code: 'STALE_LEASE' });
 });
 
@@ -91,7 +429,6 @@ test('journal releases sequential nodes, binds leases, rejects conflicting dupli
   assert.deepEqual((await f.runtime.next(run.run_id)).ready, ['work']);
   await assert.rejects(claim(f, run, 'final'), { code: 'NODE_NOT_READY' });
   await assert.rejects(claim(f, run, 'work', { control_token: 'wrong' }), { code: 'RUN_AUTHORITY' });
-  await assert.rejects(claim(f, run, 'work', { owner: 'worker' }), { code: 'FINALIZER_AUTHORITY' });
   const work = await claim(f, run, 'work');
   const same = await claim(f, run, 'work'); assert.equal(same.idempotent, true); assert.equal(same.lease_token, work.lease_token);
   await assert.rejects(complete(f, run, { ...work, lease_token: 'wrong' }), { code: 'LEASE_INVALID' });
@@ -99,11 +436,14 @@ test('journal releases sequential nodes, binds leases, rejects conflicting dupli
   assert.equal(done.nodes.work.status, 'succeeded'); assert.equal(done.nodes.final.status, 'ready');
   assert.equal((await complete(f, run, work, { value: 42 })).sequence, done.sequence);
   await assert.rejects(complete(f, run, work, { value: 43 }), { code: 'COMPLETION_CONFLICT' });
+  await assert.rejects(f.runtime.claimNode(run.run_id, { node_id: 'final', owner: 'root', request_id: 'generic-main-claim', control_token: run.control_token }), { code: 'HOST_MAIN_LIFECYCLE_REQUIRED' });
+  await assert.rejects(claim(f, run, 'final', { owner: 'worker' }), { code: 'FINALIZER_AUTHORITY' });
   const final = await claim(f, run, 'final');
+  await assert.rejects(f.runtime.completeNode(run.run_id, { node_id: final.node_id, attempt_id: final.attempt_id, lease_token: final.lease_token, completion: payload({}, { acceptance: { accepted: true } }) }), { code: 'HOST_MAIN_LIFECYCLE_REQUIRED' });
   await assert.rejects(complete(f, run, final), { code: 'FINAL_ACCEPTANCE_REQUIRED' });
   assert.equal((await complete(f, run, final, {}, { acceptance: { accepted: true } })).status, 'succeeded');
   const publicState = await f.runtime.get(run.run_id); assert.equal(publicState.control_hash, undefined); assert.equal(publicState.nodes.work.attempts[0].lease_hash, undefined);
-  const events = await f.runtime.events(run.run_id, { ...control(run), after_sequence: 1 }); assert.deepEqual(events.map(e => e.kind), ['claim', 'complete', 'claim', 'complete']);
+  const events = await f.runtime.events(run.run_id, { ...control(run), after_sequence: 1 }); assert.deepEqual(events.map(e => e.kind), ['claim', 'dispatch_intent', 'dispatch_receipt', 'complete', 'claim', 'dispatch_intent', 'dispatch_receipt', 'executor_event', 'executor_event', 'complete']);
 });
 
 test('conditional skip and control failures persist without losing upstream completion', async t => {
@@ -153,7 +493,11 @@ test('approval binding, denial/reapproval, human gate and pause do not release u
   await f.runtime.approve(run.run_id, { ...control(run), approval_id: 'work:2', decision: true });
   assert.deepEqual((await f.runtime.next(run.run_id)).ready, []);
   await f.runtime.resume(run.run_id, control(run));
-  const lease = await claim(f, run, 'work'); await f.runtime.pause(run.run_id, control(run));
+  const lease = await claim(f, run, 'work');
+  const request_id = `dispatch-${lease.attempt_id}`;
+  await f.runtime.recordDispatchIntent(run.run_id, { ...lease, ...control(run), request_id, envelope_hash: digest(canonicalJSON(lease)) });
+  await f.runtime.recordDispatchReceipt(run.run_id, { ...lease, ...control(run), request_id, receipt: { task_id: `fixture-${lease.attempt_id}` } });
+  await f.runtime.pause(run.run_id, control(run));
   const result = await complete(f, run, lease); assert.equal(result.status, 'paused'); assert.equal(result.nodes.final.status, 'pending');
   await f.runtime.resume(run.run_id, control(run)); assert.deepEqual((await f.runtime.next(run.run_id)).ready, ['final']);
   const h = definition(); Object.assign(h.nodes.find(n => n.id === 'work'), { type: 'human_gate', executor: { kind: 'human' } });
@@ -232,6 +576,43 @@ test('input and output contracts validate actual data, bind final output and rej
   await assert.rejects(f.store.save('example', bad, { expected_revision: (await f.store.snapshot('example')).revision_hash }), error => error.code === 'WORKFLOW_NOT_READY');
 });
 
+test('pinned resource materialization journals through the real Run event contract', async t => {
+  const workflow = definition(); Object.assign(workflow.nodes.find(node => node.id === 'work'), { access: 'bounded_write', path_scope: { binding: 'run.allowed_paths' } });
+  const f = await fixture(t, workflow); await mkdir(join(f.workspace, 'tools'));
+  const run = await f.start({ access: 'bounded_write', allowed_paths: ['tools'] });
+  const work = await claim(f, run, 'work');
+  const binding = { node_id: work.node_id, attempt_id: work.attempt_id, lease_token: work.lease_token, control_token: run.control_token };
+  const bytes = 'print("runner")\n';
+  const broker = await createCodexToolBroker({ workspace: f.workspace, access: 'bounded_write', allowedPaths: ['tools'],
+    resources: [{ path: 'scripts/runner.py', bytes, sha256: digest(bytes) }],
+    authorize: () => f.runtime.execution(run.run_id, binding),
+    onOperation: metadata => f.runtime.recordExecutorEvent(run.run_id, { ...binding, event: { kind: 'tool_operation', metadata } }),
+  });
+  const result = await broker.call('materialize_workflow_resource', { path: 'scripts/runner.py', destination: 'tools/runner.py', expected_sha256: null }, 'copy-runner');
+  assert.equal(JSON.parse(result.contentItems[0].text).sha256, digest(bytes));
+  assert.equal(await readFile(join(f.workspace, 'tools', 'runner.py'), 'utf8'), bytes);
+  assert.equal((await f.runtime.get(run.run_id)).nodes.work.attempts[0].executor_event_count, 2);
+  await broker.quiesce();
+});
+
+test('ordinary finalizer commits its own persisted accepted=true output without a human gate', async t => {
+  const workflow = definition();
+  workflow.nodes.find(node => node.id === 'final').outputs_schema = { type: 'object', properties: { accepted: { type: 'boolean' } }, required: ['accepted'], additionalProperties: false };
+  const f = await fixture(t, workflow); const run = await f.start();
+  await complete(f, run, await claim(f, run, 'work'));
+  const final = await claim(f, run, 'final');
+  const args = { node_id: final.node_id, attempt_id: final.attempt_id, lease_token: final.lease_token, control_token: run.control_token };
+  const request_id = `dispatch-${final.attempt_id}`;
+  await f.runtime.recordHostMainDispatchIntent(run.run_id, { ...args, request_id, envelope_hash: digest(canonicalJSON(final)) });
+  await f.runtime.recordHostMainDispatchReceipt(run.run_id, { ...args, request_id, receipt: {
+    invocation_id: `host-main-${final.attempt_id}`, executor: 'codex-app-server-host-main', executable_sha256: 'a'.repeat(64),
+    model: 'fixture-main', effort: 'medium', main_actor: 'root', session_id: `logical-main-${run.run_id}`, call_chain_id: `workflow-run-${run.run_id}`,
+  } });
+  const saved = await f.runtime.runs.saveExecutorResult(run.run_id, final.attempt_id, payload({ accepted: true }));
+  await f.runtime.recordExecutorEvent(run.run_id, { ...args, event: { kind: 'result_proposed', metadata: { ...saved, final_acceptance_required: false } } });
+  assert.equal((await f.runtime.completeHostMainResult(run.run_id, args)).status, 'succeeded');
+});
+
 test('finite output contracts enforce safe patterns, exclusive minima and unique items', async t => {
   const w=definition();w.nodes.find(n=>n.id==='work').outputs_schema={type:'object',required:['paths','duration'],properties:{paths:{type:'array',uniqueItems:true,items:{type:'string',pattern:'^edit/[^/]+[.]json$'}},duration:{type:'number',exclusiveMinimum:0}},additionalProperties:false};
   const f=await fixture(t,w);const run=await f.start();const work=await claim(f,run,'work');
@@ -245,10 +626,21 @@ test('finite output contracts enforce safe patterns, exclusive minima and unique
 
 test('prompt compilation decodes serialized JSON bindings once instead of double escaping them', () => {
   const proposal_json=JSON.stringify({items:Array.from({length:200},(_,index)=>({id:index,path:`edit/${index}.json`}))});
-  const envelope={prompt_template:'Review proposal_json.',inputs:{proposal_json},context_projection:{references:['analysis/request.txt']},constraints:{}};
+  const envelope={prompt_template:'Review proposal_json.',inputs:{proposal_json},context_projection:{references:['analysis/request.txt']},constraints:{},completion_contract:{on_missing:'block',outcome:'review'}};
   const oldSize=envelope.prompt_template.length+canonicalJSON(envelope.inputs).length;
   const prompt=compilePrompt(envelope,oldSize-100);
-  assert.match(prompt,/"proposal_json":\{"items":/);assert(!prompt.includes('\\"items\\"'));
+  assert.match(prompt,/"proposal_json":\{"items":/);assert(!prompt.includes('\\"items\\"'));assert.match(prompt,/"on_missing":"block","outcome":"review"/);
+  assert.match(prompt,/bound task may describe downstream work/);
+});
+
+test('independent authoring review keeps a large canonical proposal out of the prompt',()=>{
+  const proposal={nodes:[{id:'work',prompt_template:'x'.repeat(90000)}]};
+  const inline={prompt_template:'Review.',inputs:{proposal},context_projection:{references:['analysis/review-request.txt']},constraints:{}};
+  assert.throws(()=>compilePrompt(inline,80000),{code:'PROMPT_LIMIT'});
+  const resourceBacked={...inline,inputs:{},context_projection:{references:['analysis/review-request.txt','__authoring__/review-proposal.json']}};
+  const prompt=compilePrompt(resourceBacked,80000);
+  assert.match(prompt,/"__authoring__\/review-proposal\.json"/);
+  assert.doesNotMatch(prompt,/x{100}/);
 });
 
 

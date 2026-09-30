@@ -31,11 +31,11 @@ async function runExample(example,index){
   let latest=null;
   let control=null;
   try {
-    const coarse=await importCoarseSkill(store,example.skillPath,{id:workflowId,name:`Qualification: ${example.id}`,providerId:'native-terra',role:'implementer'});
+    const coarse=await importCoarseSkill(store,example.skillPath,{id:workflowId,name:`Qualification: ${example.id}`,providerId:'native-luna',role:'implementer'});
     const resources=await store.resources(workflowId,coarse.revision_hash);
     const sourceInventory=sourceSectionInventory(resources);
     const observed=observedSourceRequirements(resources);
-    const started=await service.call('start_generation',{workflow_id:workflowId,revision_hash:coarse.revision_hash,run_id:runId,provider_id:'native-terra'},{human:true});
+    const started=await service.call('start_generation',{workflow_id:workflowId,revision_hash:coarse.revision_hash,run_id:runId,provider_id:'native-luna'},{human:true});
     control={run_id:started.run_id,control_token:started.control_token};
     let accepted=null;
     for(let step=0;;step++){
@@ -93,7 +93,7 @@ async function settleExample(example,index){
 }
 
 const results=await Promise.all(examples.map(settleExample));
-const report={version:1,kind:'skill2workflow_conversion_qualification',generated_at:new Date().toISOString(),experiment_rerun:false,planner:{provider_id:'native-terra'},reviewer:{provider_id:'native-generation-reviewer'},status:results.every(item=>item.validation.status==='PASS')?'PASS':'FAIL',results};
+const report={version:1,kind:'skill2workflow_conversion_qualification',generated_at:new Date().toISOString(),experiment_rerun:false,planner:{provider_id:'native-luna'},reviewer:{provider_id:'native-reviewer'},status:results.every(item=>item.validation.status==='PASS')?'PASS':'FAIL',results};
 await mkdir(dirname(outputPath),{recursive:true});
 await writeFile(outputPath,JSON.stringify(report,null,2)+'\n');
 process.stdout.write(JSON.stringify({output:outputPath,status:report.status,results:results.map(item=>({example:item.example,conversion_level:item.workflow?.conversion_level ?? null,planner_attempts:item.validation.planner_attempts ?? null,reviewer_attempts:item.validation.reviewer_attempts ?? null,required_sections_retained:item.validation.required_sections_retained ?? null,candidate_sections_demoted:item.validation.candidate_sections_demoted ?? null,error:item.validation.error ?? null}))},null,2)+'\n');

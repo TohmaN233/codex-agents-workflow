@@ -4,6 +4,7 @@ import { requireValue } from '../workflow-paths.mjs';
 import { canonicalJSON } from '../workflow-revisions.mjs';
 import { readSkillSnapshot } from './skill-reader.mjs';
 import { analyzeSkillDependencies } from './dependency-reader.mjs';
+import { normalizeImportedExecutableRequirements } from './metadata-reader.mjs';
 
 // Inline is a reversible definition/resource edit. It never executes Skill code
 // and always creates a Draft requiring explicit review of the conversion.
@@ -40,7 +41,9 @@ export async function inlineSkillReference(store, workflowId, { node_id, expecte
   if (!workflow.nodes.some(item => item.type === 'subworkflow')) workflow.skill_policy.ambient_allow = workflow.skill_policy.ambient_allow.filter(path => !converted.has(skillPathKey(path)) || usedElsewhere.has(skillPathKey(path)));
   for (const source of sources) if (!usedElsewhere.has(skillPathKey(source.path)) && !workflow.skill_policy.ambient_allow.some(path => skillPathKey(path) === skillPathKey(source.path))) workflow.skill_policy.shadowed_skill_paths.push(source.path);
   workflow.skill_policy.shadowed_skill_paths = [...new Map(workflow.skill_policy.shadowed_skill_paths.map(path => [skillPathKey(path), path])).values()];
-  for (const [kind, names] of Object.entries(declarations)) workflow.requirements[kind] = [...new Set([...(workflow.requirements[kind] ?? []), ...names])].sort();
+  for (const [kind, names] of Object.entries(declarations)) workflow.requirements[kind] = kind === 'executables'
+    ? normalizeImportedExecutableRequirements([...(workflow.requirements[kind] ?? []), ...names])
+    : [...new Set([...(workflow.requirements[kind] ?? []), ...names])].sort();
   workflow.import_status ??= { mode: 'coarse', source_hash: reference.source_hash, classification: 'self_contained_candidate', source_independent: false, relocation_evidence: null, unresolved: [] };
   workflow.import_status.unresolved.push(...observations, { code: 'INLINE_SKILL_REQUIRES_REVIEW', node_id, origin: 'observed' });
   if (observations.some(issue => issue.code === 'SOURCE_LINKED_PATH')) workflow.import_status.classification = 'source_linked';

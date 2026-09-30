@@ -13,7 +13,7 @@ const FIELD_LIMITS = {
 
 function normalizeValue(value) {
   if (value === undefined || value === null || value === '') return DEFAULT_EMPTY;
-  if (typeof value === 'string') return value.trim() || DEFAULT_EMPTY;
+  if (typeof value === 'string') return value;
   try {
     return JSON.stringify(value, null, 2);
   } catch (error) {
@@ -32,14 +32,11 @@ function boundValue(name, value) {
 
 export function renderTemplate(template, variables, maxPromptChars = 80_000) {
   const values = {};
-  for (const name of ALLOWED_TEMPLATE_FIELDS) {
-    values[name] = boundValue(name, variables[name]);
-  }
   const rendered = template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_match, name) => {
     if (!ALLOWED_TEMPLATE_FIELDS.has(name)) {
       throw new Error(`unsupported template field: ${name}`);
     }
-    return values[name];
+    return values[name] ??= boundValue(name, variables[name]);
   });
   if (rendered.includes('{{') || rendered.includes('}}')) {
     throw new Error('rendered template contains unresolved braces');
