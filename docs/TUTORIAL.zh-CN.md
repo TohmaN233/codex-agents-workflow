@@ -1,12 +1,12 @@
 # Codex Agents Workflow 操作教程
 
-[返回 README](../README.md) · [English](TUTORIAL.md)
+[返回 README](../README.zh-CN.md) · [English](TUTORIAL.md)
 
 这份教程对应当前发布版工作台。它从默认的两个基础 Workflow 开始，说明 Role、Provider、Skill 转换、可选安装包、运行与恢复。
 
 ## 1. 安装并打开工作台
 
-先按 [README 的快速开始](../README.md#快速开始)安装插件，重启 Codex 桌面应用加载入口。工作台现在使用 Codex MCP Extension：支持的宿主会显示内嵌工作台入口与独立设置入口；也可以在当前 Codex task 直接告诉 Codex：
+先按 [README 的快速开始](../README.zh-CN.md#快速开始)安装插件，重启 Codex 桌面应用加载入口。工作台现在使用 Codex MCP Extension：支持的宿主会显示内嵌工作台入口与独立设置入口；也可以在当前 Codex task 直接告诉 Codex：
 
 ```text
 使用 $codex-agents-workflow:workflow-control-plane，在 Codex 内打开工作台。

@@ -1,12 +1,12 @@
 # Using Codex Agents Workflow
 
-[README](../README.en.md) · [中文教程](TUTORIAL.zh-CN.md)
+[README](../README.md) · [中文教程](TUTORIAL.zh-CN.md)
 
 This guide matches the current release workbench. It starts from the two default authoring Workflows and covers Roles, Providers, Skill conversion, optional packages, execution, and recovery.
 
 ## 1. Install and open the workbench
 
-Follow the [README quick start](../README.en.md#quick-start), then restart the Codex desktop app to load the entrypoints. The workbench now uses a Codex MCP Extension: supported hosts expose an embedded workbench and a separate settings entry. You can also ask in your current Codex task:
+Follow the [README quick start](../README.md#quick-start), then restart the Codex desktop app to load the entrypoints. The workbench now uses a Codex MCP Extension: supported hosts expose an embedded workbench and a separate settings entry. You can also ask in your current Codex task:
 
 ```text
 Use $codex-agents-workflow:workflow-control-plane and open the workbench inside Codex.
