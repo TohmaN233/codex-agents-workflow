@@ -22,7 +22,7 @@
     "esbuild": "0.28.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "yaml": "2.9.0",
     "zod": "4.4.3"
   }
