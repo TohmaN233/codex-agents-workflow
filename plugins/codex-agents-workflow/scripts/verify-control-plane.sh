@@ -71,7 +71,7 @@ package_version=$(jq -er '.version | select(type == "string" and length > 0)' "$
 [ "$(jq -r '.mcpServers' "$manifest")" = './.mcp.json' ] || fail "plugin manifest does not load control-plane MCP"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].command' "$mcp_manifest")" = node ] || fail "control-plane MCP does not use node"
 [ "$(jq -r '.mcpServers["codex-agents-workflow"].enabled' "$mcp_manifest")" = true ] || fail "control-plane MCP is disabled"
-[ "$(jq -r '.mcpServers["codex-agents-workflow"].cwd' "$mcp_manifest")" = ../../.. ] || fail "control-plane MCP must launch outside disposable version directories"
+[ "$(jq -r '.mcpServers["codex-agents-workflow"].cwd' "$mcp_manifest")" = .. ] || fail "control-plane MCP must launch from its stable installation namespace"
 # The suite below probes the packaged MCP with an isolated installation registry.
 # check-mcp-startup.mjs remains the diagnostic for a real installed host.
 jq -e '.name == "codex-agents-workflow" and (.plugins[] | select(.name == "codex-agents-workflow"))' "$marketplace" >/dev/null || fail "local marketplace still exposes the retired predecessor identity"

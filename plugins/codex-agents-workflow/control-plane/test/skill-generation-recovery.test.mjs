@@ -25,10 +25,10 @@ test('authoring recovery requires a retained plan and never starts or advances a
   await assert.rejects(adoptAuthoringRun(api,pack,'authoring-existing'),{code:'AUTHORING_RECOVERY_PROPOSAL'});
   assert.deepEqual(calls.sort(),['get','run_definition']);
   const validCalls=[];
-  const validApi=async(operation,args)=>{validCalls.push([operation,args]);return operation==='run_definition'?definition:operation==='get'?state():{...state(),status:'paused',control_token:'new-token'};};
+  const validApi=async(operation,args)=>{validCalls.push([operation,args]);return operation==='run_definition'?definition:operation==='get'?state():{...state(),status:'paused',control_token:'example-new-token'};};
   const recovered=await adoptAuthoringRun(validApi,pack,'authoring-existing');
   assert.equal(recovered.inspected.continuation,'guidance');
-  assert.equal(recovered.adopted.control_token,'new-token');
+  assert.equal(recovered.adopted.control_token,'example-new-token');
   assert.deepEqual(validCalls.map(([operation])=>operation),['run_definition','get','adopt_run']);
   assert.equal(validCalls[2][1].expected_sequence,12);
 });
@@ -77,7 +77,7 @@ test('same-source adoption survives detail reconciliation and remount without an
     if(operation==='adopt_run'){
       assert.equal(args.expected_sequence,current.sequence);
       current={...current,sequence:13,status:'paused',nodes:{...current.nodes,final:{status:'interrupted',attempts:[]}}};
-      return {...current,control_token:'same-authority'};
+      return {...current,control_token:'example-same-authority'};
     }
     if(operation==='run_snapshot'){
       assert.equal(args.control_token,controllers.get(current.run_id));
@@ -91,10 +91,10 @@ test('same-source adoption survives detail reconciliation and remount without an
   current={...current,sequence:15,status:'running',nodes:{...current.nodes,final:{status:'ready',attempts:[]}}};
   const {inspected,controlToken}=await inspectControlledAuthoringRun(api,pack,current.run_id,controllers);
   assert.equal(inspected.continuation,'guidance');
-  assert.equal(controlToken,'same-authority');
+  assert.equal(controlToken,'example-same-authority');
   const attached=await continueControlledAuthoringRun(api,pack,current.run_id,controllers);
   assert.equal(attached.checked.state.status,'running');
-  assert.equal(attached.controlToken,'same-authority');
+  assert.equal(attached.controlToken,'example-same-authority');
   assert.equal(shouldPollAuthoring({run:{run_id:current.run_id,control_token:controlToken},pollEnabled:true,stopping:false,error:null,phase:'user_input_required'}),false);
   assert.equal(calls.filter(operation=>operation==='adopt_run').length,1);
   assert.equal(calls.includes('resume'),false);
@@ -102,14 +102,14 @@ test('same-source adoption survives detail reconciliation and remount without an
 });
 
 test('reused control fails before attachment when source or authenticated token is wrong',async()=>{
-  const controllers=new Map([['authoring-existing','old-token']]);
+  const controllers=new Map([['authoring-existing','example-old-token']]);
   const calls=[];
   const api=async(operation,args)=>{
     calls.push(operation);
     if(operation==='run_definition')return definition;
     if(operation==='get')return state();
     if(operation==='run_snapshot')throw Object.assign(new Error(`Rejected ${args.control_token}`),{code:'RUN_AUTHORITY'});
-    if(operation==='adopt_run')return {...state(),status:'paused',control_token:'new-token'};
+    if(operation==='adopt_run')return {...state(),status:'paused',control_token:'example-new-token'};
     throw new Error(`Unexpected operation ${operation}`);
   };
   await assert.rejects(inspectControlledAuthoringRun(api,{...pack,revision_hash:'c'.repeat(64)},'authoring-existing',controllers),{code:'AUTHORING_RECOVERY_SOURCE'});
@@ -124,12 +124,12 @@ test('reused control fails before attachment when source or authenticated token 
   assert.equal(calls.includes('resume'),false);
   assert.equal(calls.includes('advance_authoring'),false);
   const adopted=await adoptAuthoringRun(api,pack,'authoring-existing');
-  assert.equal(adopted.adopted.control_token,'new-token');
+  assert.equal(adopted.adopted.control_token,'example-new-token');
   assert.equal(calls.filter(operation=>operation==='adopt_run').length,1);
 });
 
 test('paused saved guidance resumes only after the explicit attachment action and remains waiting',async()=>{
-  const controllers=new Map([['authoring-existing','same-authority']]);
+  const controllers=new Map([['authoring-existing','example-same-authority']]);
   const calls=[];
   let current={...state(),status:'paused'};
   const api=async(operation,args)=>{
@@ -137,11 +137,11 @@ test('paused saved guidance resumes only after the explicit attachment action an
     if(operation==='run_definition')return definition;
     if(operation==='get')return current;
     if(operation==='run_snapshot'){
-      assert.equal(args.control_token,'same-authority');
+      assert.equal(args.control_token,'example-same-authority');
       return {state:current,events:[]};
     }
     if(operation==='resume'){
-      assert.equal(args.control_token,'same-authority');
+      assert.equal(args.control_token,'example-same-authority');
       current={...current,status:'running',sequence:13};
       return current;
     }
@@ -159,8 +159,8 @@ test('paused saved guidance resumes only after the explicit attachment action an
 
 test('remount exposes exact Run inspection when detail adoption superseded a cached session token',async()=>{
   const key='source-draft/'+pack.revision_hash;
-  const sessions=new Map([[key,{run_id:'authoring-existing',control_token:'old-token'}]]);
-  const controllers=new Map([['authoring-existing','new-token']]);
+  const sessions=new Map([[key,{run_id:'authoring-existing',control_token:'example-old-token'}]]);
+  const controllers=new Map([['authoring-existing','example-new-token']]);
   assert.equal(mountedAuthoringSession(sessions,controllers,key),null);
   const calls=[];
   const api=async(operation,args)=>{
@@ -168,7 +168,7 @@ test('remount exposes exact Run inspection when detail adoption superseded a cac
     if(operation==='run_definition')return definition;
     if(operation==='get')return state();
     if(operation==='run_snapshot'){
-      assert.equal(args.control_token,'new-token');
+      assert.equal(args.control_token,'example-new-token');
       return {state:state(),events:[]};
     }
     throw new Error(`Unexpected operation ${operation}`);
@@ -176,6 +176,6 @@ test('remount exposes exact Run inspection when detail adoption superseded a cac
   const {inspected,controlToken}=await inspectControlledAuthoringRun(api,pack,'authoring-existing',controllers);
   assert.equal(inspected.continuation,'guidance');
   sessions.set(key,{run_id:inspected.run_id,control_token:controlToken});
-  assert.deepEqual(mountedAuthoringSession(sessions,controllers,key),{run_id:'authoring-existing',control_token:'new-token'});
+  assert.deepEqual(mountedAuthoringSession(sessions,controllers,key),{run_id:'authoring-existing',control_token:'example-new-token'});
   assert.deepEqual(calls,['run_definition','get','run_snapshot']);
 });

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join } from 'node:path';
@@ -756,11 +757,12 @@ test('invalid optional metadata remains a visible Draft blocker and does not sil
 
 test('known secret values are redacted with explicit Draft blockers; source bytes stay unchanged', async t => {
   const secret = 'sk-proj-' + 'x'.repeat(40); const f = await fixture(t, 'Use token ' + secret + ' in an example.');
-  await writeFile(join(f.sourceRoot, 'settings.json'), '{"password":"synthetic-sensitive-value"}');
+  const password = randomBytes(24).toString('hex');
+  await writeFile(join(f.sourceRoot, 'settings.json'), JSON.stringify({ password }));
   const sourceBytes = await readFile(f.source); const pack = await importCoarseSkill(f.store, f.source, { id: 'redacted' });
   const resources = await f.store.resources('redacted');
   assert(!resources['source/SKILL.md'].toString().includes(secret));
-  assert(!resources['source/settings.json'].toString().includes('synthetic-sensitive-value'));
+  assert(!resources['source/settings.json'].toString().includes(password));
   assert(pack.workflow.import_status.unresolved.some(item => item.code === 'CREDENTIAL_REDACTED'));
   assert.equal(pack.provenance.source_hash, digest(sourceBytes)); assert.deepEqual(await readFile(f.source), sourceBytes);
 });
@@ -778,14 +780,15 @@ test('credential scanning preserves executable references, type annotations and 
 });
 
 test('literal credentials remain blocked in source, configuration and documentation', () => {
+  const credential = randomBytes(24).toString('hex');
   for (const [sourcePath, source] of [
-    ['app.py', 'api_key: str = "synthetic-sensitive-value"'],
-    ['app.js', 'const password = "synthetic-sensitive-value";'],
-    ['config.yaml', 'password: synthetic-sensitive-value'],
-    ['install.md', '```bash\nexport API_KEY=synthetic-sensitive-value\n```'],
+    ['app.py', `api_key: str = "${credential}"`],
+    ['app.js', `const password = "${credential}";`],
+    ['config.yaml', `password: ${credential}`],
+    ['install.md', '```bash\nexport API_KEY=' + credential + '\n```'],
   ]) {
     const result = redactKnownCredentials(source, { sourcePath });
-    assert(!result.text.includes('synthetic-sensitive-value'), sourcePath);
+    assert(!result.text.includes(credential), sourcePath);
     assert.equal(result.findings.length, 1, sourcePath);
   }
 });

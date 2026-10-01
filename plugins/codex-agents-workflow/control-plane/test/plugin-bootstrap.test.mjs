@@ -5,14 +5,31 @@ import {mkdtemp,mkdir,readdir,writeFile,rm} from 'node:fs/promises';
 import {join,resolve} from 'node:path';
 import {tmpdir} from './physical-tempdir.mjs';
 import {installLocal} from '../../scripts/install-local.mjs';
-const {registeredRoot}=createRequire(import.meta.url)('../../scripts/mcp-bootstrap.cjs');
+const {installationNamespace,registeredRoot}=createRequire(import.meta.url)('../../scripts/mcp-bootstrap.cjs');
 
 test('bootstrap selects only the registry version, rejects disabled or ambiguous installation',()=>{
  const entry={pluginId:'codex-agents-workflow@codex-agents-workflow',installed:true,enabled:true,version:'0.8.0+current'};
- assert.equal(registeredRoot({installed:[entry]},resolve(tmpdir())).version,entry.version);
- assert.throws(()=>registeredRoot({installed:[entry,entry]},resolve(tmpdir())),/REGISTRY/);
- assert.throws(()=>registeredRoot({installed:[{...entry,enabled:false}]},resolve(tmpdir())),/REGISTRY/);
- assert.throws(()=>registeredRoot({installed:[{...entry,version:'../elsewhere'}]},resolve(tmpdir())),/REGISTRY/);
+ const namespace=resolve(tmpdir(),'codex-agents-workflow','codex-agents-workflow');
+ assert.equal(registeredRoot({installed:[entry]},namespace).version,entry.version);
+ assert.throws(()=>registeredRoot({installed:[entry,entry]},namespace),/REGISTRY/);
+ assert.throws(()=>registeredRoot({installed:[{...entry,enabled:false}]},namespace),/REGISTRY/);
+ assert.throws(()=>registeredRoot({installed:[{...entry,version:'../elsewhere'}]},namespace),/REGISTRY/);
+ assert.throws(()=>registeredRoot({},namespace),/REGISTRY/);
+ assert.throws(()=>installationNamespace(resolve(tmpdir(),'unrelated')),/NAMESPACE/);
+});
+
+test('bootstrap selects the launching namespace even when another source has a newer version',()=>{
+ const namespace=resolve(tmpdir(),'awesome-codex-plugins','codex-agents-workflow');
+ const entries=[
+  {pluginId:'codex-agents-workflow@codex-agents-workflow',installed:true,enabled:true,version:'99.0.0'},
+  {pluginId:'codex-agents-workflow@awesome-codex-plugins',installed:true,enabled:true,version:'1.1.0'},
+ ];
+ const selected=registeredRoot({installed:entries},namespace);
+ assert.equal(selected.marketplace,'awesome-codex-plugins');
+ assert.equal(selected.pluginId,entries[1].pluginId);
+ assert.equal(selected.root,join(namespace,'1.1.0'));
+ assert.throws(()=>registeredRoot({installed:[entries[0]]},namespace),/REGISTRY/);
+ assert.throws(()=>registeredRoot({installed:[entries[0],{...entries[1],enabled:false}]},namespace),/REGISTRY/);
 });
 
 test('upgrade deletes obsolete plugin cache versions and creates no rollback store',async()=>{

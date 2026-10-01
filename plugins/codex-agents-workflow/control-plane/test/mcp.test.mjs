@@ -22,7 +22,7 @@ test('plugin MCP uses a stable parent and fresh registry resolution with the glo
   const server = manifest.mcpServers['codex-agents-workflow'];
   assert.equal(server.enabled, true);
   assert.equal(server.tool_timeout_sec,3660);
-  assert.equal(server.cwd, '../../..');
+  assert.equal(server.cwd, '..');
   const bootstrap=await readFile(join(pluginDir,'scripts/mcp-bootstrap.cjs'),'utf8');
   // Compare the exact canonical source used by the builder: CRLF checkout
   // conversion is allowed, while meaningful source drift remains a failure.

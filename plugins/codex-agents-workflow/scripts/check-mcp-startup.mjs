@@ -2,8 +2,9 @@ import {spawn} from 'node:child_process';
 import {readFile} from 'node:fs/promises';
 import {dirname,resolve} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-export async function probe(root, {cwd=root,timeoutMs=10000,env=process.env}={}) {
+export async function probe(root, {cwd,timeoutMs=10000,env=process.env}={}) {
  const spec=JSON.parse(await readFile(resolve(root,'.mcp.json'),'utf8')).mcpServers['codex-agents-workflow'];
+ cwd??=resolve(root,spec.cwd??'.');
  return new Promise((resolveResult,reject)=>{
   const child=spawn(spec.command,spec.args,{cwd,env,windowsHide:true,stdio:['pipe','pipe','pipe']});
   let buffer='',stderr='',initialized=false,listed=false,settled=false,failure;

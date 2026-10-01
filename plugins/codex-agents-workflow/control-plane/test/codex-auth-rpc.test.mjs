@@ -22,8 +22,8 @@ test('credential-only RPC cannot create model threads or start login flows', asy
   }
   assert.deepEqual(f.sent, []);
   const result = f.client.call('getAuthStatus', { includeToken: true, refreshToken: true });
-  f.child.stdout.write(JSON.stringify({ id: f.sent[0].id, result: { authMethod: 'chatgpt', authToken: 'fixture-secret' } }) + '\n');
-  assert.equal((await result).authToken, 'fixture-secret');
+  f.child.stdout.write(JSON.stringify({ id: f.sent[0].id, result: { authMethod: 'chatgpt', authToken: 'example-fixture-secret' } }) + '\n');
+  assert.equal((await result).authToken, 'example-fixture-secret');
   assert.deepEqual(f.events, []); assert.deepEqual(f.client.events, []);
   await f.client.close();
 });
@@ -40,18 +40,18 @@ test('native observer can list child identities while catalog-only clients remai
 
 test('token refresh responses stay off worker tools and event logs; raw RPC errors are redacted', async () => {
   let refreshed = false; let toolCalled = false;
-  const f = fixture({ onAuthRefresh: async params => { assert.equal(params.previousAccountId, 'fixture-account'); refreshed = true; return { accessToken: 'fixture-secret', chatgptAccountId: 'fixture-account' }; }, onToolCall: () => { toolCalled = true; } });
+  const f = fixture({ onAuthRefresh: async params => { assert.equal(params.previousAccountId, 'fixture-account'); refreshed = true; return { accessToken: 'example-fixture-secret', chatgptAccountId: 'fixture-account' }; }, onToolCall: () => { toolCalled = true; } });
   f.child.stdout.write(JSON.stringify({ id: 10, method: 'account/chatgptAuthTokens/refresh', params: { previousAccountId: 'fixture-account' } }) + '\n');
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(refreshed, true); assert.equal(toolCalled, false);
-  assert.equal(f.sent[0].result.accessToken, 'fixture-secret');
+  assert.equal(f.sent[0].result.accessToken, 'example-fixture-secret');
   assert.deepEqual(f.events, []); assert.deepEqual(f.client.events, []);
   const failed = f.client.call('account/read', {});
-  f.child.stdout.write(JSON.stringify({ id: f.sent[1].id, error: { code: -1, message: 'fixture-secret', data: 'fixture-secret' } }) + '\n');
-  await assert.rejects(failed, error => !error.message.includes('fixture-secret') && error.message.includes('code=-1'));
+  f.child.stdout.write(JSON.stringify({ id: f.sent[1].id, error: { code: -1, message: 'example-fixture-secret', data: 'example-fixture-secret' } }) + '\n');
+  await assert.rejects(failed, error => !error.message.includes('example-fixture-secret') && error.message.includes('code=-1'));
   await f.client.close();
   const other = fixture();
-  assert.throws(() => other.client.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: 'fixture-secret' }), /Unsupported authentication flow/);
+  assert.throws(() => other.client.call('account/login/start', { type: 'chatgptAuthTokens', accessToken: 'example-fixture-secret' }), /Unsupported authentication flow/);
   await other.client.close();
 });
 
@@ -60,11 +60,11 @@ test('command RPC reports a safe Windows sandbox diagnostic without exposing the
   const failed=f.client.call('command/exec',{});
   const id=f.sent[0].id;
   f.child.stdout.write(JSON.stringify({id,error:{code:-32603,
-    message:'windows sandbox: helper_unknown_error: setup refresh had errors private-sentinel',data:'fixture-secret'}})+'\n');
+    message:'windows sandbox: helper_unknown_error: setup refresh had errors private-sentinel',data:'example-fixture-secret'}})+'\n');
   await assert.rejects(failed,error=>error.code==='CODEX_RPC_ERROR'
     &&error.rpc_diagnostic==='windows_sandbox_setup_refresh'
     &&error.message.includes('diagnostic=windows_sandbox_setup_refresh')
-    &&!error.message.includes('private-sentinel')&&!error.message.includes('fixture-secret'));
+    &&!error.message.includes('private-sentinel')&&!error.message.includes('example-fixture-secret'));
   await f.client.close();
 });
 

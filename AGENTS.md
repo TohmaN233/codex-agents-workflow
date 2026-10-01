@@ -84,6 +84,8 @@
 
 ## Release validation
 
+- MCP startup resolves its marketplace from the host-provided stable plugin namespace (cwd set to ".."), then queries that exact source's current installed version on every handshake. Never pin startup to the author's marketplace, select another source's same-named plugin, or hold a replaceable version directory as cwd. Startup audits record the marketplace, plugin ID, namespace, version, and physical server entry.
+
 - Keep experiment run records, usage ledgers, review transcripts, and generated packets outside the repository. Publish consolidated results in documentation without links to temporary experiment files.
 - Find path, hash, dependency, schema, Provider, prompt, permission, and handoff defects mechanically before starting a Workflow Run.
 - Run the complete control-plane test manifest and the installer/packaging verification after runtime changes.

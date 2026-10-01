@@ -72,7 +72,7 @@ test('managed native fan-out launches independent sub-Agents concurrently and jo
     async turn(prompt){started++;if(started===2)bothStarted.resolve();await bothStarted.promise;const index=settings.owner.attempt_id.endsWith('001')?1:2;const refs=JSON.parse(prompt.match(/\nInputs:\n([^\n]+)/)[1]);const slots=JSON.parse(await readFile(refs.items_json.path,'utf8'));const background=JSON.parse(await readFile(refs.background_json.path,'utf8'));assert.deepEqual(slots,[`slot-${index===1?'a':'b'}`]);assert.equal(background.api,'stable shared API');assert.doesNotMatch(prompt,/stable shared API|slot-a|slot-b/);return {output:JSON.stringify({outcome:'completed',result:{result:`render-${index}`},block_reason:''}),thread_id:`thread-${index}`,turn_id:`turn-${index}`,usage:{unknown:true,input_tokens:index,output_tokens:1},audit:{index},item_types:['agentMessage'],command_audit:[{status:'completed',output:'x'.repeat(140000)}]};},
     async close(){settings.toolBroker.revoke();},async interrupt(){},
   })});
-  const args={node_id:'render',attempt_id:'attempt-1',lease_token:'lease-1',control_token:'control-1'};
+  const args={node_id:'render',attempt_id:'attempt-1',lease_token:'lease-1',control_token:'example-control-1'};
   const prepared={envelope,adapter:{model:'gpt-test',effort:'low',executable_sha256:'b'.repeat(64),settings:{authentication:{mode:'environment_api_key'},codex_binary:'unused'}},prompt:'Render the assigned animation slot.'};
   const launched=await manager.launch(runtime,'run-1',args,prepared);assert.equal(launched.dispatched,true);await manager.wait('run-1','attempt-1');
   assert.equal(started,2);assert.deepEqual(receipts[0].subagent_dispatch_ids,['managed-attempt-1-001','managed-attempt-1-002']);

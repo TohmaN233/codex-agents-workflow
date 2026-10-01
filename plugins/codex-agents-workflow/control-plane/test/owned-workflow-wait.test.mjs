@@ -17,11 +17,11 @@ test('Host continues exact wait objects and returns the controller continuation 
 });
 test('Host rejects another Run instead of guessing or continuing',async()=>{
  await assert.rejects(waitForOwnedWorkflow({call:async()=>({run_id:randomUUID(),wake_reason:'timeout'})},
-  {run_id:randomUUID(),control_token:'opaque-controller-token'}),{code:'RUN_IDENTITY'});
+  {run_id:randomUUID(),control_token:'example-opaque-controller-token'}),{code:'RUN_IDENTITY'});
 });
 
 test('native handoff returns the exact Host-supplied controller continuation',async()=>{
- const started={run_id:'native-run',control_token:'exact-native-authority'};
+ const started={run_id:'native-run',control_token:'example-exact-native-authority'};
  const service={async call(operation,args){
   assert.equal(operation,'wait');assert.deepEqual(args,{run_id:started.run_id,control_token:started.control_token,timeout_ms:3600000});
   return {run_id:started.run_id,status:'running',wake_reason:'native_handoff_required',next_action:'workflow_native_next',
@@ -35,7 +35,7 @@ test('native handoff returns the exact Host-supplied controller continuation',as
 test('pre-aborted originating signal cancels with the exact Host token and propagates its reason',async()=>{
  const abortReason=Object.assign(new Error('start was cancelled'),{code:'START_ABORTED'});
  const controller=new AbortController();controller.abort(abortReason);
- const started={run_id:'opaque-run-73',control_token:'host-token::opaque/73'};let calls=0;
+ const started={run_id:'opaque-run-73',control_token:'example-host-token::opaque/73'};let calls=0;
  const service={async call(operation,args,options){
   calls++;
   assert.equal(operation,'cancel');
@@ -48,7 +48,7 @@ test('pre-aborted originating signal cancels with the exact Host token and propa
 });
 
 test('abort racing an in-flight wait cancels once and propagates the original wait cancellation',async()=>{
- const run_id='opaque-run-race',control_token='exact-host-authority-race';
+ const run_id='opaque-run-race',control_token='example-exact-host-authority-race';
  const controller=new AbortController();
  const waitCancellation=Object.assign(new Error('wait observed abort'),{code:'WAIT_ABORT'});
  let cancelled=0;
@@ -84,7 +84,7 @@ test('preflight environment attention passes through before Run identity validat
 
 test('abort racing a completed wait takes precedence and cancels the owned Run',async()=>{
  const abortReason=Object.assign(new Error('start aborted as wait completed'),{code:'START_ABORTED'});
- const controller=new AbortController();const started={run_id:'race-run',control_token:'race-token'};let cancelled=0;
+ const controller=new AbortController();const started={run_id:'race-run',control_token:'example-race-token'};let cancelled=0;
  const service={async call(operation,args,options){
   if(operation==='wait'){
    assert.equal(args.run_id,started.run_id);assert.equal(options.signal,controller.signal);

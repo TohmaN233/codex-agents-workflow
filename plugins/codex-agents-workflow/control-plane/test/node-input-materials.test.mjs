@@ -133,7 +133,7 @@ test('materializes projected inputs as exact sidecars and compiles only local re
       bindings: ['context', 'verification'],
       references: [{ path: 'workflow-assets/guide.md', sha256: 'a'.repeat(64), bytes: 42 }],
     },
-    constraints: { execution_binding: { source: 'host', token: 'keep-metadata' } },
+    constraints: { execution_binding: { source: 'host', token: 'example-keep-metadata' } },
     completion_contract: { required: ['result'] },
   };
 
