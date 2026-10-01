@@ -17,11 +17,11 @@
     "@modelcontextprotocol/sdk": "1.29.0",
     "@openai/mcp-extensions": "0.1.0",
     "@types/react": "19.2.18",
-    "@types/react-dom": "19.2.7",
+    "@types/react-dom": "19.3.0",
     "@xyflow/react": "12.11.6",
     "esbuild": "0.28.2",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
+    "react-dom": "19.3.0",
     "typescript": "5.9.3",
     "yaml": "2.9.0",
     "zod": "4.4.3"
