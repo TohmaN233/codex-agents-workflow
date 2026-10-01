@@ -13,7 +13,7 @@
     "check:web": "tsc -p web-src/tsconfig.json && node scripts/build-workflow-web.mjs --check"
   },
   "devDependencies": {
-    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/ext-apps": "2.0.3",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@openai/mcp-extensions": "0.1.0",
     "@types/react": "19.2.18",
