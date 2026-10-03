@@ -34,10 +34,10 @@ test('confirmed Host Main termination reaches the waiting caller after Run cance
 test('Host stop at a native node wakes the controller with the native handoff action',async t=>{
   const f=await fixture(t);
   f.worker={phase:'attention',outcome:{status:'running',stop_reason:'non_main_semantic',node_id:'writer'}};
-  const result=await f.wait({controlToken:'exact-controller-token'});
+  const result=await f.wait({controlToken:'example-exact-controller-token'});
   assert.equal(result.wake_reason,'native_handoff_required');
   assert.equal(result.next_action,'workflow_native_next');
-  assert.deepEqual(result.next_action_args,{run_id:'trial',control_token:'exact-controller-token'});
+  assert.deepEqual(result.next_action_args,{run_id:'trial',control_token:'example-exact-controller-token'});
   assert.deepEqual(result.host_worker.outcome,f.worker.outcome);
 });
 test('a journal failure wakes the waiting controller before its long deadline',async t=>{
@@ -54,9 +54,9 @@ test('subagent result wakes once per caller cursor, ordinary progress does not',
   assert.equal((await f.wait({afterSequence:2,timeoutMs:20})).wake_reason,'timeout');
 });
 test('timeout returns waiting continuation and cancellation does not cancel the Run',async t=>{
-  const f=await fixture(t);const result=await f.wait({controlToken:'exact-controller-token',timeoutMs:20});
+  const f=await fixture(t);const result=await f.wait({controlToken:'example-exact-controller-token',timeoutMs:20});
   assert.equal(result.next_action,'workflow_wait');assert.equal(result.status,'running');
-  assert.deepEqual(result.next_action_args,{run_id:'trial',control_token:'exact-controller-token',after_sequence:1,timeout_ms:20});
+  assert.deepEqual(result.next_action_args,{run_id:'trial',control_token:'example-exact-controller-token',after_sequence:1,timeout_ms:20});
   const controller=new AbortController();const pending=f.wait({signal:controller.signal});controller.abort();
   await assert.rejects(pending,{code:'WORKFLOW_WAIT_CANCELLED'});assert.equal(f.record.state.status,'running');
 });

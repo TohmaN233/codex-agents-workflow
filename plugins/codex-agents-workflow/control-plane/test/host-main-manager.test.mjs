@@ -395,7 +395,7 @@ test('Host Main retains a session handed off before factory initialization fails
     get: async () => state,
   };
   const binding = { protocol: 'host-main-v1', run_id: 'run-factory', control_token: 'control', node_id: 'work',
-    attempt_id: 'attempt-work', lease_token: 'lease-work', owner: 'logical-main', final_acceptance: false };
+    attempt_id: 'attempt-work', lease_token: 'example-lease-work', owner: 'logical-main', final_acceptance: false };
   const handoff = { status: 'running', stop_reason: 'main_node', host_binding: binding,
     agent_packet: { prompt: envelope.prompt_template, response_form: { schema: output(false) } } };
   const strict = { enabled: true, codex_binary: process.execPath, binary_sha256: 'b'.repeat(64), authentication: { mode: 'managed_chatgpt', api_key_env: '' }, main_model: 'gpt-5.6-terra', main_reasoning_effort: 'medium', inactivity_timeout_ms: 0 };

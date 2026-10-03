@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import test from 'node:test';
+import { Script } from 'node:vm';
 
 import { loadConfig, saveConfig } from '../lib/config.mjs';
 import { ConnectorRegistry } from '../connectors/registry.mjs';
@@ -85,7 +86,7 @@ test('connector task creation reserves one active workspace atomically', async (
 test('Cursor profile emits valid browser JavaScript for a Windows workspace', () => {
   const workspace = String.raw`C:\Users\fixture\Documents\repo`;
   for (const expression of [cursorProbeExpression(workspace), cursorCreateAgentExpression(workspace)]) {
-    assert.doesNotThrow(() => new Function(`return ${expression};`));
+    assert.doesNotThrow(() => new Script(`(${expression})`));
   }
 });
 

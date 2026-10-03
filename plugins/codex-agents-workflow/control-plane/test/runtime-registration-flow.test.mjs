@@ -175,7 +175,7 @@ test('registration recovery journals attention, rebinds before the next claim, a
   const discover = runtime.environmentResolver;
   runtime.environmentVerifier = async () => { verificationCalls++; return []; };
   runtime.environmentResolver = async () => { discoveryCalls++; throw new Error('must not discover'); };
-  await assert.rejects(runtime.ensureRuntimeEnvironment(run.run_id, { control_token: 'wrong-controller' }), { code: 'RUN_AUTHORITY' });
+  await assert.rejects(runtime.ensureRuntimeEnvironment(run.run_id, { control_token: 'example-wrong-controller' }), { code: 'RUN_AUTHORITY' });
   await assert.rejects(runtime.ensureRuntimeEnvironment(run.run_id, {
     control_token: run.control_token, expected_sequence: initialRecord.sequence + 1,
   }), { code: 'RUN_SEQUENCE_CONFLICT' });
@@ -186,7 +186,7 @@ test('registration recovery journals attention, rebinds before the next claim, a
   runtime.environmentResolver = discover;
 
   await assert.rejects(f.service.call('recheck_runtime_environment', {
-    run_id: run.run_id, control_token: 'wrong-controller',
+    run_id: run.run_id, control_token: 'example-wrong-controller',
   }), { code: 'RUN_AUTHORITY' });
 
   const first = await runtime.claimHostMain(run.run_id, {

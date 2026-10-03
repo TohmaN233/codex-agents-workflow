@@ -4,7 +4,7 @@ import { createHostAuthBroker, decodeHostAccess } from '../lib/execution/codex-h
 
 function status(account = 'test-account', exp = 5000) {
   const payload = { exp, 'https://api.openai.com/auth': { chatgpt_account_id: account, chatgpt_plan_type: 'test-plan' } };
-  return { authMethod: 'chatgpt', authToken: 'fixture.' + Buffer.from(JSON.stringify(payload)).toString('base64url') + '.not-real' };
+  return { authMethod: 'chatgpt', authToken: 'example-fixture.' + Buffer.from(JSON.stringify(payload)).toString('base64url') + '.not-real' };
 }
 test('host authentication reuses an official token concurrently without copying credentials or starting threads', async () => {
   let opened = 0; let closed = 0; const methods = []; let account = 'test-account';
@@ -24,8 +24,8 @@ test('host authentication reuses an official token concurrently without copying 
   assert.equal(closed, 2); broker.clear();
 });
 test('missing, expired and malformed host auth fail explicitly without browser or credential disclosure', async () => {
-  assert.throws(() => decodeHostAccess({ authMethod: 'apikey', authToken: 'private-sentinel' }), { code: 'HOST_AUTH_UNAVAILABLE' });
-  assert.throws(() => decodeHostAccess({ authMethod: 'chatgpt', authToken: 'private-sentinel' }), error => error.code === 'HOST_AUTH_SCHEMA' && !error.message.includes('private-sentinel'));
+  assert.throws(() => decodeHostAccess({ authMethod: 'apikey', authToken: 'example-private-sentinel' }), { code: 'HOST_AUTH_UNAVAILABLE' });
+  assert.throws(() => decodeHostAccess({ authMethod: 'chatgpt', authToken: 'example-private-sentinel' }), error => error.code === 'HOST_AUTH_SCHEMA' && !error.message.includes('example-private-sentinel'));
   assert.throws(() => decodeHostAccess(status('test-account', 1), { now: 1000000 }), { code: 'HOST_AUTH_EXPIRED' });
   let closed = false;
   const broker = createHostAuthBroker({ binary: '/test', cwd: '/test', clientFactory: () => ({ initialized() {}, async call(method) { return method === 'initialize' ? {} : { authMethod: null, authToken: null }; }, async close() { closed = true; } }) });

@@ -185,7 +185,7 @@ test('environment API-key mode selects an env-key provider without changing shar
     },
     async waitFor() { return { params: { turn: { id: 'turn-key', status: 'completed' } } }; } };
   const session = await createCodexSession({ parent: root, binary, expectedBinaryHash: digest(await readFile(binary)),
-    cwd: root, model: 'fixture-model', effort: 'high', access: 'bounded_write', allowedPaths:['.'], env: { CODEX_HOME: userHome, TASK_API_KEY: 'fixture-secret-never-log' },
+    cwd: root, model: 'fixture-model', effort: 'high', access: 'bounded_write', allowedPaths:['.'], env: { CODEX_HOME: userHome, TASK_API_KEY: 'example-fixture-secret-never-log' },
     authentication: { mode: 'environment_api_key', api_key_env: 'TASK_API_KEY' },
     skillPolicy: { implicit: 'deny', ambient_allow: [], shadowed_skill_paths: [] },
     clientFactory: (_binary, options) => { launch = options; return client; } });
@@ -324,7 +324,7 @@ function metadataClient(cwd, skills) {
 }
 
 test('Strict profile rejects changed binary and owner token and strips inherited overrides', async t => {
-  const f = await fixture(t); const env = isolatedEnvironment({ PATH: 'fixture-path', USERPROFILE: 'fixture-user', CODEX_HOME: 'shared', CODEX_CONFIG: 'untrusted', OPENAI_API_KEY: 'sensitive', SOL_CONTROL_DISABLED: '1' }, f.profile.home);
+  const f = await fixture(t); const env = isolatedEnvironment({ PATH: 'fixture-path', USERPROFILE: 'fixture-user', CODEX_HOME: 'shared', CODEX_CONFIG: 'untrusted', OPENAI_API_KEY: 'example-sensitive', SOL_CONTROL_DISABLED: '1' }, f.profile.home);
   assert.equal(env.CODEX_HOME, f.profile.home); assert.equal(env.CODEX_CONFIG, undefined); assert.equal(env.OPENAI_API_KEY, undefined); assert.equal(env.PATH, 'fixture-path');
   await writeFile(f.options.binary, 'Changed binary'); await assert.rejects(buildCodexProfile(f.options), { code: 'CODEX_BINARY_CHANGED' });
   await assert.rejects(cleanupCodexProfile({ ...f.profile, owner_token: 'wrong' }), { code: 'PROFILE_OWNER' });

@@ -1062,7 +1062,7 @@ export function mountSettings(root = document) {
   settingsRoot = root;
   const workflowLink = $('#workflow-workspace');
   if (!workflowLink) throw new Error('The Provider settings view is missing its Workflow workspace link.');
-  workflowLink.href = isMcpAppContext ? '#workflows' : '/workflows#token=' + encodeURIComponent(token);
+  workflowLink.href = isMcpAppContext ? '#workflows' : '/workflows#' + new URLSearchParams({ token }).toString();
   if (isMcpAppResource) workflowLink.addEventListener('click', async (event) => {
     event.preventDefault();
     if (!await settingsViewState.canLeave(settingsRoot, state.dirty, () => confirmWorkbench(t('放弃未保存的更改并返回工作流工作区？', 'Discard unsaved Provider changes and return to the Workflow workspace?')), () => { state.config = structuredClone(state.savedConfig ?? state.config); render(); })) return;

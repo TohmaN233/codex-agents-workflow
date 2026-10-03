@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Script } from 'node:vm';
 import {mkdir,mkdtemp,readFile,readdir,rm,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {dirname,join} from 'node:path';
@@ -92,12 +93,12 @@ test('native resource guidance gives the exact pinned MCP call without changing 
     permissions:{workspace:'C:/workspace',access:'read_only',allowed_paths:[]}};
   const pins={root:{workflow:{name:'Sample',nodes:[definition],edges:[],context_projection_version:2,
     skill_policy:{mode:'cooperative',implicit:'deny',ambient_allow:[],shadowed_skill_paths:[]}}},providers:[{id:'native'}]};
-  const envelope=executionEnvelope(definition,state,pins,{id:'attempt'},'private-lease-token');
+  const envelope=executionEnvelope(definition,state,pins,{id:'attempt'},'example-private-lease-token');
   const original=JSON.stringify(envelope);
   const mainPrompt=compilePrompt(envelope,64000);
   const dispatched={handoff_required:true,adapter:{execution:'native_agent',spawn_config:{agent_type:'default'}},envelope,compiled_prompt:mainPrompt};
-  const packet=nativeAgentHandoff({state,control_token:'private-controller-token'},definition,
-    {attempt_id:'attempt',lease_token:'private-lease-token'},dispatched).packets[0];
+  const packet=nativeAgentHandoff({state,control_token:'example-private-controller-token'},definition,
+    {attempt_id:'attempt',lease_token:'example-private-lease-token'},dispatched).packets[0];
   assert.match(mainPrompt,/Use read_workflow_resource; cite resource IDs/);
   assert.doesNotMatch(mainPrompt,/mcp__codex_agents_workflow__workflow_read_resource/);
   assert.doesNotMatch(packet.prompt,/Use read_workflow_resource; cite resource IDs/);
@@ -105,26 +106,26 @@ test('native resource guidance gives the exact pinned MCP call without changing 
   const call=packet.prompt.match(/tools\.mcp__codex_agents_workflow__workflow_read_resource\(([^\n]+?)\)/)?.[0];
   assert.ok(call,'Native packet must carry an executable exact-reader call');
   for(const resource_path of definition.resources){
-    const args=new Function('tools','resource_path',`return ${call}`)({mcp__codex_agents_workflow__workflow_read_resource:value=>value},resource_path);
-    assert.deepEqual(args,{workflow_id:'sample-workflow',revision_hash:'a'.repeat(64),resource_path});
+    const args=new Script(call).runInNewContext({tools:{mcp__codex_agents_workflow__workflow_read_resource:value=>value},resource_path},{timeout:1000});
+    assert.deepEqual({...args},{workflow_id:'sample-workflow',revision_hash:'a'.repeat(64),resource_path});
   }
   const discovery=packet.prompt.match(/ALL_TOOLS\.find\([^\n]+?\)/)?.[0];
   assert.ok(discovery,'Lazy discovery must select one exact tool name');
   const tools=[{name:'workflow_read_resource_decoy'},{name:'mcp__codex_agents_workflow__workflow_read_resource'}];
-  assert.equal(new Function('ALL_TOOLS',`return ${discovery}`)(tools),tools[1]);
-  assert.doesNotMatch(JSON.stringify(packet),/private-controller-token|private-lease-token/);
+  assert.equal(new Script(discovery).runInNewContext({ALL_TOOLS:tools},{timeout:1000}),tools[1]);
+  assert.doesNotMatch(JSON.stringify(packet),/example-private-controller-token|example-private-lease-token/);
   assert.equal(JSON.stringify(envelope),original);
   assert.equal(compilePrompt(envelope,64000),mainPrompt);
   const fanoutDefinition={...definition,subagent_count:'auto',input_bindings:{task:'/inputs/task',jobs:'/inputs/jobs'},
     fanout:{input:'jobs',item_name:'job',distribution:'one_per_item',result_output:'sources'},
     outputs_schema:{type:'object',properties:{sources:{type:'array',items:definition.outputs_schema}}}};
   const fanoutState={...state,inputs:{...state.inputs,jobs:['one','two']}};
-  const fanoutEnvelope=executionEnvelope(fanoutDefinition,fanoutState,pins,{id:'attempt'},'private-lease-token');
+  const fanoutEnvelope=executionEnvelope(fanoutDefinition,fanoutState,pins,{id:'attempt'},'example-private-lease-token');
   const fanout=nativeAgentHandoff({state:fanoutState},fanoutDefinition,{attempt_id:'attempt'},
     {...dispatched,envelope:fanoutEnvelope,compiled_prompt:'Unprojected routing input must not reach children.'});
   for(const child of fanout.packets){
     assert.ok(child.prompt.includes(call));
-    assert.doesNotMatch(child.prompt,/Use read_workflow_resource; cite resource IDs|Unprojected routing input|private-lease-token/);
+    assert.doesNotMatch(child.prompt,/Use read_workflow_resource; cite resource IDs|Unprojected routing input|example-private-lease-token/);
   }
 });
 

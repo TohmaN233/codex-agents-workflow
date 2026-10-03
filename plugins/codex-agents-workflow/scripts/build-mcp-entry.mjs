@@ -15,8 +15,9 @@ export async function buildMcpEntry() {
   const manifestPath=resolve(root,'.mcp.json');
   const manifest=JSON.parse(await readFile(manifestPath,'utf8'));
   const spec=manifest.mcpServers['codex-agents-workflow'];
-  // From an installed revision this is the cache root, outside disposable versions.
-  spec.cwd='../../..';
+  // The version's stable parent identifies this installation's marketplace.
+  // Do not hold the replaceable version directory as the process cwd.
+  spec.cwd='..';
   spec.tool_timeout_sec=3660;
   spec.args=['-e',buildBootstrapSource(source)];
   spec.env_vars=[...new Set([...spec.env_vars,'CODEX_CLI_PATH'])];

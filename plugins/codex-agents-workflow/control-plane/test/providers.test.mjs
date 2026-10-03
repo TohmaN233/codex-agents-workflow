@@ -63,17 +63,17 @@ test('direct OpenAI-compatible invocation is text-only and env-authenticated', a
   }, {
     configPath,
     defaultConfigPath: DEFAULT_CONFIG_PATH,
-    env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
+    env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'example-fixture-secret' },
   });
 
   assert.equal(result.response.text, 'Advisory result');
   assert.equal(result.advisory_only, true);
-  assert.equal(authorization, 'Bearer fixture-secret');
+  assert.equal(authorization, 'Bearer example-fixture-secret');
   assert.equal(requestBody.model, 'mock-model');
   assert.equal(requestBody.messages.at(-1).role, 'user');
   assert.match(requestBody.messages.at(-1).content, /Compare two parser designs/);
   assert.equal('tools' in requestBody, false);
-  assert.doesNotMatch(JSON.stringify(result), /fixture-secret/);
+  assert.doesNotMatch(JSON.stringify(result), /example-fixture-secret/);
 });
 
 test('direct API stays disabled until both provider and global switch allow it', async () => {
@@ -94,7 +94,7 @@ test('direct API stays disabled until both provider and global switch allow it',
     }, {
       configPath,
       defaultConfigPath: DEFAULT_CONFIG_PATH,
-      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
+      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'example-fixture-secret' },
     }),
     /direct API invocation is disabled/,
   );
@@ -118,7 +118,7 @@ test('direct API deadline also bounds a response body that stalls after headers'
   const started = Date.now();
   await assert.rejects(
     invokeOpenAICompatible(provider, 'body timeout', {
-      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
+      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'example-fixture-secret' },
       fetchImpl: async () => ({ ok: true, status: 200, headers: new Headers(), body }),
     }),
     /timed out after 1000ms/,
@@ -138,7 +138,7 @@ test('direct API cancels a response body rejected by declared size', async () =>
   const provider = config.providers.find((item) => item.id === 'custom-openai-compatible');
   await assert.rejects(
     invokeOpenAICompatible(provider, 'oversized response', {
-      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'fixture-secret' },
+      env: { CODEX_WORKFLOW_CUSTOM_API_KEY: 'example-fixture-secret' },
       fetchImpl: async () => ({
         ok: true,
         status: 200,
