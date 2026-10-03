@@ -22,7 +22,9 @@ test('workflow-control-plane reserves Runs for concrete execution intent', async
   assert.match(skill, /host already supplies an exact Ready Workflow ID\/revision or a node\s+`agent_packet`/i);
   assert.match(normalized, /host owns launch, node claims, identities, leases, receipts, context projection, completion envelopes, retries and continuation/i);
   assert.match(normalized, /Drafts, retired Role graphs, previous revisions and conversion history are not execution context/i);
-  assert.match(normalized, /Host advances deterministic and logical Main work/i);
+  assert.match(normalized, /Host advances deterministic and Main worker work/i);
+  assert.match(normalized, /orchestration_handoff.*initiating conversation/i);
+  assert.match(normalized, /workflow_orchestration_complete.*newly authored semantic/i);
   assert.match(normalized, /launch its exact `spawn_config` plus `prompt` with `spawn_agent`/i);
   assert.match(normalized, /materializes one local task bundle/i);
   assert.match(native, /must not create an App Server thread or Codex task/i);

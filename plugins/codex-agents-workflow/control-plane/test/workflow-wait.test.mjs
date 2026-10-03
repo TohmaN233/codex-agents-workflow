@@ -76,3 +76,13 @@ test('an in-flight journal append gets a bounded grace period, persistent corrup
   assert.equal(result.wake_reason,'succeeded');
   await assert.rejects(f.wait({readState:async()=>{throw torn();}}),{code:'RUN_JOURNAL_TORN'});
 });
+
+
+test('Host orchestration handoff wakes the initiating conversation without a polling turn',async t=>{
+  const f=await fixture(t);
+  f.worker={phase:'attention',outcome:{status:'running',stop_reason:'main_orchestration',node_id:'integration'}};
+  const result=await f.wait({controlToken:'exact-controller-token'});
+  assert.equal(result.wake_reason,'native_handoff_required');
+  assert.equal(result.next_action,'workflow_native_next');
+  assert.equal(result.host_worker.outcome.stop_reason,'main_orchestration');
+});

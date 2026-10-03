@@ -96,6 +96,7 @@ const specs = [
   ['next', 'Read ready node IDs and pending approvals. This does not claim or dispatch work.', ['run_id'], []],
   ['native_next', 'Continue the model session’s current Workflow Run. The Host owns Run authority and every receipt field. Spawn every returned packet with its exact spawn_config and prompt, then call workflow_native_spawned_batch with no arguments.', [], []],
   ['native_spawned_batch', 'Acknowledge that every spawn_agent call in the Host-released window succeeded. The Host journals its persisted indices, task names and canonical Agent paths; pass no arguments.', [], []],
+  ['orchestration_complete', 'Complete the current conversation orchestration node with newly authored semantic output only. The Host resolves the Run, node, receipt, paths and completion, then advances the Workflow.', ['output'], []],
   ['native_followed_up', 'Acknowledge one successful collaboration.followup_task call for the Host-persisted follow-up intent; pass no arguments.', [], []],
   ['drive', 'Advance one bounded Host-controlled step for an ordinary Run without logical Main nodes. Built-in authoring Runs use their pinned planner/reviewer controller and may incur model usage. A Main-only Run is owned by its detached Host worker: workflow_drive rejects model calls with HOST_MAIN_BRIDGE_REQUIRED and does not report whether that worker has already dispatched nodes. Semantic nodes, approvals, missing input, ambiguity and failures return an exact stop reason.', [...main], ['owner', 'request_prefix']],
   ['claim_node', 'Atomically claim one ready node and return its narrow execution lease. Main nodes require the exact main actor.', [...main, 'node_id', 'owner', 'request_id'], ['expected_sequence']],
@@ -131,7 +132,7 @@ const effectGroups = [
   [false, false, false, 'build_workflow inline_skill create publish claim_node complete_node fail_node dispatch_receipt record_usage prepare_integration'],
   [false, true, false, 'delete write_resource save recover_control recover_claim reattach_handoff recover_strict_result reattach_subworkflow pause resume approve'],
   [false, false, true, 'import_skill export_workflow_package prepare_environment reattach_connector reconcile_connector collect_connector collect_subworkflow collect_strict'],
-  [false, true, true, 'start_role_connector install_workflow_package start control_connector native_next native_spawned_batch native_followed_up drive retry_node cancel dispatch integrate_parallel cleanup_parallel cleanup_strict_orphans'],
+  [false, true, true, 'start_role_connector install_workflow_package start control_connector native_next native_spawned_batch native_followed_up orchestration_complete drive retry_node cancel dispatch integrate_parallel cleanup_parallel cleanup_strict_orphans'],
 ];
 const effects = new Map(effectGroups.flatMap(([readOnlyHint, destructiveHint, openWorldHint, names]) =>
   names.split(' ').map(name => [name, { readOnlyHint, destructiveHint, openWorldHint }])));

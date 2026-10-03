@@ -317,6 +317,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     const completion_contract={on_missing:onMissing,outcome:semanticOutcome,...(failOnFalse.length?{fail_on_false:failOnFalse}:{})};
     const task_type=review?'review':activity.complexity==='complex'?'complex_implementation':activity.operation==='write'?'implementation':'planning';
     const tool=activity.capability?.kind==='registered_tool';
+    requireValue(activity.main_mode === undefined || activity.ownership === 'main' && !tool, 'MAIN_EXECUTION_MODE', 'Main context modes belong only to semantic Main activities');
     requireValue(!tool || localKey(activity.capability.semantic_name),'AUTHORING_FORMAT','Registered-tool activities need one exact semantic tool name');
     const fanoutAppendix=fanoutContract?(fanoutContract.result_mode==='per_item'
       ?`\n\nProcess only the supplied batch. Return one completed${fanoutContract.shared_change_field?', delegated':''} or blocked entry per supplied item in Host order as the Host packet specifies. Preserve accepted item work during targeted repair.`
@@ -327,6 +328,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     const node=tool
       ? {id,type:'tool',semantic_key:activity.key,name:activity.purpose ?? activity.key,tool:activity.capability.semantic_name,...(outputs_schema?{outputs_schema}:{}),completion_contract,resource_refs,confidence:1,...evidence(activity.source_sections,selectedContracts)}
       : {id,type:'agent',semantic_key:activity.key,name:activity.purpose ?? activity.key,operation_mode:activity.operation,task_type,routing_reason:`Host classified ${activity.key} from semantic kind, operation and complexity.`,prompt_template:prompt,...(outputs_schema?{outputs_schema}:{}),...(Object.keys(output_validators).length?{output_validators}:{}),completion_contract,...(activity.ownership==='isolated_worker'?{subagent_count:activity.fanout?.count_mode==='fixed'?activity.fanout.fixed_count:'auto'}:{}),...(fanoutContract?{fanout:fanoutContract}:{}),...(activity.repeat_until?{retry_max_attempts:activity.repeat_until.max_attempts}:{}),resource_refs,confidence:1,...evidence(activity.source_sections,selectedContracts)};
+    if(!tool && activity.ownership === 'main' && (activity.main_mode !== undefined || routing?.selection_mode !== 'automatic')) node.main_mode=activity.main_mode ?? 'worker';
     if(!tool && routing?.selection_mode==='automatic'){
       node.execution_target=activity.ownership==='main'?'main':'subagent';
       if(node.execution_target==='subagent')node.provider_choice=providerFor(task_type);

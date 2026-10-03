@@ -1530,3 +1530,23 @@ test('portable Workflow package validates content identity and installs atomical
   const {package_sha256:_old,...payload}=incomplete;incomplete.package_sha256=digest(canonicalJSON(payload));
   assert.throws(()=>validateWorkflowPackage(incomplete),{code:'WORKFLOW_RESOURCE_MISSING'});
 });
+
+
+test('shared authoring compiler preserves explicit orchestration and worker context choices',()=>{
+  const {pack,resources}=sourceFixture(),ids=sourceSectionInventory(resources).map(item=>item.section_id);
+  const blueprint={contract:CURRENT_SEMANTIC_BLUEPRINT_CONTRACT,purpose:'Use existing conversation conclusions.',source_dispositions:ids.map(section_id=>({section_id,disposition:'workflow',activity_keys:['integrate','inspect'],note:'Required.'})),requirement_assignments:[],runtime_dependencies:[],records:[],lists:[],enums:[],activities:[
+    {key:'integrate',instructions:'Apply the decisions already made in the initiating conversation.',profile:'orchestration_write',source_sections:ids,inputs:[],outputs:[{name:'result',kind:'text',values:[],type_ref:''}],tool:''},
+    {key:'inspect',instructions:'Inspect the declared integration result.',profile:'main_read',source_sections:ids,inputs:[{name:'result',from:'integrate.result'}],outputs:[{name:'verdict',kind:'text',values:[],type_ref:''}],tool:''},
+  ],approvals:[],sequences:[],parallels:[],choices:[]};
+  validateData(blueprint,CURRENT_AUTHORING_SEMANTIC_BLUEPRINT_SCHEMA);
+  const forged=new WorkflowForge().compile({pack,resources,blueprint,context:{routing_rules:rules,routing_catalog:providers,providers,roles}});
+  const orchestration=forged.compiled.workflow.nodes.find(node=>node.origin?.semantic_key==='integrate');
+  const worker=forged.compiled.workflow.nodes.find(node=>node.origin?.semantic_key==='inspect');
+  assert.deepEqual(orchestration.executor,{kind:'main',mode:'orchestration'});
+  assert.equal(forged.compiled.workflow.skill_policy.mode,'cooperative');
+  assert.equal(worker.executor.kind,'main');assert.notEqual(worker.executor.mode,'orchestration');
+  assert.equal(worker.input_bindings.result,`/nodes/${orchestration.id}/output/result`);
+  const fixed=new WorkflowForge().compile({pack,resources,blueprint,context:{routing_rules:{...rules,selection_mode:'fixed'},routing_catalog:providers,providers,roles}});
+  assert.deepEqual(fixed.compiled.workflow.nodes.find(node=>node.origin?.semantic_key==='integrate').executor,{kind:'main',mode:'orchestration'});
+  assert.deepEqual(fixed.compiled.workflow.nodes.find(node=>node.origin?.semantic_key==='inspect').executor,{kind:'main',mode:'worker'});
+});

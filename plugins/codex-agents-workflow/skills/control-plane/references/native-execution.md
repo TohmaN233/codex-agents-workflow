@@ -1,7 +1,7 @@
 # Native execution handoff
 
 Cooperative `native_agent` nodes run as real Codex native subagents. The detached
-Host advances deterministic and logical Main work, then stops at the native node.
+Host advances deterministic and Main worker work, then stops at the native node.
 It must not create an App Server thread or Codex task for that node.
 
 Codex places the authenticated current conversation UUID in MCP request metadata.
@@ -56,3 +56,10 @@ content-addressed packet after recovery. It never releases a later item first.
 The three argumentless continuation calls above are the only native execution
 interface. Spawn receipts, dispatch sealing and result commits are internal Host
 operations and cannot accept model-transcribed IDs, indexes, hashes or results.
+
+
+A `main_orchestration` stop resumes this initiating conversation. On the returned
+`orchestration_handoff`, execute the Host task bundle using existing context and
+normal tools, then call `workflow_orchestration_complete` with semantic `output`
+only. The Host binds the exact Run and attempt; do not spawn a substitute helper
+or copy its identities. Follow the returned action for subsequent nodes.

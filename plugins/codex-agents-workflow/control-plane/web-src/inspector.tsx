@@ -33,7 +33,7 @@ export function Inspector({ workflow, selection, providers, change, select, inli
     patch({ executor: { kind: 'thread', provider_id: node.executor.provider_id, lifecycle } });
   };
   const setAgentExecutor = (kind: string) => {
-    if (kind === 'main') patch({ executor: { kind: 'main' }, subagent_count: undefined, fanout: undefined });
+    if (kind === 'main_worker' || kind === 'main_orchestration') patch({ executor: { kind: 'main', mode: kind === 'main_worker' ? 'worker' : 'orchestration' }, subagent_count: undefined, fanout: undefined });
     else if (kind === 'thread') patch({ executor: { kind: 'thread', provider_id: providerId, lifecycle: 'start' }, subagent_count: node.subagent_count ?? 'auto' });
     else patch({ executor: { kind: 'provider', provider_id: providerId }, subagent_count: node.subagent_count ?? 'auto' });
   };
@@ -49,7 +49,8 @@ export function Inspector({ workflow, selection, providers, change, select, inli
       <div className="muted">{node.id} · {node.type}</div>
       <Field label={t('名称', 'Name')} value={node.name ?? node.id} onChange={name => patch({ name })}/>
       {node.type === 'agent' && <>
-        <Select label={t('执行方式', 'Execution mode')} value={node.executor?.kind ?? 'main'} options={[{value:'main',label:t('Main · Host 隔离会话', 'Main · isolated Host session')},{value:'provider',label:t('Provider · 原生交接', 'Provider · native handoff')},{value:'thread',label:t('Codex task · 独立会话', 'Codex task · independent session')}]} onChange={setAgentExecutor}/>
+        <Select label={t('执行方式', 'Execution mode')} value={node.executor?.kind === 'main' ? 'main_' + (node.executor.mode ?? 'worker') : node.executor?.kind ?? 'main_worker'} options={[{value:'main_worker',label:t('主 Agent（worker）· 隔离会话', 'Main (worker) · isolated session')},{value:'main_orchestration',label:t('主 Agent（orchestration）· 当前聊天', 'Main (orchestration) · current conversation')},{value:'provider',label:t('Provider · 原生交接', 'Provider · native handoff')},{value:'thread',label:t('Codex task · 独立会话', 'Codex task · independent session')}]} onChange={setAgentExecutor}/>
+        {node.executor?.kind === 'main' && <small>{node.executor.mode === 'orchestration' ? t('由启动任务的当前主 Agent 接手，保留当前聊天的完整可用上下文。请从该聊天启动。', 'The initiating Main Agent takes over with its current conversation context. Start from that conversation.') : t('使用主 Agent 当前模型的新会话，仅接收声明的输入和资源。', 'A fresh session using Main’s current model receives only declared inputs and resources.')}</small>}
         {node.executor?.kind !== 'main' && <fieldset disabled={node.executor?.kind === 'thread' && node.executor.lifecycle === 'continue'}><ProviderField providers={node.executor?.kind === 'thread' ? providers.filter((provider: Json) => provider.kind === 'native_agent') : providers} main={false} label={node.executor?.kind === 'thread' ? t('Task Provider（续聊时由来源决定）', 'Task provider (determined by source when continuing)') : t('固定 Provider', 'Fixed provider')} value={node.executor?.kind === 'thread' && node.executor.lifecycle === 'continue' ? sourceProviderId : node.executor?.provider_id ?? ''} onChange={id => patch({ executor: { ...node.executor, provider_id: id } })}/></fieldset>}
         {supportsSubagentCount && <>
           <Select label={t('子 Agent 数量', 'Sub-Agent count')} value={Number.isInteger(node.subagent_count)?'fixed':'auto'} options={[{value:'auto',label:t('自动（按运行时任务）','Auto (from runtime task)')},{value:'fixed',label:t('固定数量','Fixed count')}]} onChange={mode=>{
@@ -62,7 +63,7 @@ export function Inspector({ workflow, selection, providers, change, select, inli
           {node.fanout && <><JsonField label={t('运行时 fanout 合同','Runtime fanout contract')} value={node.fanout} onChange={fanout=>patch({fanout})}/><button type="button" onClick={()=>patch({subagent_count:'auto',fanout:undefined})}>{t('关闭列表 fan-out','Disable list fan-out')}</button></>}
         </>}
         {node.executor?.kind === 'thread' && node.executor.lifecycle === 'continue' && <small>{t('续聊复用一个确定的 Codex Task，不提供子 Agent 数量设置。','Continuation reuses one exact Codex task, so sub-Agent count is unavailable.')}</small>}
-        <Field label={t('角色', 'Role')} value={node.role} onChange={role => patch({ role })}/>
+        <Field label={t('节点职责', 'Node responsibility')} value={node.role} onChange={role => patch({ role })}/>
         {node.executor?.kind === 'thread' && <>
           <Select label={t('Task 生命周期', 'Task lifecycle')} value={node.executor.lifecycle ?? 'start'} options={[{value:'start',label:t('创建独立 Task', 'Create independent task')},...(threadSources.length?[{value:'continue',label:t('续聊已有 Task', 'Continue existing task')}]:[])]} onChange={setThreadLifecycle}/>
           {node.executor.lifecycle === 'continue' && <div className={sourceNeedsSelection ? 'invalid-field' : undefined}>
@@ -74,7 +75,7 @@ export function Inspector({ workflow, selection, providers, change, select, inli
           </div>}
         </>}
       </>}
-      {node.type === 'skill_ref' && <><ProviderField label={t('固定 Provider', 'Fixed provider')} providers={providers} value={node.executor?.kind === 'main' ? '$main' : node.executor?.provider_id ?? ''} onChange={id => patch({ executor: id === '$main' ? { kind: 'main' } : { kind: 'provider', provider_id: id } })}/><Field label={t('角色', 'Role')} value={node.role} onChange={role => patch({ role })}/></>}
+      {node.type === 'skill_ref' && <><ProviderField label={t('固定 Provider', 'Fixed provider')} providers={providers} value={node.executor?.kind === 'main' ? '$main' : node.executor?.provider_id ?? ''} onChange={id => patch({ executor: id === '$main' ? { kind: 'main' } : { kind: 'provider', provider_id: id } })}/><Field label={t('节点职责', 'Node responsibility')} value={node.role} onChange={role => patch({ role })}/></>}
       {node.type === 'agent' && <Field label={t('任务指令 / 模板', 'Task instruction / template')} value={node.prompt_template} multiline onChange={prompt_template => patch({ prompt_template })}/>}
       {node.executor && <>
         <Select label={t('访问权限', 'Access')} value={typeof node.access === 'string' ? node.access : '$run'} options={[{value:'read_only',label:t('只读','Read only')},{value:'bounded_write',label:t('受限写入','Bounded write')}, ...(['main','subworkflow'].includes(node.executor.kind) ? [{ value: '$run', label: t('继承 Run 权限', 'Inherit Run access') }] : [])]} onChange={access => patch({ access: access === '$run' ? { binding: 'run.access' } : access })}/>

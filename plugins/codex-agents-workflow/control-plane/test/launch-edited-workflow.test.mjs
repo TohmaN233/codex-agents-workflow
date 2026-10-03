@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {launchEditedWorkflow,publishEditedWorkflow} from '../web-src/launch-edited-workflow.mjs';
-const pack=(revision,status='draft')=>({workflow:{id:'example',status,enabled:true},revision_hash:revision});
+const pack=(revision,status='draft')=>({workflow:{id:'example',status,enabled:true,nodes:[]},revision_hash:revision});
 test('publication saves exact edited revision and never starts a task',async()=>{
  const calls=[];
  const result=await publishEditedWorkflow({pack:pack('old','ready'),dirty:true,save:async()=>{calls.push('save');return pack('saved');},request:async(op,args)=>{calls.push(op);assert.equal(op,'publish');assert.equal(args.expected_revision,'saved');assert.equal(Object.hasOwn(args,'reviewed'),false);return pack('published','ready');},onSaved:async()=>calls.push('shown')});

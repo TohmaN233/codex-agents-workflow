@@ -28,6 +28,11 @@ export function validateRoutingRules(rules) {
 }
 export function routeAgent(node, rules, providers, catalog = routingCatalog(providers)) {
   requireValue(TASK_TYPES.includes(node.task_type) && typeof node.routing_reason === 'string' && node.routing_reason.trim() && node.routing_reason.length <= 2000, 'ROUTING_CLASSIFICATION', 'Every routed agent requires task_type and routing_reason');
+  requireValue(node.main_mode === undefined || ['worker','orchestration'].includes(node.main_mode), 'MAIN_EXECUTION_MODE', 'Unknown Main context mode');
+  if (node.main_mode !== undefined) {
+    requireValue([undefined,'main'].includes(node.execution_target) && node.provider_choice === undefined && node.thread_lifecycle === undefined && node.thread_source_node === undefined, 'MAIN_EXECUTION_MODE', 'Explicit Main context modes cannot select a Provider or task lifecycle');
+    return {executor:{kind:'main',mode:node.main_mode},role:'advisor'};
+  }
   if (rules.selection_mode === 'automatic') {
     requireValue(['main','subagent','thread'].includes(node.execution_target),'ROUTING_CLASSIFICATION','Choose Main, a one-off Provider subagent, or a source-required durable Codex task');
     if (node.execution_target === 'main') {

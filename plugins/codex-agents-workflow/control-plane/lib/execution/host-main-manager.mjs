@@ -201,7 +201,7 @@ export class HostMainManager {
     const binding = handoff.host_binding; const { runtime, runId } = entry;
     const record = await runtime.runs.read(runId);
     const definition = record.pins.root.workflow.nodes.find(node => node.id === binding.node_id);
-    requireValue(definition?.executor?.kind === 'main', 'HOST_MAIN_NODE', 'Host Main may execute only a logical Main node');
+    requireValue(definition?.executor?.kind === 'main' && definition.executor.mode !== 'orchestration', 'HOST_MAIN_NODE', 'Host Main may execute only a logical Main node');
     const consumed = semanticTurnsConsumed(record.state.nodes[binding.node_id]);
     const remainingTurns = (definition.retry?.max_attempts ?? 3) - consumed;
     requireValue(Number.isSafeInteger(remainingTurns) && remainingTurns > 0, 'RETRY_LIMIT', 'Main node exhausted its pinned semantic attempt limit');

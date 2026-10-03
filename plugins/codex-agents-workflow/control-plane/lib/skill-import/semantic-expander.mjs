@@ -86,7 +86,7 @@ function aggregateInputSources(node,nodes,edges) {
   return sources;
 }
 
-export const EXPANSION_NODE_FIELDS = Object.freeze(['operation_mode', 'task_type', 'routing_reason', 'execution_target', 'provider_choice', 'thread_lifecycle', 'thread_source_node', 'id', 'semantic_key', 'name', 'type', 'prompt_template', 'outputs_schema', 'output_validators', 'completion_contract', 'subagent_count', 'fanout', 'required_artifacts', 'cases', 'default_label', 'join_id', 'parallel_id', 'failure_policy', 'tool', 'input_bindings', 'resource_refs', 'requirement_ids', 'retry_max_attempts', 'confidence', 'source_span', 'source_spans']);
+export const EXPANSION_NODE_FIELDS = Object.freeze(['operation_mode', 'task_type', 'routing_reason', 'execution_target', 'main_mode', 'provider_choice', 'thread_lifecycle', 'thread_source_node', 'id', 'semantic_key', 'name', 'type', 'prompt_template', 'outputs_schema', 'output_validators', 'completion_contract', 'subagent_count', 'fanout', 'required_artifacts', 'cases', 'default_label', 'join_id', 'parallel_id', 'failure_policy', 'tool', 'input_bindings', 'resource_refs', 'requirement_ids', 'retry_max_attempts', 'confidence', 'source_span', 'source_spans']);
 export const EXPANSION_EDGE_FIELDS = Object.freeze(['id', 'source', 'target', 'on', 'label', 'confidence', 'source_span', 'source_spans']);
 
 function requireAuthoringBundle(pack,resources) {
@@ -430,6 +430,10 @@ export function compileExpansion(pack, resources, proposal, context = {}) {
     }
     if (routingRules && node.type === 'agent') Object.assign(inferred, routeAgent(node, routingRules, context.providers ?? [], context.routing_catalog));
     if (node.type === 'agent') {
+      if (node.main_mode !== undefined) {
+        requireValue(inferred.executor.kind === 'main', 'MAIN_EXECUTION_MODE', 'Main context choice cannot apply to a Provider');
+        inferred.executor.mode = node.main_mode;
+      }
       const mode = node.operation_mode ?? (['implementation','complex_implementation'].includes(node.task_type) ? 'write' : 'read');
       requireValue(['read','write'].includes(mode),'EXPANSION_OPERATION_MODE','Agent operation_mode must be read or write',{findings:[nodeSemanticFinding(node,'operation_mode','Choose a valid semantic activity profile.',['activities.profile'])]});
       if(mode==='write' && ['provider','thread'].includes(inferred.executor.kind))requireValue(context.providers?.find(p=>p.id===inferred.executor.provider_id)?.capabilities?.write,'EXPANSION_WRITE_PROVIDER','Write tasks need a registered write-capable Provider');

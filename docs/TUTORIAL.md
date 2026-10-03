@@ -208,7 +208,16 @@ If no matching published Workflow exists, Codex must say so rather than inventin
 
 ### Nodes receive scoped context
 
-Main nodes and native subagent nodes both use node-scoped input projection. They do not automatically inherit the parent chat, ambient Skill directories, or raw transcripts from other nodes. They retain the basic reading, writing, image, coding, and tool capabilities required by the task.
+Main worker nodes and native subagents use node-scoped input projection. They do not automatically inherit the parent chat, ambient Skill directories, or raw transcripts from other nodes. They retain the basic reading, writing, image, coding, and tool capabilities required by the task.
+
+Main execution has two choices:
+
+| Mode | Execution and context |
+| --- | --- |
+| Main (worker) | Fresh session with the calling Main model; only declared node inputs and resources. This is the default, including older Main nodes. |
+| Main (orchestration) | The initiating chat takes over with its existing available context. Use when that context is needed; start from the chat or embedded App. |
+
+Skill2Workflow and Build Workflow compile `main_read`/`main_write` as workers and `orchestration_read`/`orchestration_write` as current-chat handoffs. The Host validates this distinction. A standalone console cannot supply conversation context and reports that an orchestration Workflow must be started from a chat.
 
 ### The Host owns mechanics and handoffs
 
@@ -229,6 +238,8 @@ Ordinary independent work defaults to native agents. They are suited to reading 
 A Thread is for a process that genuinely needs to continue the same visible Codex task across stages. Continuation nodes must reference the recorded task identity rather than create a lookalike conversation. Threads are not the default executor and do not provide additional OS-level isolation.
 
 The optional Math Workflow demonstrates the choice: short investigations use one-shot agents, while a persistent Thread is retained only when continued research needs it.
+
+The Runs page has a **Clean history** button. Run startup automatically remove eligible succeeded/failed records whose terminal time is over 24 hours old. Manual cleanup removes eligible terminal history immediately. Interrupted, paused, active, and unsettled work stays available; workspace outputs are never deleted.
 
 ## 10. Recovery and troubleshooting
 

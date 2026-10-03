@@ -81,7 +81,9 @@ flowchart LR
 
 ### 1. Node-scoped context isolation
 
-Whether a node uses Main or a native subagent, it receives only its declared inputs, resources, tools, workspace, and references to predecessor results. It does not automatically inherit the parent chat, ambient Skill directories, or raw transcripts from other nodes. Isolating irrelevant material does not remove Codex's basic reading, writing, image, or coding abilities; capabilities required by the task must remain available to the node.
+Main **worker** nodes use a fresh session with the calling Main model. Native subagents and Main workers receive only declared inputs, resources, tools, workspace, and predecessor-result references. It does not automatically inherit the parent chat, ambient Skill directories, or raw transcripts from other nodes. Isolating irrelevant material does not remove Codex's basic reading, writing, image, or coding abilities; capabilities required by the task must remain available to the node.
+
+Main **orchestration** nodes hand control back to the initiating chat when its existing working context is needed. They keep that conversation’s available context rather than creating a worker session. Choose this mode explicitly; launch it from the chat or the embedded Workbench. The shared authoring compiler supports both modes.
 
 ### 2. Host-owned mechanics
 
@@ -105,7 +107,7 @@ A Role is a saved way for Main to call one helper. It says what work fits, which
 
 After assigning the work, Main continues anything useful that does not depend on the helper. When the next step does depend on it, Main enters an event wait of up to one hour. Completion, failure, or a request for input wakes Main immediately. Main then inspects the actual changes and verification evidence before accepting the result. The plugin supplies this automatic selection, independent work, silent waiting, and acceptance behavior.
 
-Workflows and Roles stay separate. Main follows the calling chat’s current model and reasoning selection; standalone Workbench launches follow Codex settings, with no fixed plugin Main model. A Workflow node pins its Provider, node task, inputs, and access. Workflow generation may use model suitability to choose a Provider, but a running node never receives another Role prompt. Editing or disabling a Role later cannot change or block an already generated Workflow.
+Workflows and Roles stay separate. Main follows the calling chat’s current model and reasoning selection; standalone Workbench launches follow Codex settings, with no fixed plugin Main model. A Workflow node pins its Provider, node task, inputs, and access. The planner receives Provider metadata and emits task responsibilities; the Host assigns Providers through the configured routing table. Full Workbench Role instructions are not generator input or runtime node prompts. Editing or disabling a Role later cannot change or block an already generated Workflow.
 
 ### 7. Threads: continue the same Codex task when needed
 
@@ -151,7 +153,7 @@ After installing or updating, restart the Codex desktop app to reload the plugin
 Use $codex-agents-workflow:workflow-control-plane and open the workbench inside Codex.
 ```
 
-The embedded view communicates with the Host through Codex; no manual HTTP server or local URL is needed. Open Provider settings from the workbench navigation or the plugin settings entry. Both interfaces share configuration and Run records.
+The embedded view communicates with the Host through Codex; no manual HTTP server or local URL is needed. Open Provider settings from the workbench navigation or the plugin settings entry. Both interfaces share configuration and Run records. On Run startup, completed and failed history older than 24 hours is removed. The Runs page also offers immediate cleanup of eligible history; interrupted work and workspace outputs remain available.
 
 If you want a standalone browser interface, or your host does not support embedded views, explicitly start the local console:
 

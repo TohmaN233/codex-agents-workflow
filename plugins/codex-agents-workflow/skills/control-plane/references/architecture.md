@@ -190,3 +190,21 @@ independent review Stage and derives full. Task Type prompts
 contain reusable work semantics; Provider adapters own transport and provider-specific
 safety behavior. Each Stage has one pinned Provider—there are no candidate lists or
 automatic fallbacks.
+
+
+## Main context modes and history
+
+`executor: {kind: "main", mode: "worker"}` starts a fresh session using the calling
+chat model and effort, with declared inputs and pinned resources. Legacy Main
+nodes without `mode` retain this behavior. `mode: "orchestration"` yields to the
+exact initiating conversation instead. The Host authenticates that conversation,
+materializes a local bundle and validates its semantic result through
+`workflow_orchestration_complete`. It never substitutes a worker or task Thread;
+normal conversation context and tools remain available. Orchestration requires
+Cooperative execution. Skill2Workflow and Build Workflow share both profiles.
+
+At Run startup, the store removes eligible succeeded/failed history older than
+24 hours after termination. Manual Workbench cleanup removes eligible history
+immediately. Interrupted/unfinished Runs and unresolved effects remain; task
+workspace outputs are never removed. Cleanup and mutations share writer locks,
+and deleted Runs cannot be recreated by queued executor writes.

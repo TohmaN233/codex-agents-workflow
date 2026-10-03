@@ -23,7 +23,7 @@ export function waitForWorkflow({runId,controlToken,directory,readState,readWork
     const cleanup=()=>{watcher?.close();clearTimeout(timer);clearTimeout(retry);clearInterval(health);signal?.removeEventListener('abort',abort);};
     const finish=(value,error)=>{if(settled)return;settled=true;cleanup();error?reject(error):resolve(value);};
     const abort=()=>finish(null,Object.assign(new Error('Workflow wait cancelled; the Run was not cancelled'),{code:'WORKFLOW_WAIT_CANCELLED'}));
-    const view=(reason,worker)=>{const nativeHandoff=worker?.outcome?.stop_reason==='non_main_semantic';return {run_id:runId,status:record.state.status,
+    const view=(reason,worker)=>{const nativeHandoff=['non_main_semantic','main_orchestration'].includes(worker?.outcome?.stop_reason);return {run_id:runId,status:record.state.status,
       completion_satisfied:record.state.status==='succeeded',recovery_required:record.state.status==='failed',sequence:record.sequence,wake_reason:nativeHandoff?'native_handoff_required':reason,
       ...(record.state.error?{error:record.state.error}:{}),
       ...(worker?{host_worker:{phase:worker.phase,...(worker.outcome?{outcome:structuredClone(worker.outcome)}:{}),...(worker.termination?{termination:structuredClone(worker.termination)}:{}),...(worker.error?{error:worker.error}:{})}}:{}),

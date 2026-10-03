@@ -67,6 +67,8 @@ const names = [
   'managed-native-pool.test.mjs',
   'host-main-manager.test.mjs',
   'main-model-selection.test.mjs',
+  'main-orchestration.test.mjs',
+  'run-history-retention.test.mjs',
   'workflow-resource-program.test.mjs',
   'workflow-service.test.mjs',
   'workflow-input-file.test.mjs',

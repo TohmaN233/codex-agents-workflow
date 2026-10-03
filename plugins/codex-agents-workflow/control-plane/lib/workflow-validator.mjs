@@ -231,6 +231,10 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
           if (provider.kind === 'native_agent' && provider.config?.role && !['advisor', node.role].includes(provider.config.role)) issue('PROVIDER_ROLE', 'Native Provider role does not match node role', location);
         }
       }
+      if (executor?.kind === 'main') {
+        if (Object.keys(executor).some(key => !['kind','mode'].includes(key)) || executor.mode !== undefined && !['worker','orchestration'].includes(executor.mode)) issue('MAIN_EXECUTION_MODE', 'Main execution mode must be worker or orchestration without Provider or thread fields', location);
+        if (executor.mode === 'orchestration' && (node.skill_policy?.mode ?? workflow.skill_policy.mode) !== 'cooperative') issue('MAIN_ORCHESTRATION_POLICY', 'The current conversation requires Cooperative execution; it cannot provide a Strict isolated context', location);
+      }
       if (executor?.kind === 'thread') {
         try { assertThreadExecutor(executor); } catch (error) { issue(error.code ?? 'THREAD_EXECUTOR', error.message, location); }
         if (node.type !== 'agent') issue('THREAD_NODE_TYPE', 'Codex task threads execute Agent nodes only', location);

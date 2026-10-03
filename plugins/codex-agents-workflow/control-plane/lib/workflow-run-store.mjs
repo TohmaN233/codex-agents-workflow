@@ -1,12 +1,19 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir, lstat, readFile, open, rename, rm, readdir } from 'node:fs/promises';
 import { join, isAbsolute, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { WorkflowStore, syncDirectory } from './workflow-store.mjs';
-import { insideRoot, noSymlinks, requireValue, workflowId } from './workflow-paths.mjs';
+import { ensureDirectory, insideRoot, noSymlinks, requireValue, workflowId } from './workflow-paths.mjs';
 import { canonicalJSON, digest, LIMITS } from './workflow-revisions.mjs';
 import { appendEvent, readEvents, replayEvents, statePatch, recoverEventTail, writeDurableJSON } from './workflow-events.mjs';
 
 const runWriters = new Map();
+const activeRunWriters = new AsyncLocalStorage();
+const TERMINAL_HISTORY_STATUSES = new Set(['succeeded', 'failed']);
+const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+const SETTLED_ATTEMPT_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
+const RECONCILED_OUTCOMES = new Set(['not_started', 'terminated', 'explicit_retry', 'safe_replay']);
+const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const EXECUTOR_RESULT_MAX_BYTES = 256 * 1024;
 function serializeRun(root, action) {
   const key = process.platform === 'win32' ? root.toLowerCase() : root;
@@ -19,16 +26,197 @@ function serializeRun(root, action) {
   return operation;
 }
 
+function reconciliationSettlesEffects(value) {
+  return RECONCILED_OUTCOMES.has(value?.outcome) && Array.isArray(value.evidence) && value.evidence.length > 0;
+}
+
+async function retainedForLiveEffects(record, readChild, childDirectory, ancestors = new Set()) {
+  const { state, pins } = record;
+  if (!TERMINAL_RUN_STATUSES.has(state.status)) return 'run_not_terminal';
+  requireValue(!ancestors.has(state.run_id), 'RUN_HISTORY_CHILD_CYCLE', 'SubWorkflow Run ancestry contains a cycle');
+  ancestors.add(state.run_id);
+  try {
+    for (const [nodeId, node] of Object.entries(state.nodes ?? {})) {
+      if (['claimed', 'running'].includes(node.status)) return 'node_execution_unsettled';
+      for (const attempt of node.attempts ?? []) {
+        if (!SETTLED_ATTEMPT_STATUSES.has(attempt.status)) return 'attempt_unsettled';
+        if (attempt.dispatch?.cancellation_pending) return 'cancellation_pending';
+        if (attempt.dispatch) {
+          const dispatchSettled = attempt.dispatch.phase === 'acknowledged' && attempt.dispatch.receipt
+            || attempt.dispatch.phase === 'intent' && reconciliationSettlesEffects(attempt.reconciliation);
+          if (!dispatchSettled) return 'dispatch_unsettled';
+        }
+        const definition = pins.root.workflow.nodes.find(item => item.id === nodeId);
+        const provider = pins.providers?.find(item => item.id === definition?.executor?.provider_id);
+        const dispatchHasSettlementEvidence = reconciliationSettlesEffects(attempt.reconciliation);
+        const connectorWasObserved = attempt.connector_control?.phase === 'observed';
+        const childOwnershipIsRecorded = definition?.type === 'subworkflow' && Boolean(attempt.child_run_id);
+        const sessionWasClosed = [...(attempt.executor_events ?? [])].reverse().find(event => event.kind === 'session_state')?.metadata?.status === 'closed';
+        if (attempt.status === 'interrupted' && attempt.dispatch?.phase === 'acknowledged' && attempt.dispatch.receipt
+          && !dispatchHasSettlementEvidence && !connectorWasObserved && !childOwnershipIsRecorded && !sessionWasClosed) return 'interrupted_dispatch_unsettled';
+        if (attempt.host_tool) {
+          if (!attempt.host_tool.receipt && !reconciliationSettlesEffects(attempt.host_tool.reconciliation)) return 'host_tool_unsettled';
+          const receipt = attempt.host_tool.receipt;
+          if (receipt && !['succeeded', 'failed', 'timed_out', 'cancelled'].includes(receipt.status)) return 'host_tool_receipt_unsettled';
+          if (['timed_out', 'cancelled'].includes(receipt?.status)
+            && receipt.reconciliation?.termination_confirmed !== true
+            && !reconciliationSettlesEffects(attempt.host_tool.reconciliation)) return 'host_tool_timed_out';
+        }
+        if (attempt.connector_control && attempt.connector_control.phase !== 'observed') return 'connector_control_unsettled';
+        if (attempt.status === 'interrupted' && provider?.kind === 'builtin_connector' && attempt.dispatch?.receipt
+          && attempt.connector_control?.phase !== 'observed' && !reconciliationSettlesEffects(attempt.reconciliation)) return 'connector_unsettled';
+        if (attempt.child_run_id) {
+          const childId = workflowId(attempt.child_run_id);
+          let child;
+          try { child = await readChild(childId); }
+          catch (error) {
+            if (error.code === 'ENOENT' && error.path === childDirectory(childId)) {
+              throw Object.assign(new Error(`Referenced child Run ${childId} is missing; cleanup cannot prove it is settled`),
+                { code: 'RUN_HISTORY_CHILD_MISSING', child_run_id: childId, cause: error });
+            }
+            throw error;
+          }
+          requireValue(child.pins.parent?.run_id === state.run_id
+            && child.pins.parent.node_id === nodeId
+            && child.pins.parent.attempt_id === attempt.id
+            && child.pins.parent.pins_hash === state.pins_hash,
+          'RUN_HISTORY_CHILD_IDENTITY', 'Child Run ancestry differs from its exact parent attempt');
+          const childReason = await retainedForLiveEffects(child, readChild, childDirectory, ancestors);
+          if (childReason) return `child_${childReason}`;
+        }
+      }
+    }
+
+    const parallelRecords = Object.entries(state.parallel ?? {});
+    for (const [regionId, regionState] of parallelRecords) {
+      const region = pins.parallel?.regions?.find(item => item.id === regionId && item.isolated);
+      if (!region || regionState.phase !== 'merged') return 'parallel_worktree_unsettled';
+      const branchIds = region.branches.map(branch => branch.id);
+      if (!Array.isArray(regionState.cleaned_branches)
+        || branchIds.some(branchId => !regionState.cleaned_branches.includes(branchId))) return 'parallel_worktree_unsettled';
+    }
+    return null;
+  } finally {
+    ancestors.delete(state.run_id);
+  }
+}
+
+async function assertNoSymlinksRecursively(path) {
+  await noSymlinks(path);
+  const info = await lstat(path);
+  requireValue(info.isDirectory(), 'RUN_HISTORY_TARGET', 'History cleanup target must be a directory');
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    const child = join(path, entry.name);
+    await noSymlinks(child);
+    const childInfo = await lstat(child);
+    if (childInfo.isDirectory()) await assertNoSymlinksRecursively(child);
+    else requireValue(childInfo.isFile(), 'RUN_HISTORY_TARGET', 'History cleanup found a non-file entry');
+  }
+}
+
+function terminalTimestamp(state) {
+  const value = state.finished_at ?? state.updated_at;
+  const timestamp = typeof value === 'string' ? Date.parse(value) : NaN;
+  requireValue(Number.isFinite(timestamp), 'RUN_HISTORY_TIMESTAMP', 'Terminal Run needs a valid finished_at or updated_at timestamp');
+  return timestamp;
+}
+
+function expectedChildRunId(parentId, nodeId, attemptId) {
+  return `child-${digest([parentId, nodeId, attemptId].join('\0')).slice(0, 58)}`;
+}
+
+function buildRunFamilies(records) {
+  const parentByChild = new Map();
+  const childrenByParent = new Map([...records.keys()].map(id => [id, new Set()]));
+  const link = (parentId, childId, identity) => {
+    const parent = records.get(parentId); const child = records.get(childId);
+    if (!parent) throw Object.assign(new Error(`Referenced parent Run ${parentId} is missing`), { code: 'RUN_HISTORY_PARENT_MISSING', parent_run_id: parentId });
+    if (!child) throw Object.assign(new Error(`Referenced child Run ${childId} is missing`), { code: 'RUN_HISTORY_CHILD_MISSING', child_run_id: childId });
+    const childParent = child.pins.parent;
+    requireValue(childParent?.run_id === parentId && childParent.node_id === identity.node_id
+      && childParent.attempt_id === identity.attempt_id && childParent.pins_hash === parent.state.pins_hash
+      && childId === expectedChildRunId(parentId, identity.node_id, identity.attempt_id)
+      && (!child.pins.child_run_id || child.pins.child_run_id === childId),
+    'RUN_HISTORY_CHILD_IDENTITY', 'Child Run ancestry differs from its exact parent attempt');
+    const prior = parentByChild.get(childId);
+    requireValue(!prior || prior === parentId, 'RUN_HISTORY_CHILD_IDENTITY', 'Child Run is referenced by more than one parent');
+    parentByChild.set(childId, parentId);
+    childrenByParent.get(parentId).add(childId);
+  };
+
+  for (const [parentId, record] of records) {
+    for (const [nodeId, node] of Object.entries(record.state.nodes ?? {})) for (const attempt of node.attempts ?? []) {
+      if (attempt.child_run_id) {
+        const childId = workflowId(attempt.child_run_id);
+        if (attempt.dispatch?.phase === 'acknowledged') requireValue(attempt.dispatch.receipt?.child_run_id === childId,
+          'RUN_HISTORY_CHILD_IDENTITY', 'Acknowledged child dispatch differs from its exact child Run');
+        link(parentId, childId, { node_id: nodeId, attempt_id: attempt.id });
+      }
+    }
+  }
+  for (const [childId, record] of records) if (record.pins.parent) {
+    const parentId = workflowId(record.pins.parent.run_id);
+    const parent = records.get(parentId);
+    if (!parent) throw Object.assign(new Error(`Referenced parent Run ${parentId} is missing`), { code: 'RUN_HISTORY_PARENT_MISSING', parent_run_id: parentId });
+    const attempt = parent.state.nodes?.[record.pins.parent.node_id]?.attempts?.find(item => item.id === record.pins.parent.attempt_id);
+    const pendingChildCreation = attempt?.dispatch?.phase === 'intent'
+      && attempt.dispatch.request_id === `subworkflow-${attempt.id}`
+      && attempt.dispatch.receipt == null
+      && childId === expectedChildRunId(parentId, record.pins.parent.node_id, record.pins.parent.attempt_id);
+    requireValue(attempt?.child_run_id === childId || pendingChildCreation,
+      'RUN_HISTORY_CHILD_IDENTITY', 'Parent Run no longer pins this exact child or pending SubWorkflow dispatch');
+    if (attempt.dispatch?.phase === 'acknowledged') requireValue(attempt.dispatch.receipt?.child_run_id === childId,
+      'RUN_HISTORY_CHILD_IDENTITY', 'Acknowledged child dispatch differs from its exact child Run');
+    link(parentId, childId, record.pins.parent);
+  }
+
+  const families = []; const visited = new Set();
+  const visit = (id, family, ancestry) => {
+    requireValue(!ancestry.has(id), 'RUN_HISTORY_CHILD_CYCLE', 'SubWorkflow Run ancestry contains a cycle');
+    requireValue(!visited.has(id), 'RUN_HISTORY_CHILD_IDENTITY', 'SubWorkflow Run belongs to multiple parent trees');
+    visited.add(id); family.push(id);
+    const next = new Set(ancestry); next.add(id);
+    for (const childId of [...childrenByParent.get(id)].sort()) visit(childId, family, next);
+  };
+  for (const id of [...records.keys()].sort()) if (!parentByChild.has(id)) {
+    const family = []; visit(id, family, new Set()); families.push(family);
+  }
+  requireValue(visited.size === records.size, 'RUN_HISTORY_CHILD_CYCLE', 'SubWorkflow Run ancestry contains a cycle');
+  return families;
+}
+
 export class WorkflowRunStore {
   constructor(root) {
     requireValue(isAbsolute(root), 'ABSOLUTE_PATH_REQUIRED', 'Run store root must be absolute');
     this.root = resolve(root); this.writer = new WorkflowStore(this.root);
   }
-  async initialize() { await this.writer.initialize(); return this; }
+  async initialize() { await this.writer.initialize(); await ensureDirectory(join(this.root, '.run-locks')); return this; }
   directory(id) { return join(this.root, `run-${workflowId(id)}.run`); }
+  runLockDirectory(id) { return insideRoot(this.root, join(this.root, '.run-locks', `run-${workflowId(id)}`)); }
+  async withRunGuard(id, action) {
+    await noSymlinks(this.root);
+    await ensureDirectory(join(this.root, '.run-locks'));
+    const lockDirectory = this.runLockDirectory(id);
+    await ensureDirectory(lockDirectory);
+    return serializeRun(lockDirectory, () => {
+      const inherited = activeRunWriters.getStore() ?? new Set();
+      const active = new Set(inherited); active.add(this.directory(id));
+      return new WorkflowStore(lockDirectory).withWriter(() => activeRunWriters.run(active, action));
+    });
+  }
+  async #withRunGuards(ids, index, action) {
+    if (index >= ids.length) return action();
+    return this.withRunGuard(ids[index], () => this.#withRunGuards(ids, index + 1, action));
+  }
   withRunWriter(id, action) {
     const root = this.directory(id);
-    return serializeRun(root, () => new WorkflowStore(root).withWriter(action));
+    return serializeRun(root, async () => {
+      await noSymlinks(root);
+      return this.withRunGuard(id, async () => {
+        await noSymlinks(root);
+        return new WorkflowStore(root).withWriter(action);
+      });
+    });
   }
 
   async saveArtifact(id, label, value) {
@@ -89,7 +277,7 @@ export class WorkflowRunStore {
       const bytes = blobs.get(resource.sha256);
       requireValue(bytes && bytes.length === resource.bytes && digest(bytes) === resource.sha256, 'RUN_RESOURCE', 'Every pinned resource must have verified bytes before publication');
     }
-    return this.writer.withWriter(async () => {
+    return serializeRun(this.root, () => this.writer.withWriter(async () => {
       const destination = this.directory(id);
       try { await lstat(destination); throw Object.assign(new Error('Run already exists'), { code: 'RUN_EXISTS' }); } catch (error) { if (error.code !== 'ENOENT') throw error; }
       const temporary = insideRoot(this.root, join(this.root, '.pending', randomUUID()));
@@ -113,10 +301,22 @@ export class WorkflowRunStore {
         catch (cleanupError) { if (cleanupError.code !== 'ENOENT') throw new AggregateError([error, cleanupError], 'Run creation and staging cleanup failed'); }
         throw error;
       }
-    });
+    }));
   }
 
   async read(id) {
+    const root = this.directory(id);
+    if (activeRunWriters.getStore()?.has(root)) return this.#readUnlocked(id);
+    return serializeRun(root, async () => {
+      await noSymlinks(root);
+      return this.withRunGuard(id, async () => {
+        await noSymlinks(root);
+        return new WorkflowStore(root).withWriter(() => this.#readUnlocked(id));
+      });
+    });
+  }
+
+  async #readUnlocked(id) {
     const root = this.directory(id); await noSymlinks(root);
     const { events } = await readEvents(join(root, 'events.jsonl'));
     const state = replayEvents(events);
@@ -157,21 +357,29 @@ export class WorkflowRunStore {
   async recover(id, repairState = () => {}, authorizeRecovery = () => {}) {
     const root = this.directory(id); const writer = new WorkflowStore(root);
     return serializeRun(root, async () => {
-    const owner = await writer.inspectWriter();
-    if (owner) await writer.recoverWriter(owner.token); // Only a confirmed absent owner can be recovered.
-    return writer.withWriter(async () => {
-      const committed = await readEvents(join(root, 'events.jsonl'), { allowTornTail: true });
-      await authorizeRecovery(replayEvents(committed.events));
-      const repaired = await recoverEventTail(join(root, 'events.jsonl'));
-      const current = await this.read(id); const next = structuredClone(current.state);
-      await repairState(next, current.pins, current);
-      const patch = statePatch(current.state, next);
-      let event = current.events.at(-1);
-      if (repaired.recovered || Object.values(patch).some(value => Object.keys(value).length)) {
-        event = await appendEvent(join(root, 'events.jsonl'), current.events, 'recover', { patch, journal_recovery: repaired.recovered });
-      }
-      return { state: next, pins: current.pins, sequence: event.sequence };
-    });
+      await noSymlinks(root);
+      const lockDirectory = this.runLockDirectory(id);
+      await ensureDirectory(join(this.root, '.run-locks')); await ensureDirectory(lockDirectory);
+      const guard = new WorkflowStore(lockDirectory);
+      const guardOwner = await guard.inspectWriter();
+      if (guardOwner) await guard.recoverWriter(guardOwner.token);
+      return this.withRunGuard(id, async () => {
+        const owner = await writer.inspectWriter();
+        if (owner) await writer.recoverWriter(owner.token); // Only a confirmed absent owner can be recovered.
+        return writer.withWriter(async () => {
+          const committed = await readEvents(join(root, 'events.jsonl'), { allowTornTail: true });
+          await authorizeRecovery(replayEvents(committed.events));
+          const repaired = await recoverEventTail(join(root, 'events.jsonl'));
+          const current = await this.read(id); const next = structuredClone(current.state);
+          await repairState(next, current.pins, current);
+          const patch = statePatch(current.state, next);
+          let event = current.events.at(-1);
+          if (repaired.recovered || Object.values(patch).some(value => Object.keys(value).length)) {
+            event = await appendEvent(join(root, 'events.jsonl'), current.events, 'recover', { patch, journal_recovery: repaired.recovered });
+          }
+          return { state: next, pins: current.pins, sequence: event.sequence };
+        });
+      });
     });
   }
 
@@ -182,36 +390,143 @@ export class WorkflowRunStore {
   async purge(id, { expected_workflow_id, expected_revision, expected_source_workflow_id, expected_source_revision, allow_missing = false } = {}) {
     requireValue(typeof allow_missing === 'boolean', 'RUN_PURGE_POLICY', 'Run purge missing policy must be explicit');
     const root = this.directory(id);
-    return serializeRun(root, () => this.writer.withWriter(async () => {
-      let current;
-      try { current = await this.read(id); }
+    return serializeRun(this.root, () => this.writer.withWriter(async () => {
+      try { await noSymlinks(root); }
       catch (error) {
-        if (allow_missing && error.code === 'ENOENT') return { run_id: id, purged: false, missing: true };
+        if (allow_missing && error.code === 'ENOENT' && error.path === root) return { run_id: id, purged: false, missing: true };
         throw error;
       }
-      const provenance = current.pins.root.provenance;
-      requireValue(current.state.status === 'succeeded' && provenance?.kind === 'authoring_workflow_run',
-        'RUN_PURGE_STATE', 'Only a succeeded current authoring Run can be permanently purged');
-      requireValue(current.pins.root.workflow.id === expected_workflow_id && current.pins.root.revision_hash === expected_revision,
-        'RUN_PURGE_IDENTITY', 'Run-pinned authoring Workflow identity changed before purge');
-      requireValue(provenance.source_workflow_id === expected_source_workflow_id && provenance.source_revision === expected_source_revision,
-        'RUN_PURGE_SOURCE', 'Run-pinned source identity changed before purge');
-      await noSymlinks(root); const info = await lstat(root);
-      requireValue(info.isDirectory() && !info.isSymbolicLink(), 'RUN_PURGE_TARGET', 'Run purge target must be one exact Run directory');
-      await rm(insideRoot(this.root, root), { recursive: true, maxRetries: 3, retryDelay: 100 });
-      await syncDirectory(this.root);
-      return { run_id: id, purged: true, sequence: current.sequence };
+      const result = await serializeRun(root, () => this.withRunGuard(id, async () => {
+        await noSymlinks(root);
+        let current;
+        await new WorkflowStore(root).withWriter(async () => { current = await this.read(id); });
+        const provenance = current.pins.root.provenance;
+        requireValue(current.state.status === 'succeeded' && provenance?.kind === 'authoring_workflow_run',
+          'RUN_PURGE_STATE', 'Only a succeeded current authoring Run can be permanently purged');
+        requireValue(current.pins.root.workflow.id === expected_workflow_id && current.pins.root.revision_hash === expected_revision,
+          'RUN_PURGE_IDENTITY', 'Run-pinned authoring Workflow identity changed before purge');
+        requireValue(provenance.source_workflow_id === expected_source_workflow_id && provenance.source_revision === expected_source_revision,
+          'RUN_PURGE_SOURCE', 'Run-pinned source identity changed before purge');
+        await assertNoSymlinksRecursively(root);
+        await rm(insideRoot(this.root, root), { recursive: true, maxRetries: 3, retryDelay: 100 });
+        await syncDirectory(this.root);
+        return { run_id: id, purged: true, sequence: current.sequence };
+      }));
+      return result;
+    }));
+  }
+
+  async cleanupHistory({ olderThanMs = HISTORY_RETENTION_MS, now = Date.now() } = {}) {
+    requireValue(Number.isFinite(olderThanMs) && olderThanMs >= 0, 'RUN_HISTORY_AGE', 'History retention age must be a nonnegative finite number');
+    requireValue(Number.isFinite(now) && now >= 0, 'RUN_HISTORY_NOW', 'History cleanup time must be a nonnegative finite number');
+    return serializeRun(this.root, () => this.writer.withWriter(async () => {
+      await noSymlinks(this.root);
+      const runIds = [];
+      for (const entry of await readdir(this.root, { withFileTypes: true })) {
+        if (['.pending', '.trash', '.run-locks', '.writer.lock', '.recovery.lock'].includes(entry.name)) {
+          await noSymlinks(join(this.root, entry.name));
+          continue;
+        }
+        requireValue(entry.isDirectory() && !entry.isSymbolicLink() && /^run-.+\.run$/.test(entry.name),
+          'RUN_STORE_ENTRY', 'Unexpected Run store entry');
+        runIds.push(workflowId(entry.name.slice(4, -4)));
+      }
+      runIds.sort();
+
+      const deletedRunIds = []; const preservedRunIds = [];
+      // Hold every per-Run guard in a stable order while taking the fresh
+      // journal snapshot. The root writer above prevents create/purge from
+      // changing the directory set; these guards keep mutations and executor
+      // result writes from changing family links or eligibility during cleanup.
+      await this.#withRunGuards(runIds, 0, async () => {
+        const records = new Map();
+        for (const id of runIds) {
+          const root = this.directory(id);
+          await noSymlinks(root);
+          const record = await new WorkflowStore(root).withWriter(() => this.#readUnlocked(id));
+          records.set(id, record);
+        }
+
+        const families = buildRunFamilies(records);
+        const readChild = async childId => {
+          const child = records.get(childId);
+          if (child) return child;
+          const childRoot = this.directory(childId);
+          let error;
+          try { await noSymlinks(childRoot); }
+          catch (cause) { error = cause; }
+          if (error?.code === 'ENOENT' && error.path === childRoot) {
+            throw Object.assign(new Error(`Referenced child Run ${childId} is missing; cleanup cannot prove it is settled`),
+              { code: 'RUN_HISTORY_CHILD_MISSING', child_run_id: childId, cause: error });
+          }
+          if (error) throw error;
+          throw Object.assign(new Error(`Referenced child Run ${childId} was not present in the locked history snapshot`),
+            { code: 'RUN_HISTORY_CHILD_MISSING', child_run_id: childId });
+        };
+
+        for (const family of families) {
+          let eligible = true;
+          for (const id of family) {
+            const current = records.get(id);
+            const state = current.state;
+            const terminalStatuses = id === family[0] ? TERMINAL_HISTORY_STATUSES : TERMINAL_RUN_STATUSES;
+            if (!terminalStatuses.has(state.status)) { eligible = false; break; }
+            const completedAt = terminalTimestamp(state);
+            if (olderThanMs !== 0 && completedAt >= now - olderThanMs) { eligible = false; break; }
+            const retained = await retainedForLiveEffects(current, readChild, childId => this.directory(childId));
+            if (retained) { eligible = false; break; }
+          }
+
+          // Validate every member before deleting any. A recent, interrupted,
+          // live, or otherwise ineligible parent therefore keeps its old child.
+          for (const id of family) {
+            const root = this.directory(id);
+            await assertNoSymlinksRecursively(root);
+            const info = await lstat(root);
+            requireValue(info.isDirectory() && !info.isSymbolicLink(), 'RUN_HISTORY_TARGET', 'History cleanup target must be one exact Run directory');
+          }
+
+          if (!eligible) {
+            preservedRunIds.push(...family);
+            continue;
+          }
+
+          // Parent-first removal prevents any extant parent from pointing at a
+          // child already removed if the filesystem reports an actual error.
+          // Directory removals are separate filesystem operations, so report
+          // the precise partial family progress if one of them fails.
+          const deletedFamilyIds = [];
+          for (const id of family) {
+            const root = this.directory(id);
+            try {
+              await rm(insideRoot(this.root, root), { recursive: true, maxRetries: 3, retryDelay: 100 });
+              deletedFamilyIds.push(id);
+              await syncDirectory(this.root);
+            } catch (cause) {
+              throw Object.assign(new Error(`History family deletion failed after removing ${deletedFamilyIds.length} of ${family.length} Runs: ${cause.message}`, { cause }),
+                { code: 'RUN_HISTORY_DELETE_FAILED', family_run_ids: [...family], deleted_run_ids: [...deletedRunIds, ...deletedFamilyIds] });
+            }
+          }
+          deletedRunIds.push(...deletedFamilyIds);
+        }
+      });
+      deletedRunIds.sort(); preservedRunIds.sort();
+      return { examined: runIds.length, deleted_count: deletedRunIds.length, deleted_run_ids: deletedRunIds,
+        preserved_count: preservedRunIds.length, preserved_run_ids: preservedRunIds };
     }));
   }
 
   async list() {
-    await noSymlinks(this.root); const runs = [];
-    for (const entry of await readdir(this.root, { withFileTypes: true })) {
-      if (['.pending', '.trash', '.writer.lock', '.recovery.lock'].includes(entry.name)) { await noSymlinks(join(this.root, entry.name)); continue; }
-      requireValue(entry.isDirectory() && !entry.isSymbolicLink() && /^run-.+\.run$/.test(entry.name), 'RUN_STORE_ENTRY', 'Unexpected Run store entry');
-      const { state, sequence } = await this.read(entry.name.slice(4, -4));
-      runs.push({ run_id: state.run_id, workflow_id: state.workflow_id, status: state.status, sequence });
-    }
-    return runs.sort((a, b) => a.run_id < b.run_id ? -1 : 1);
+    return serializeRun(this.root, () => this.writer.withWriter(async () => {
+      await noSymlinks(this.root); const runs = [];
+      for (const entry of await readdir(this.root, { withFileTypes: true })) {
+        if (['.pending', '.trash', '.run-locks', '.writer.lock', '.recovery.lock'].includes(entry.name)) { await noSymlinks(join(this.root, entry.name)); continue; }
+        requireValue(entry.isDirectory() && !entry.isSymbolicLink() && /^run-.+\.run$/.test(entry.name), 'RUN_STORE_ENTRY', 'Unexpected Run store entry');
+        const { state, sequence } = await this.read(entry.name.slice(4, -4));
+        runs.push({ run_id: state.run_id, workflow_id: state.workflow_id, status: state.status,
+          created_at: state.created_at, updated_at: state.updated_at, sequence });
+      }
+      return runs.sort((a, b) => a.run_id < b.run_id ? -1 : 1);
+    }));
   }
 }

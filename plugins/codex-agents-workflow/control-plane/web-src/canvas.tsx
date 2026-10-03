@@ -11,7 +11,7 @@ function nodeKindLabel(type: string, localize: (zh: string, en: string) => strin
 }
 export function newNode(type: string, id = uid(type)): Json {
   const base: Json = { id, type, name: nodeKindLabel(type) };
-  if (['agent', 'skill_ref', 'subworkflow', 'tool', 'human_gate'].includes(type)) Object.assign(base, { role: 'implementer', executor: { kind: 'main' }, access: 'read_only', path_scope: [], approval: { required: false }, retry: { max_attempts: 3 }, input_bindings: {}, resources: [] });
+  if (['agent', 'skill_ref', 'subworkflow', 'tool', 'human_gate'].includes(type)) Object.assign(base, { role: 'implementer', executor: { kind: 'main', mode: 'worker' }, access: 'read_only', path_scope: [], approval: { required: false }, retry: { max_attempts: 3 }, input_bindings: {}, resources: [] });
   if (type === 'agent') base.prompt_template = translate('说明该节点的任务、产物和验证要求。', 'Describe this node\'s task, artifacts, and verification requirements.');
   if (type === 'skill_ref') base.skill_ref = { path: '', name: '', source_hash: '', allowed_nested_skills: [] };
   if (type === 'subworkflow') { base.executor = { kind: 'subworkflow' }; base.subworkflow = { workflow_id: '', revision_pin: '', output_bindings: {} }; }
@@ -26,7 +26,7 @@ function WorkflowNode({ data, selected }: NodeProps) {
   const t = useLocale();
   const node = data.definition as Json;
   const kind = nodeKindLabel(node.type, t);
-  const executorKind = ({main:t('Main','Main'),provider:t('Provider','Provider'),thread:t('Codex task','Codex task'),human:t('人工','Human'),tool:t('工具','Tool'),subworkflow:t('子 Workflow','Subworkflow')} as Record<string,string>)[node.executor?.kind] ?? node.executor?.kind;
+  const executorKind = ({main:node.executor?.mode === 'orchestration' ? t('主 Agent（orchestration）','Main (orchestration)') : t('主 Agent（worker）','Main (worker)'),provider:t('Provider','Provider'),thread:t('Codex task','Codex task'),human:t('人工','Human'),tool:t('工具','Tool'),subworkflow:t('子 Workflow','Subworkflow')} as Record<string,string>)[node.executor?.kind] ?? node.executor?.kind;
   const fanoutCount = node.type === 'agent' && node.executor?.kind && !['main','human','tool','subworkflow'].includes(node.executor.kind) && !(node.executor.kind === 'thread' && node.executor.lifecycle === 'continue')
     ? ` · ×${node.subagent_count ?? t('自动','auto')}${node.fanout?.scheduling === 'serial' ? ` · ${t('串行','serial')}${node.fanout.batch_size ? `/${node.fanout.batch_size}` : ''}` : node.fanout?.max_concurrency ? ` · ${t('并行上限','parallel cap')} ${node.fanout.max_concurrency}` : ''}` : '';
   return <div className={'flow-node ' + (selected ? 'selected' : '')} title={node.id}>

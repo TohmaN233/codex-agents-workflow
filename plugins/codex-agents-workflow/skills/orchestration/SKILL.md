@@ -35,6 +35,6 @@ work or when the user requested an independent review. A failed assignment may
 be corrected with the same helper when the remaining work is local to that
 assignment; do not replay accepted work.
 
-Workflow nodes are separate. A generated Workflow may use Role suitability to
-choose a Provider, but a running node receives only its pinned Provider and its
-node task. Never inject Role instructions into a Workflow node.
+Workflow nodes are separate. Generation uses the registered Provider suitability catalog and Host routing
+rules. A running node receives its pinned Provider and node task, without a
+Workbench Role prompt. Never inject Role instructions into a Workflow node.

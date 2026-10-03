@@ -102,6 +102,8 @@ export async function loadWorkflowInputsFile(request,{model=false}={}){
 const REMOTE_PACKAGE_LIMIT=70*1024*1024;
 const BUILTIN_ROLE_PREFIX='builtin-role-';
 const nativeDriveOwners=new Map();
+import { isWorkerMain, hasOrchestrationMain } from './execution/main-execution-mode.mjs';
+import { prepareMainOrchestration, completeMainOrchestration } from './execution/main-orchestration.mjs';
 const MODEL_NATIVE_CONTINUATIONS=new Set(['native_next','native_spawned_batch','native_followed_up']);
 function modelNativeContinuationView(value){
   if(!value||typeof value!=='object')return value;
@@ -469,7 +471,7 @@ export class WorkflowService {
   async prepareCodexRegistration(closure) {
     const config = await this.config();
     if (!config.strict_executor.enabled) return;
-    const main = closure.packs.some(pack => pack.workflow.nodes.some(node => node.executor?.kind === 'main'));
+    const main = closure.packs.some(pack => pack.workflow.nodes.some(isWorkerMain));
     const native = closure.provider_ids.some(id => config.providers.some(provider => provider.id === id && provider.kind === 'native_agent'));
     // Explicitly supplied executor managers own their own registration. The
     // built-in path refreshes only a selected enabled local Codex installation.
@@ -865,12 +867,12 @@ export class WorkflowService {
   }
   modelResult(value){return modelNativeContinuationView(value);}
   async call(operation,args={},options={}) {
-    if(options.model&&MODEL_NATIVE_CONTINUATIONS.has(operation)){
-      requireValue(args&&Object.keys(args).length===0,'MODEL_CONTINUATION_FIELDS',
+    if(options.model&&(MODEL_NATIVE_CONTINUATIONS.has(operation) || operation === 'orchestration_complete')){
+      requireValue(args&& (operation === 'orchestration_complete' ? Object.keys(args).length === 1 && Object.hasOwn(args,'output') : Object.keys(args).length===0),'MODEL_CONTINUATION_FIELDS',
         'Model-facing Workflow continuation is argumentless; the Host owns every Run and receipt field');
       const {runtime}=await this.open();
       const authority=await readOwnedAuthorityForThread(runtime,options.modelThreadId);
-      args={run_id:authority.run_id,control_token:authority.control_token};
+      args={...args,run_id:authority.run_id,control_token:authority.control_token};
     }
     const invoke=async()=>{
       const result=await this.#call(operation,args,options);
@@ -894,10 +896,10 @@ export class WorkflowService {
       const authority=await readOwnedAuthority(runtime,args.run_id);
       args={...args,control_token:authority.control_token,...(operation==='continue_main'?{owner:authority.owner,host_owned:true}:{})};
     }
-    if (['start', 'begin_main', 'run_main', 'continue_main', 'accept_main', 'claim_node', 'dispatch', 'drive', 'native_next', 'native_followed_up', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env) && executionAdmissionOpen(this.configPath), 'CONTROL_DISABLED', 'Workflow execution is disabled');
+    if (['start', 'begin_main', 'run_main', 'continue_main', 'accept_main', 'claim_node', 'dispatch', 'drive', 'native_next', 'native_followed_up', 'orchestration_complete', 'retry_node', 'resume', 'recover_claim', 'recover_strict_result', 'reattach_connector', 'reattach_subworkflow', 'prepare_integration', 'integrate_parallel'].includes(operation)) requireValue(config.global.enabled && !isEnvironmentDisabled(this.env) && executionAdmissionOpen(this.configPath), 'CONTROL_DISABLED', 'Workflow execution is disabled');
     if(model&&args.run_id&&args.node_id&&['claim_node','dispatch','dispatch_receipt','record_usage','complete_node','fail_node','recover_claim','recover_strict_result','collect_strict','cleanup_strict_orphans','reattach_handoff'].includes(operation)){
       const record=await runtime.runs.read(args.run_id),definition=record.pins.root.workflow.nodes.find(node=>node.id===args.node_id);
-      requireValue(definition?.executor?.kind!=='main','HOST_MAIN_LIFECYCLE_REQUIRED','Logical Main lifecycle is owned by the Host-isolated execution lane');
+      requireValue(definition?.executor?.kind!=='main','HOST_MAIN_LIFECYCLE_REQUIRED','Main lifecycle is owned by its Host execution mode');
     }
     switch (operation) {
       case 'role_templates': {
@@ -1343,6 +1345,7 @@ export class WorkflowService {
         }
         const parent=nativeParentThreadId(request,{required:false});
         if(parent)request.constraints={...request.constraints,native_parent_thread_id:parent};
+        requireValue(!launchClosure.packs.some(item => hasOrchestrationMain(item.workflow)) || parent, 'MAIN_ORCHESTRATION_CONTEXT', 'Orchestration requires the initiating Codex conversation. No Run was started.');
         return runtime.start(request,{preparedEnvironment:environment});
       }
       case 'begin_main':
@@ -1358,10 +1361,12 @@ export class WorkflowService {
         request.revision_hash=pack.revision_hash;
         const parent=nativeParentThreadId(request,{required:args.native_bridge===true});
         if(parent)request.constraints={...request.constraints,native_parent_thread_id:parent};
+        requireValue(!closure.packs.some(item => hasOrchestrationMain(item.workflow)) || parent, 'MAIN_ORCHESTRATION_CONTEXT', 'Start this Workflow from the current Codex conversation: orchestration needs its existing working context. No Run was started.');
         if(args.native_bridge===true)await this.nativeParentVerifier(parent);
         if (operation === 'run_main' && (args.return_after_start === true || args.native_bridge === true)
-          && pack.workflow.nodes.some(node => node.executor?.kind === 'main')) await hostMainManager.qualify(config, this.env);
+          && pack.workflow.nodes.some(isWorkerMain)) await hostMainManager.qualify(config, this.env);
         const run = await runtime.start(request,{preparedEnvironment:environment});
+        if (parent) await retainOwnedAuthority(runtime, run);
         if (bridgeHooks?.runStarted) await bridgeHooks.runStarted({ run_id: run.run_id, control_token: run.control_token });
         if (operation === 'run_main' && args.return_after_start === true) {
           if(run.status!=='running')return {...run,execution_owner:'workflow_controller',next_action:'workflow_wait',
@@ -1407,6 +1412,12 @@ export class WorkflowService {
           controlToken:args.control_token,owner:args.owner,env:this.env});
         const result=await drive.advanceToMain(args.run_id,{control_token:args.control_token,owner:args.owner,request_prefix:args.request_prefix ?? `host-continue-${args.run_id}`});
         return hostMainManager.launch({runtime,drive,handoff:result});
+      }
+      case 'cleanup_run_history': {
+        requireValue(human, 'WORKBENCH_HISTORY_ACTION', 'Use the Workbench to clear completed and failed Run history');
+        const result = await runtime.runs.cleanupHistory({ olderThanMs: 0 });
+        await appendAuditEvent(this.configPath, { event: 'run-history-cleanup', outcome: 'ok', deleted_count: result.deleted_count }, { effectCommitted: true });
+        return result;
       }
       case 'runs': return runtime.runs.list();
       case 'wait': return waitForWorkflow({runId:args.run_id,controlToken:args.control_token,directory:runtime.runs.directory(args.run_id),
@@ -1466,6 +1477,12 @@ export class WorkflowService {
         return { ...attached, child: { ...await runtime.get(identity.run_id), control_token: identity.control_token } };
       }
       case 'next': return runtime.next(args.run_id);
+      case 'orchestration_complete': {
+        requireValue(model, 'MAIN_ORCHESTRATION_CONTEXT', 'Orchestration completion belongs to the initiating Codex conversation');
+        const completed = await completeMainOrchestration(runtime, { ...args, thread_id: modelThreadId });
+        if (['succeeded','failed','cancelled'].includes(completed.status)) return { status: completed.status, completion_satisfied: completed.status === 'succeeded', recovery_required: completed.status === 'failed' };
+        return this.#call('native_next', { run_id: args.run_id, control_token: args.control_token }, { model, modelThreadId, signal });
+      }
       case 'native_next': {
         const existing = await runtime.runs.read(args.run_id);
         const active = existing.pins.root.workflow.nodes.find(node => {
@@ -1578,6 +1595,7 @@ export class WorkflowService {
           return this.#call('native_next',args,{model,signal});
         };
         if(progress.stop_reason==='main_execution_pending')return model?joinHostMain():progress;
+        if (progress.stop_reason === 'main_orchestration') return prepareMainOrchestration(runtime, { ...args, thread_id: existing.state.constraints.native_parent_thread_id });
         if (progress.stop_reason === 'main_node') {
           const launched=await hostMainManager.launch({ runtime, drive, handoff: progress });
           // A model-facing continuation remains suspended inside the Host until

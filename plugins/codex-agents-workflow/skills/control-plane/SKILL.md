@@ -5,16 +5,13 @@ description: "Keep the host Workflow plane available, route concrete execution t
 
 # Workflow control plane
 
-The plugin host is the persistent control plane, available without a matching
-Workflow. A Workflow is an end-to-end graph for a task intent. A Role
-assigns one helper during ordinary work and is handled by the orchestration skill;
-it does not start a Workflow Run or enter a running Workflow node.
+The persistent control plane is available without a matching Workflow. Workflows
+cover end-to-end tasks; Roles assign ordinary helpers through the orchestration
+skill and never enter running Workflow nodes.
 
-A failed Run is an unfinished user task. Treat `completion_satisfied:false` or
-`recovery_required:true` as a recovery signal: inspect the exact failed node and
-retained evidence, repair the Workflow or use an allowed targeted retry, and run
-again. Report task completion only after the required final node makes the Run
-`succeeded`.
+A failed Run is unfinished. On `completion_satisfied:false` or
+`recovery_required:true`, inspect the failed node and evidence, repair or retry
+that unit. Report completion only when final acceptance makes the Run `succeeded`.
 
 ## Route the request
 
@@ -47,7 +44,7 @@ copy its fields into `inputs`; the Host rejects nested model-transcribed inputs.
 Host step 0 verifies and registers dependencies. Missing dependencies are
 reported before execution; ask before installing them.
 
-The Host advances deterministic and logical Main work. At a cooperative native
+The Host advances deterministic and Main worker work. At a cooperative native
 node, follow the returned `workflow_native_next` packet and launch its exact
 `spawn_config` plus `prompt` with `spawn_agent`; never replace it with a task thread. The Host
 materializes one local task bundle as a bounded index plus exact Host-written input,
@@ -55,7 +52,7 @@ resource and verified-file sidecars. Large file
 contents never share the single-read index.
 Spawn every packet in the released concurrency window, then call
 `workflow_native_spawned_batch` once with no arguments.
-That call blocks in the Host until an Agent event or the one-hour limit; follow its returned action.
+The Host waits for an Agent event or one hour; follow its returned action.
 Do not poll the Run or add a Main wait.
 For `continue_recorded_agent` or `repair_recorded_agent`, call `collaboration.followup_task`
 with the exact `followup_config`, then call `workflow_native_followed_up` with no arguments.
@@ -66,31 +63,32 @@ already accepted item.
 
 Converted and built Workflows must not make any Agent hand-copy unchanged
 input or resource values. This applies to arbitrary records, labels, names,
-source text and metadata as well as IDs, paths and hashes. Bind the original
-value directly beside the Agent's newly created semantic result, or use an
-exact registered Host tool to copy, transform or join it. The authoring
-compiler rejects copy-through instructions and Agent outputs that reuse a
-Host-owned identity or location fields.
+source text, metadata, IDs, paths and hashes. Bind originals beside new semantic
+results or use registered Host tools to copy, transform or join them. The compiler
+rejects copy-through instructions and Host-owned output fields.
 For fan-out writers with per-item path scopes, the complete task packet must
 bind directly from a Workflow input or an exact registered Host tool. The
 compiler rejects an Agent-produced packet before the Workflow can become Ready,
 including when a Host tool wraps or joins an upstream Agent output.
 
 The Host owns launch, node claims, identities, leases, receipts, context
-projection, completion envelopes, retries and continuation. Each logical Main
-node gets a fresh compact session with declared inputs, resources and scoped
-tools. Return only values in its supplied response schema. The initiating Main
-agent should not poll or reason while the Host owns the wait.
+projection, completion envelopes, retries and continuation. Main worker nodes get
+fresh sessions with declared inputs and resources. An `orchestration_handoff`
+means execute the local task bundle in this initiating conversation, using its
+existing context and normal tools, then call `workflow_orchestration_complete`
+with only newly authored semantic `output`. Never substitute a worker or copy
+Host identity fields. Follow the returned next action. The initiating Main should
+not poll or reason while the Host owns the wait.
 
 A converted Workflow is a self-contained replacement for its source Skill.
-Runtime must not read the original Skill, copied `SKILL.md`, ambient Skill
-instructions or conversion history. Necessary scripts and references are
+Worker execution must not load the original Skill, copied `SKILL.md`, ambient
+Skill instructions or conversion history. Orchestration explicitly retains the
+current conversation; it must not reload the source Skill. Necessary scripts and references are
 Workflow-owned assets. If a Run requests a source Skill path, report a defective
 package rather than loading it.
 
 Unavailable tools: read [connection diagnosis](references/connection.md).
-Open requested UI with `codex_agents_workflow_app` or `codex_agents_workflow_settings`;
-views create no Run/thread. Use `codex_agents_workflow_console` for standalone
-requests or unsupported App hosts. Report App errors; no silent console fallback.
-App transport/bootstrap stay out of model/node context. Report the observed error;
-never invent Run receipts or substitute execution.
+Open UI with `codex_agents_workflow_app` or `codex_agents_workflow_settings`; no
+Run/thread is created. Use `codex_agents_workflow_console` for standalone or
+unsupported hosts. Keep transport/bootstrap out of model context. Report the observed error;
+never invent receipts, hide App failures or substitute execution.

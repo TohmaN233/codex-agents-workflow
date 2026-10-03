@@ -136,6 +136,15 @@ export async function requestMcpApp(args: AppRequestArgs): Promise<unknown> {
   });
 }
 
+export async function launchWorkflowInConversation({ workflow_id, task, workspace }: { workflow_id: string; task: string; workspace?: string }) {
+  if (!isMcpAppResource) throw new Error('Main (orchestration) needs an existing Codex conversation. Start this Workflow from that conversation.');
+  await appState.clientReady;
+  if (appState.clientError) throw appState.clientError;
+  if (!appState.client) throw new Error('The MCP App host is unavailable.');
+  const result = await appState.client.sendMessage({ role: 'user', content: [{type:'text', text: `Run the current published Workflow ${workflow_id} in this conversation. Task: ${task}${workspace ? `\nWorkspace: ${workspace}` : ''}. Main (orchestration) nodes must execute here using the existing working context.`}] });
+  if (result.isError) throw new Error('The host declined the Workflow launch message. No Run was started.');
+}
+
 export async function downloadMcpAppFile(name: string, text: string, mimeType = 'application/json'): Promise<boolean> {
   if (hasInvalidMcpAppMarker) throw new Error('Unsupported MCP App marker value: ' + (appState.markerValue || '(empty)'));
   if (!isMcpAppResource) return false;

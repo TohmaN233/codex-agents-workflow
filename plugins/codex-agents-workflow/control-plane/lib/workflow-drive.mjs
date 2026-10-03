@@ -137,7 +137,7 @@ export class WorkflowDrive {
       // A Host Main receipt means the semantic node already has one exact
       // execution owner.  The caller must join that owner instead of rebuilding
       // the handoff or returning control to the model to poll the Run.
-      if(attempt.dispatch.receipt)return {run_id:runId,control_token,status:current.state.status,
+      if(attempt.dispatch.receipt && definition.executor.mode !== 'orchestration')return {run_id:runId,control_token,status:current.state.status,
         stop_reason:'main_execution_pending',node_id:definition.id,attempt_id:attempt.id,steps:progress.steps};
       assertActive();
       const prepared=await this.executor.prepare(runId,{...lease,control_token,host_managed_main:true});
@@ -145,7 +145,7 @@ export class WorkflowDrive {
       requireValue(attempt.dispatch.request_id===`dispatch-${lease.attempt_id}`&&attempt.dispatch.envelope_hash===digest(canonicalJSON(prepared)),'MAIN_DRIVE_IDENTITY_CHANGED','The persisted main-agent dispatch identity no longer matches its Run-pinned packet');
       dispatched={...prepared,compiled_prompt:prepared.prompt,handoff_required:true,request_id:attempt.dispatch.request_id,dispatched:false,idempotent:true};
     }
-    requireValue(dispatched.adapter?.execution === 'host_isolated_main' && dispatched.handoff_required === true, 'MAIN_DRIVE_ADAPTER', 'Main-session drive may return only a Host-isolated logical Main handoff');
+    requireValue(dispatched.adapter?.execution === (definition.executor.mode === 'orchestration' ? 'current_main_orchestration' : 'host_isolated_main') && dispatched.handoff_required === true, 'MAIN_DRIVE_ADAPTER', 'Main drive must return the declared Host-owned context handoff');
 
     record=await this.runtime.runs.read(runId);
     assertActive();
@@ -157,7 +157,8 @@ export class WorkflowDrive {
       && isAuthoringRunProvenance(record.pins.root.provenance);
     return {
       status: 'running',
-      stop_reason: 'main_node',
+      stop_reason: definition.executor.mode === 'orchestration' ? 'main_orchestration' : 'main_node',
+      node_id: definition.id,
       steps: progress.steps,
       host_binding: createMainHostBinding({ runId, controlToken: control_token, owner, definition, lease, finalAcceptance }),
       agent_packet: createMainAgentPacket({ definition, dispatched, resources, finalAcceptance }),

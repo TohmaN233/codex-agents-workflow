@@ -467,7 +467,7 @@ async function handleRpcRequest(request, {
         const definition = workflowToolDefinitions().find(tool => tool.name === name);
         validateData(suppliedArgs, definition.inputSchema);
         const modelThreadId=typeof params._meta?.threadId==='string'?params._meta.threadId:'';
-        const needsModelThread=name==='workflow_start'||['workflow_native_next','workflow_native_spawned_batch','workflow_native_followed_up'].includes(name);
+        const needsModelThread=name==='workflow_start'||['workflow_native_next','workflow_native_spawned_batch','workflow_native_followed_up','workflow_orchestration_complete'].includes(name);
         if(needsModelThread&& !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(modelThreadId))
           throw Object.assign(new Error('Workflow execution requires authenticated Codex thread metadata'),{code:'MODEL_THREAD_ID'});
         const workflowArgs=name==='workflow_start'?{...suppliedArgs,main_actor:'codex',native_parent_thread_id:modelThreadId}:suppliedArgs;

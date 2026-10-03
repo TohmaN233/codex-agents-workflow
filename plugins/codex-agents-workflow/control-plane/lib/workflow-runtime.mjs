@@ -142,6 +142,7 @@ export class WorkflowRuntime {
   }
 
   async start({ environment_directories = [], workflow_id, revision_hash, inputs = {}, workspace, access, allowed_paths = [], constraints = {}, main_actor, require_approval = false, run_id = randomUUID() }, {preparedEnvironment} = {}) {
+    await this.runs.cleanupHistory();
     this.executionAdmission?.assertRunActive(run_id);
     requireValue(typeof main_actor === 'string' && main_actor.length > 0 && main_actor.length <= 256, 'MAIN_ACTOR', 'Run requires one main actor');
     requireValue(typeof require_approval === 'boolean', 'RUN_APPROVAL', 'Run approval policy must be boolean');
@@ -788,7 +789,9 @@ export class WorkflowRuntime {
       const definition = pins.root.workflow.nodes.find(item => item.id === node_id);
       if(definition.executor?.kind==='main'){
         requireValue([HOST_MAIN_LIFECYCLE,AUTHORING_HUMAN_ACCEPTANCE].includes(authority?.kind),'HOST_MAIN_LIFECYCLE_REQUIRED','Logical Main completion requires the Host-persisted result lane');
-        requireValue(['codex-app-server-host-main','codex-app-server'].includes(attempt.dispatch?.receipt?.executor),'HOST_MAIN_RECEIPT_REQUIRED','Logical Main completion requires its exact Host session receipt');
+        const orchestration = definition.executor.mode === 'orchestration';
+        const receipt = attempt.dispatch?.receipt;
+        requireValue(orchestration ? receipt?.executor === 'codex-current-main-orchestration' && receipt.thread_id === state.constraints.native_parent_thread_id : ['codex-app-server-host-main','codex-app-server'].includes(receipt?.executor), 'HOST_MAIN_RECEIPT_REQUIRED', 'Main completion requires its exact execution-mode receipt');
         requireValue(attempt.result_proposal?.sha256,'HOST_MAIN_RESULT_REQUIRED','Logical Main completion requires one Host-persisted result proposal');
         const persisted=await this.runs.readExecutorResult(runId,attempt.id,attempt.result_proposal.sha256);
         const proposed=structuredClone(payload);delete proposed.acceptance;

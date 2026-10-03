@@ -13,7 +13,7 @@
 - UI resources are self-contained and declare fullscreen display. Configuration, prompt bodies and startup data go in UI-only result metadata, never the model-visible opener result. Host-owned references supply compact selected Workflow/Role context.
 - Enable optional Extensions through negotiated host capabilities, not OS or Codex version checks. A bridge error is visible and must not silently switch to a tokenized localhost connection. UI tool visibility and existing controller boundaries remain distinct from model-facing execution tools.
 - Browser SDKs are pinned build dependencies and bundled with their licenses. The installed Node 20+ Host needs no SDK dependency installation.
-- `workflow_start` launches one Host-owned Run. Deterministic nodes and logical Main nodes run under the detached Host owner.
+- `workflow_start` launches one Host-owned Run. The detached Host advances deterministic nodes and Main worker nodes. Main orchestration nodes yield to the authenticated initiating chat; they never substitute an isolated worker.
 - Cooperative Provider nodes use real native Codex subagents. The controller performs only the returned spawn or follow-up action; the Host owns Run IDs, node IDs, leases, task names, Agent paths, hashes, item positions, receipts, and completion.
 - The public native continuation surface is exactly `workflow_native_next`, `workflow_native_spawned_batch`, and `workflow_native_followed_up`. The latter two take no arguments.
 - After spawn acknowledgement, the same Host call waits for child lifecycle events for up to one hour. It wakes on a child event, Host failure, cancellation, attention, or timeout. The model must never poll Run state or call `wait_agent` on a timer.
@@ -40,7 +40,8 @@
 - Prefer `inputs_path` for an existing structured input packet. Relative and absolute paths are both valid only when they resolve inside the Run workspace.
 - The Host reads, hashes, and validates input files. Never ask a model to copy IDs, paths, hashes, tokens, indices, revisions, receipts, timestamps, labels, unchanged metadata, or arbitrary unchanged fields.
 - Generated Ready Workflows must pass the same no-transcription validator used by Skill2Workflow and Build Workflow.
-- Context projection is declared-only: exact `input_bindings` and pinned resources. Do not expose full Workflow inputs, ancestor outputs, project memory, or ambient history through compatibility projection.
+- Main worker nodes (including legacy Main without a mode) use fresh same-model sessions. Main orchestration nodes explicitly retain the initiating conversation and accept semantic output through `workflow_orchestration_complete`; Host binds identities and audits artifacts. They require Cooperative execution.
+- Worker context projection is declared-only: exact `input_bindings` and pinned resources. Do not expose full Workflow inputs, ancestor outputs, project memory, or ambient history through compatibility projection.
 - Native packets contain the workspace, allowed write paths, and one Host-generated local task-bundle path. The child reads that bundle once and writes directly in the workspace.
 - Keep task prompts concise and semantic. Do not disable ordinary Codex abilities or restate Host-owned protocol fields in prose.
 - Project-memory files are never required product artifacts.
@@ -81,6 +82,10 @@
 - Required outputs and source-location evidence are validated before downstream release.
 - Command output is captured by the Host without silent truncation. A limit or failed termination is an explicit tool failure.
 - Native task execution owns the normal task process tree through completion or cancellation. POSIX groups are stopped and inspected before quiescence is reported; a direct parent's close is insufficient while live descendants remain. Unconfirmed termination retains ownership and prevents competing execution.
+
+## Run history
+
+- Run startup remove succeeded/failed history older than 24 hours, measured from terminal time. Manual cleanup removes eligible terminal history immediately. Preserve interrupted/unfinished Runs and unresolved live effects. Never remove task workspace outputs or recreate a deleted Run through queued writes.
 
 ## Release validation
 

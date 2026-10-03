@@ -229,7 +229,7 @@ export class WorkflowExecutor {
     // This branch must precede Strict dispatch so Main never falls back to the
     // ordinary full-context session manager.
     if (envelope.executor.kind === 'main' && args.host_managed_main === true) {
-      return { envelope, adapter: { execution: 'host_isolated_main', read_only: envelope.access === 'read_only' }, prompt: compilePrompt(envelope, config.global.max_prompt_chars) };
+      return { envelope, adapter: { execution: envelope.executor.mode === 'orchestration' ? 'current_main_orchestration' : 'host_isolated_main', read_only: envelope.access === 'read_only' }, prompt: compilePrompt(envelope, config.global.max_prompt_chars) };
     }
     if (envelope.skill_policy.mode === 'strict') {
       requireValue(this.strictManager, 'STRICT_EXECUTOR_REQUIRED', 'This host has no qualified Strict session manager');

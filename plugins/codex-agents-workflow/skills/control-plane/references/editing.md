@@ -8,7 +8,9 @@ Strict requires a qualified executor catalog, explicit Skill input and bounded t
 broker. It is not an OS filesystem ACL. Read `workflow_capabilities` for the currently qualified executor. Never
 change a failed Strict request to Cooperative. Cooperative external/provider
 executors may retain their host behavior only when a Workflow explicitly declares
-it; logical Main nodes and converted Workflows never inherit ambient Skills. Missing external tools, executables or scripts remain
+it; Main workers and converted worker nodes never inherit ambient Skills. Main
+orchestration explicitly retains the initiating conversation and requires
+Cooperative mode. Missing external tools, executables or scripts remain
 requirements; do not execute imported scripts to infer their behavior.
 
 Use `workflow_skill_inventory` for default Codex-folder import discovery; pass

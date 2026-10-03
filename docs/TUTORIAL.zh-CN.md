@@ -207,7 +207,16 @@ max_concurrent_threads_per_session = 8
 
 ### 节点只获得需要的上下文
 
-Main 节点与原生子 Agent 节点都使用节点级输入投影。它们不会自动继承父聊天、环境 Skill 目录或其他节点的原始对话，但仍保留任务所需的基本读写、看图、代码与工具能力。
+Main worker 节点与原生子 Agent 使用节点级输入投影。它们不会自动继承父聊天、环境 Skill 目录或其他节点的原始对话，但仍保留任务所需的基本读写、看图、代码与工具能力。
+
+Main 有两种执行方式：
+
+| 模式 | 执行与上下文 |
+| --- | --- |
+| 主 Agent（worker） | 使用主 Agent 当前模型的新会话，只获得声明的节点输入和资源；默认模式，旧 Main 节点也按此处理。 |
+| 主 Agent（orchestration） | 启动任务的当前聊天接手，保留现有可用上下文；需要已有上下文时选择，从该聊天或内嵌 App 启动。 |
+
+Skill2Workflow 与 Build Workflow 将 `main_read`/`main_write` 编译成 worker，将 `orchestration_read`/`orchestration_write` 编译成当前聊天交接。Host 校验这一区别。独立控制台无法提供聊天上下文，会明确要求从聊天启动 orchestration Workflow。
 
 ### Host 负责机械字段与交接
 
@@ -228,6 +237,8 @@ Host 准备任务包、路径、ID、哈希、绑定和结果 schema。节点直
 Thread 用于确实需要在多个阶段续聊同一个侧栏可见 task 的流程。后续节点必须引用已记录的准确 task 身份，而不是重新创建一个看似相同的会话。Thread 不是默认执行方式，也不提供额外的操作系统隔离。
 
 可选 Math Workflow 展示了这种选择：短调查使用一次性 Agent，只有需要持续研究时才保留 Thread。
+
+运行页面提供**清理历史**按钮。启动 Run 时，自动删除结束超过 24 小时的完成、失败记录；手动清理不需要等满 24 小时。中断、暂停、活动及尚未确认停止的任务会保留，工作区产物不会被删除。
 
 ## 10. 恢复与排错
 
