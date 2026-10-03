@@ -10,13 +10,13 @@ import { isWorkerMain, isOrchestrationMain } from '../lib/execution/main-executi
 import { retainOwnedAuthority } from '../lib/execution/owned-workflow-authority.mjs';
 import { workflowToolDefinitions } from '../lib/workflow-tools.mjs';
 import { validateWorkflowGraph } from '../lib/workflow-validator.mjs';
-import { readyWorkflow } from './fixtures/workflow-fixtures.mjs';
+import { readyWorkflow, agent, edge } from './fixtures/workflow-fixtures.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 import { launchEditedWorkflow } from '../web-src/launch-edited-workflow.mjs';
 
 const thread = '12345678-1234-4234-8234-123456789abc';
 const schema = { type: 'object', properties: { conclusion: {type:'string'} }, required: ['conclusion'], additionalProperties: false };
-async function fixture(t, {write = false, resources = {}} = {}) {
+async function fixture(t, {write = false, resources = {}, mutateWorkflow = () => {}} = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'main-orchestration-'));
   t.after(() => rm(directory, {recursive:true,maxRetries:3,retryDelay:100}));
   const workspace = join(directory, 'workspace'); await mkdir(workspace);
@@ -37,6 +37,7 @@ async function fixture(t, {write = false, resources = {}} = {}) {
   node.outputs_schema=schema;node.prompt_template='Resolve the user decision using the current working context.';
   node.input_bindings={task:'/inputs/task'};node.resources=Object.keys(resources);
   if(write){node.access='bounded_write';node.path_scope=['result.txt'];node.required_artifacts=[{path:'result.txt',requirement_id:'result'}];}
+  mutateWorkflow(workflow);
   const pack = await service.call('create',{workflow,resources});
   const options = {workflow_id:workflow.id,revision_hash:pack.revision_hash,workspace,access:write?'bounded_write':'read_only',
     ...(write?{allowed_paths:['result.txt']}:{}),inputs:{task:'Use our prior conclusions'},main_actor:'codex',native_parent_thread_id:thread};
@@ -87,6 +88,32 @@ test('semantic correction stays in the same orchestration attempt and writes onl
   const record=await f.runtime.runs.read(f.run_id);
   assert.equal(record.state.status,'succeeded');assert.equal(record.state.nodes.final.attempts.length,1);
   assert.equal(record.state.nodes.final.attempts[0].completion_turns,2);
+});
+
+test('rejected producer output can be corrected before pinning an immutable Main result', async t => {
+  const f = await fixture(t, { mutateWorkflow: workflow => {
+    const work = { ...agent('work'), executor: { kind: 'main', mode: 'orchestration' }, retry: { max_attempts: 3 },
+      outputs_schema: { type: 'object', properties: { jobs: { type: 'array', items: { type: 'string' } } }, required: ['jobs'], additionalProperties: false } };
+    const pool = { ...agent('pool'), executor: { kind: 'provider', provider_id: 'native-luna' }, subagent_count: 'auto',
+      input_bindings: { items: '/nodes/work/output/jobs' },
+      fanout: { input: 'items', item_name: 'item', result_output: 'results', distribution: 'one_per_item', scheduling: 'parallel', join: 'all_required' },
+      outputs_schema: { type: 'object', properties: { results: { type: 'array', items: { type: 'string' } } }, required: ['results'], additionalProperties: false } };
+    workflow.nodes.splice(1, 0, work, pool);
+    workflow.edges = [edge('start', 'work'), edge('work', 'pool'), edge('pool', 'final'), edge('final', 'end')];
+  } });
+  await f.service.call('native_next', {}, { model: true, modelThreadId: thread });
+  await assert.rejects(f.service.call('orchestration_complete', { output: { jobs: [] } }, { model: true, modelThreadId: thread }),
+    { code: 'SUBAGENT_FANOUT_INPUT' });
+  const rejected = await f.runtime.runs.read(f.run_id);
+  assert.equal(rejected.state.nodes.work.attempts[0].result_proposal, undefined);
+  assert.equal(rejected.state.nodes.work.status, 'running');
+  await f.service.call('orchestration_complete', { output: { jobs: ['valid'] } }, { model: true, modelThreadId: thread });
+  const corrected = await f.runtime.runs.read(f.run_id);
+  assert.equal(corrected.state.nodes.work.status, 'succeeded');
+  assert.deepEqual(corrected.state.nodes.work.output, { jobs: ['valid'] });
+  assert.equal(corrected.state.nodes.work.attempts.length, 1);
+  assert.equal(corrected.state.nodes.work.attempts[0].completion_turns, 2);
+  assert.equal(f.sessions(), 0);
 });
 
 test('orchestration rejects out-of-scope modifications and retains exact failure evidence',async t=>{

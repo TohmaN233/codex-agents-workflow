@@ -310,7 +310,7 @@ export class HostMainManager {
           output = JSON.parse(result.output);
           validateData(output, modelSchema);
           if (canBlock) { rawBlockReason = output?.block_reason; delete output.block_reason; }
-          await preflightSemanticOutput(definition, output, envelope.workspace);
+          await preflightSemanticOutput(definition, output, envelope.workspace, { ...record, finalAcceptance });
         } catch (error) {
           validationError = error instanceof SyntaxError
             ? Object.assign(new Error('Host Main result is not the required JSON value'), { code: 'HOST_MAIN_OUTPUT_JSON' }) : error;

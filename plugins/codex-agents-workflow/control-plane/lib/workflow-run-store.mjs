@@ -9,14 +9,16 @@ import { appendEvent, readEvents, replayEvents, statePatch, recoverEventTail, wr
 
 const runWriters = new Map();
 const activeRunWriters = new AsyncLocalStorage();
+const activeStoreOperations = new AsyncLocalStorage();
 const TERMINAL_HISTORY_STATUSES = new Set(['succeeded', 'failed']);
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 const SETTLED_ATTEMPT_STATUSES = new Set(['succeeded', 'failed', 'cancelled', 'interrupted']);
 const RECONCILED_OUTCOMES = new Set(['not_started', 'terminated', 'explicit_retry', 'safe_replay']);
 const HISTORY_RETENTION_MS = 24 * 60 * 60 * 1000;
 export const EXECUTOR_RESULT_MAX_BYTES = 256 * 1024;
+const operationKey = root => process.platform === 'win32' ? root.toLowerCase() : root;
 function serializeRun(root, action) {
-  const key = process.platform === 'win32' ? root.toLowerCase() : root;
+  const key = operationKey(root);
   const operation = (runWriters.get(key) ?? Promise.resolve()).then(action);
   // Each caller receives its own failure. A later independent transition may
   // proceed after it settles; the OS writer lock still protects other processes.
@@ -24,6 +26,20 @@ function serializeRun(root, action) {
   runWriters.set(key, settled);
   void settled.then(() => { if (runWriters.get(key) === settled) runWriters.delete(key); });
   return operation;
+}
+
+// Admit a journal transaction before taking any root or Run lock. Transactions
+// may read ancestors or create children, so per-Run lock order alone cannot
+// prevent inversion. This serializes short store operations, not Agent work.
+function storeOperation(root, action) {
+  const key = `store-operation:${operationKey(root)}`;
+  if (activeStoreOperations.getStore()?.get(key)?.active) return action();
+  return serializeRun(key, async () => {
+    const owners = new Map(activeStoreOperations.getStore() ?? []);
+    const owner = { active: true }; owners.set(key, owner);
+    try { return await activeStoreOperations.run(owners, action); }
+    finally { owner.active = false; }
+  });
 }
 
 function reconciliationSettlesEffects(value) {
@@ -70,6 +86,8 @@ async function retainedForLiveEffects(record, readChild, childDirectory, ancesto
           let child;
           try { child = await readChild(childId); }
           catch (error) {
+            if ((error.code === 'RUN_HISTORY_CHILD_MISSING' || error.code === 'ENOENT' && error.path === childDirectory(childId))
+              && pendingChildIntent(state.run_id, nodeId, attempt, childId)) return 'child_creation_pending';
             if (error.code === 'ENOENT' && error.path === childDirectory(childId)) {
               throw Object.assign(new Error(`Referenced child Run ${childId} is missing; cleanup cannot prove it is settled`),
                 { code: 'RUN_HISTORY_CHILD_MISSING', child_run_id: childId, cause: error });
@@ -125,6 +143,13 @@ function expectedChildRunId(parentId, nodeId, attemptId) {
   return `child-${digest([parentId, nodeId, attemptId].join('\0')).slice(0, 58)}`;
 }
 
+function pendingChildIntent(parentId, nodeId, attempt, childId) {
+  return attempt.dispatch?.phase === 'intent'
+    && attempt.dispatch.request_id === `subworkflow-${attempt.id}`
+    && attempt.dispatch.receipt == null
+    && childId === expectedChildRunId(parentId, nodeId, attempt.id);
+}
+
 function buildRunFamilies(records) {
   const parentByChild = new Map();
   const childrenByParent = new Map([...records.keys()].map(id => [id, new Set()]));
@@ -148,6 +173,10 @@ function buildRunFamilies(records) {
     for (const [nodeId, node] of Object.entries(record.state.nodes ?? {})) for (const attempt of node.attempts ?? []) {
       if (attempt.child_run_id) {
         const childId = workflowId(attempt.child_run_id);
+        // The exact intent is durable before the child directory is published.
+        // Missing acknowledged children remain corruption; pending creation is
+        // legitimate recovery state and must preserve its parent.
+        if (!records.has(childId) && pendingChildIntent(parentId, nodeId, attempt, childId)) continue;
         if (attempt.dispatch?.phase === 'acknowledged') requireValue(attempt.dispatch.receipt?.child_run_id === childId,
           'RUN_HISTORY_CHILD_IDENTITY', 'Acknowledged child dispatch differs from its exact child Run');
         link(parentId, childId, { node_id: nodeId, attempt_id: attempt.id });
@@ -159,10 +188,7 @@ function buildRunFamilies(records) {
     const parent = records.get(parentId);
     if (!parent) throw Object.assign(new Error(`Referenced parent Run ${parentId} is missing`), { code: 'RUN_HISTORY_PARENT_MISSING', parent_run_id: parentId });
     const attempt = parent.state.nodes?.[record.pins.parent.node_id]?.attempts?.find(item => item.id === record.pins.parent.attempt_id);
-    const pendingChildCreation = attempt?.dispatch?.phase === 'intent'
-      && attempt.dispatch.request_id === `subworkflow-${attempt.id}`
-      && attempt.dispatch.receipt == null
-      && childId === expectedChildRunId(parentId, record.pins.parent.node_id, record.pins.parent.attempt_id);
+    const pendingChildCreation = attempt && pendingChildIntent(parentId, record.pins.parent.node_id, attempt, childId);
     requireValue(attempt?.child_run_id === childId || pendingChildCreation,
       'RUN_HISTORY_CHILD_IDENTITY', 'Parent Run no longer pins this exact child or pending SubWorkflow dispatch');
     if (attempt.dispatch?.phase === 'acknowledged') requireValue(attempt.dispatch.receipt?.child_run_id === childId,
@@ -194,14 +220,20 @@ export class WorkflowRunStore {
   directory(id) { return join(this.root, `run-${workflowId(id)}.run`); }
   runLockDirectory(id) { return insideRoot(this.root, join(this.root, '.run-locks', `run-${workflowId(id)}`)); }
   async withRunGuard(id, action) {
+    return storeOperation(this.root, () => this.#withRunGuard(id, action));
+  }
+  async #withRunGuard(id, action) {
     await noSymlinks(this.root);
     await ensureDirectory(join(this.root, '.run-locks'));
     const lockDirectory = this.runLockDirectory(id);
     await ensureDirectory(lockDirectory);
     return serializeRun(lockDirectory, () => {
-      const inherited = activeRunWriters.getStore() ?? new Set();
-      const active = new Set(inherited); active.add(this.directory(id));
-      return new WorkflowStore(lockDirectory).withWriter(() => activeRunWriters.run(active, action));
+      const active = new Map(activeRunWriters.getStore() ?? []);
+      const owner = { active: true }; active.set(operationKey(this.directory(id)), owner);
+      return new WorkflowStore(lockDirectory).withWriter(async () => {
+        try { return await activeRunWriters.run(active, action); }
+        finally { owner.active = false; }
+      });
     });
   }
   async #withRunGuards(ids, index, action) {
@@ -209,6 +241,9 @@ export class WorkflowRunStore {
     return this.withRunGuard(ids[index], () => this.#withRunGuards(ids, index + 1, action));
   }
   withRunWriter(id, action) {
+    return storeOperation(this.root, () => this.#withRunWriter(id, action));
+  }
+  #withRunWriter(id, action) {
     const root = this.directory(id);
     return serializeRun(root, async () => {
       await noSymlinks(root);
@@ -220,6 +255,9 @@ export class WorkflowRunStore {
   }
 
   async saveArtifact(id, label, value) {
+    return storeOperation(this.root, () => this.#saveArtifact(id, label, value));
+  }
+  async #saveArtifact(id, label, value) {
     workflowId(label); const bytes = Buffer.from(value); const sha256 = digest(bytes);
     requireValue(bytes.length <= 32 * 1024 * 1024, 'RUN_ARTIFACT_LIMIT', 'Run artifact exceeds its bounded size');
     const artifact = `artifact-${label}-${sha256}.bin`; const path = insideRoot(this.directory(id), join(this.directory(id), artifact));
@@ -237,6 +275,9 @@ export class WorkflowRunStore {
   }
 
   async readArtifact(id, reference) {
+    return storeOperation(this.root, () => this.#readArtifact(id, reference));
+  }
+  async #readArtifact(id, reference) {
     requireValue(reference && /^artifact-[a-z0-9._-]+-[a-f0-9]{64}\.bin$/.test(reference.artifact) && /^[a-f0-9]{64}$/.test(reference.sha256) && Number.isSafeInteger(reference.bytes) && reference.bytes >= 0 && reference.bytes <= 32 * 1024 * 1024, 'RUN_ARTIFACT_REFERENCE', 'Artifact reference needs its exact bounded identity');
     const path = insideRoot(this.directory(id), join(this.directory(id), reference.artifact)); await noSymlinks(path);
     const info = await lstat(path); requireValue(info.isFile() && info.nlink === 1 && info.size === reference.bytes, 'RUN_ARTIFACT_CORRUPT', 'Artifact size/type differs from its reference');
@@ -261,6 +302,9 @@ export class WorkflowRunStore {
   }
 
   async readExecutorResult(id, attemptId, sha256) {
+    return storeOperation(this.root, () => this.#readExecutorResult(id, attemptId, sha256));
+  }
+  async #readExecutorResult(id, attemptId, sha256) {
     workflowId(attemptId); requireValue(/^[a-f0-9]{64}$/.test(sha256), 'EXECUTOR_RESULT_ID', 'Result needs an exact content pin');
     const path = join(this.directory(id), `executor-${attemptId}-${sha256}.json`); await noSymlinks(path);
     const stat = await lstat(path); requireValue(stat.isFile() && stat.nlink === 1 && stat.size <= EXECUTOR_RESULT_MAX_BYTES, 'EXECUTOR_RESULT_LIMIT', 'Result artifact must be a bounded regular file');
@@ -269,6 +313,9 @@ export class WorkflowRunStore {
   }
 
   async create(id, pins, blobs, state) {
+    return storeOperation(this.root, () => this.#create(id, pins, blobs, state));
+  }
+  async #create(id, pins, blobs, state) {
     const pinsHash = digest(canonicalJSON(pins));
     requireValue(state.run_id === id && state.pins_hash === pinsHash, 'RUN_IDENTITY', 'Initial state does not match its pinned inputs');
     requireValue(Buffer.byteLength(canonicalJSON(pins)) <= 16 * 1024 * 1024, 'RUN_PINS_LIMIT', 'Pinned metadata is too large');
@@ -305,8 +352,11 @@ export class WorkflowRunStore {
   }
 
   async read(id) {
+    return storeOperation(this.root, () => this.#read(id));
+  }
+  async #read(id) {
     const root = this.directory(id);
-    if (activeRunWriters.getStore()?.has(root)) return this.#readUnlocked(id);
+    if (activeRunWriters.getStore()?.get(operationKey(root))?.active) return this.#readUnlocked(id);
     return serializeRun(root, async () => {
       await noSymlinks(root);
       return this.withRunGuard(id, async () => {
@@ -355,6 +405,9 @@ export class WorkflowRunStore {
   }
 
   async recover(id, repairState = () => {}, authorizeRecovery = () => {}) {
+    return storeOperation(this.root, () => this.#recover(id, repairState, authorizeRecovery));
+  }
+  async #recover(id, repairState, authorizeRecovery) {
     const root = this.directory(id); const writer = new WorkflowStore(root);
     return serializeRun(root, async () => {
       await noSymlinks(root);
@@ -388,6 +441,9 @@ export class WorkflowRunStore {
   // resource objects.  Exact pinned identities prevent this internal cleanup
   // primitive from becoming a general Run-deletion API.
   async purge(id, { expected_workflow_id, expected_revision, expected_source_workflow_id, expected_source_revision, allow_missing = false } = {}) {
+    return storeOperation(this.root, () => this.#purge(id, { expected_workflow_id, expected_revision, expected_source_workflow_id, expected_source_revision, allow_missing }));
+  }
+  async #purge(id, { expected_workflow_id, expected_revision, expected_source_workflow_id, expected_source_revision, allow_missing }) {
     requireValue(typeof allow_missing === 'boolean', 'RUN_PURGE_POLICY', 'Run purge missing policy must be explicit');
     const root = this.directory(id);
     return serializeRun(this.root, () => this.writer.withWriter(async () => {
@@ -417,6 +473,9 @@ export class WorkflowRunStore {
   }
 
   async cleanupHistory({ olderThanMs = HISTORY_RETENTION_MS, now = Date.now() } = {}) {
+    return storeOperation(this.root, () => this.#cleanupHistory({ olderThanMs, now }));
+  }
+  async #cleanupHistory({ olderThanMs, now }) {
     requireValue(Number.isFinite(olderThanMs) && olderThanMs >= 0, 'RUN_HISTORY_AGE', 'History retention age must be a nonnegative finite number');
     requireValue(Number.isFinite(now) && now >= 0, 'RUN_HISTORY_NOW', 'History cleanup time must be a nonnegative finite number');
     return serializeRun(this.root, () => this.writer.withWriter(async () => {
@@ -517,6 +576,9 @@ export class WorkflowRunStore {
   }
 
   async list() {
+    return storeOperation(this.root, () => this.#list());
+  }
+  async #list() {
     return serializeRun(this.root, () => this.writer.withWriter(async () => {
       await noSymlinks(this.root); const runs = [];
       for (const entry of await readdir(this.root, { withFileTypes: true })) {

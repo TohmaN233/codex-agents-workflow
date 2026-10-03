@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile, lstat, unlink } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { WorkflowRunStore } from '../lib/workflow-run-store.mjs';
@@ -42,6 +42,110 @@ async function addRun(store, id, {
 function childRunId(parentId, nodeId, attemptId) {
   return `child-${digest([parentId, nodeId, attemptId].join('\0')).slice(0, 58)}`;
 }
+
+function latch() {
+  let release;
+  const promise = new Promise(resolve => { release = resolve; });
+  return { promise, release };
+}
+
+test('history preserves exact pending child intent before its directory exists', async t => {
+  const { store } = await fixture(t);
+  for (const status of ['running', 'failed']) {
+    const id = `pending-${status}`, attemptId = `${status}-attempt`;
+    await addRun(store, id, { status, nodes: { child: { status, attempts: [{ id: attemptId, status,
+      child_run_id: childRunId(id, 'child', attemptId),
+      dispatch: { request_id: `subworkflow-${attemptId}`, phase: 'intent', receipt: null },
+    }] } } });
+  }
+  assert.deepEqual((await store.cleanupHistory({ olderThanMs: 0 })).preserved_run_ids, ['pending-failed', 'pending-running']);
+  await addRun(store, 'unrelated-start', { status: 'running' });
+  assert.equal((await store.list()).length, 3);
+});
+
+test('history and list queued during child creation do not invert root and Run locks', { timeout: 10000 }, async t => {
+  const { store } = await fixture(t);
+  await addRun(store, 'creating-parent', { status: 'running' });
+  const entered = latch(), proceed = latch();
+  const creating = store.mutate('creating-parent', 'fixture-child', async () => {
+    entered.release(); await proceed.promise;
+    await addRun(store, 'creating-child', { status: 'running' });
+    await store.read('creating-child');
+  });
+  await entered.promise;
+  const cleanup = store.cleanupHistory({ olderThanMs: 0 });
+  const listing = store.list();
+  proceed.release();
+  const [, result, rows] = await Promise.all([creating, cleanup, listing]);
+  assert.equal(result.preserved_count, 2); assert.equal(rows.length, 2);
+});
+
+test('opposing parent and child journal reads remain live across store instances', { timeout: 10000 }, async t => {
+  const { store, root } = await fixture(t);
+  await addRun(store, 'opposing-parent', { status: 'running' });
+  await addRun(store, 'opposing-child', { status: 'running' });
+  const secondStore = new WorkflowRunStore(process.platform === 'win32' ? root.toUpperCase() : root), entered = latch(), proceed = latch();
+  const parent = store.mutate('opposing-parent', 'fixture-parent', async () => {
+    entered.release(); await proceed.promise;
+    await secondStore.read('opposing-parent');
+    await store.read('opposing-child');
+  });
+  await entered.promise;
+  const child = secondStore.mutate('opposing-child', 'fixture-child', async () => secondStore.read('opposing-parent'));
+  proceed.release();
+  await Promise.all([parent, child]);
+});
+
+test('purge queued during nested creation completes and rejected admission releases the queue', { timeout: 10000 }, async t => {
+  const { store } = await fixture(t);
+  await addRun(store, 'purge-parent', { status: 'running' });
+  const root = { workflow: { id: 'flow', nodes: [], edges: [] }, revision_hash: 'revision',
+    provenance: { kind: 'authoring_workflow_run', source_workflow_id: 'source', source_revision: 'source-revision' } };
+  await addRun(store, 'purge-old', { pins: { root } });
+  const entered = latch(), proceed = latch();
+  const creating = store.mutate('purge-parent', 'fixture-create', async () => {
+    entered.release(); await proceed.promise; await addRun(store, 'purge-child', { status: 'running' });
+  });
+  await entered.promise;
+  const purge = store.purge('purge-old', { expected_workflow_id: 'flow', expected_revision: 'revision',
+    expected_source_workflow_id: 'source', expected_source_revision: 'source-revision' });
+  proceed.release();
+  const [, result] = await Promise.all([creating, purge]); assert.equal(result.purged, true);
+  await assert.rejects(store.mutate('purge-parent', 'fixture-failure', () => { throw new Error('visible failure'); }), /visible failure/);
+  assert.equal((await store.list()).length, 2);
+});
+
+test('detached continuations cannot reuse expired store admission or bypass queued work', { timeout: 10000 }, async t => {
+  const { store } = await fixture(t);
+  await addRun(store, 'admission', { status: 'running' });
+  const launch = latch(), queuedEntered = latch(), queuedProceed = latch();
+  let detached;
+  await store.mutate('admission', 'fixture-admission', async () => {
+    detached = launch.promise.then(() => store.read('admission'));
+  });
+  const queued = store.mutate('admission', 'fixture-queued', async () => {
+    queuedEntered.release(); await queuedProceed.promise;
+  });
+  await queuedEntered.promise;
+  launch.release(); queuedProceed.release();
+  await Promise.all([queued, detached]);
+});
+
+test('a detached read cannot reuse an expired Run writer to bypass an external guard', async t => {
+  const { store } = await fixture(t);
+  await addRun(store, 'expired-writer', { status: 'running' });
+  const launch = latch(); let detached;
+  await store.mutate('expired-writer', 'fixture-writer', async () => {
+    detached = launch.promise.then(() => store.read('expired-writer'));
+  });
+  const externalGuard = join(store.runLockDirectory('expired-writer'), '.writer.lock');
+  await writeFile(externalGuard, JSON.stringify({ pid: process.pid, token: 'external-owner' }));
+  try {
+    launch.release();
+    await assert.rejects(detached, { code: 'WORKFLOW_STORE_BUSY' });
+  } finally { await unlink(externalGuard); }
+  await store.read('expired-writer');
+});
 
 async function addLinkedChildRun(store, parentId, {
   parentStatus = 'failed', parentUpdatedAt = '2020-01-01T00:00:00.000Z', childStatus = 'failed',

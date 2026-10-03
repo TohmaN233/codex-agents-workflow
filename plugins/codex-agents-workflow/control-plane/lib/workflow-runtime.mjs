@@ -9,7 +9,7 @@ import { WorkflowRunStore } from './workflow-run-store.mjs';
 import { validateWorkflowGraph } from './workflow-validator.mjs';
 import { canonicalJSON, digest } from './workflow-revisions.mjs';
 import { noSymlinks, requireValue } from './workflow-paths.mjs';
-import { pathBoundaries, resolveBindings, bindingPointers, pointerParts } from './workflow-bindings.mjs';
+import { pathBoundaries, resolveBindings, bindingPointers } from './workflow-bindings.mjs';
 import { validateData } from './workflow-data-schema.mjs';
 import { runPermissions, nodePermissions, approvalBinding, leaseToken, executionEnvelope, bindingContext } from './workflow-execution-envelope.mjs';
 import { assertThreadReceipt, isThreadExecutor, threadResourcePacketText } from './thread-handoff.mjs';
@@ -25,6 +25,7 @@ import { authoringReviewIdentity, isAuthoringRunProvenance } from './authoring/a
 import { validateAuthoringAcceptance } from './skill-import/authoring-acceptance.mjs';
 import { assignFanoutItems, assignedFanoutIndices, assignedFanoutWritePaths, activeFanoutAssignmentIndices } from './execution/fanout-input-projection.mjs';
 import { semanticTurnsConsumed } from './execution/completion-turn-budget.mjs';
+import { validateFanoutProducerOutput } from './execution/completion-preflight.mjs';
 import { WORKSPACE_SOURCE_LOCATIONS, revalidateBoundSourceLocations, validateWorkspaceSourceLocations } from './workspace-source-locations.mjs';
 
 const CHILD_COMPLETION = Symbol('verified child completion');
@@ -805,21 +806,7 @@ export class WorkflowRuntime {
         if (kind === WORKSPACE_SOURCE_LOCATIONS)
           payload.structured_output[output_name] = (await validateWorkspaceSourceLocations(payload.structured_output[output_name], state.permissions.workspace,
             { producer_node_id: node_id, output_name })).canonical_locations;
-      for (const consumer of pins.root.workflow.nodes) {
-        const binding = consumer.fanout && consumer.input_bindings?.[consumer.fanout.input];
-        if (!binding || !pins.root.workflow.edges.some(edge => edge.source === node_id && edge.target === consumer.id && !edge.label)
-          || !bindingPointers(binding).some(pointer => {
-            const parts = pointerParts(pointer);
-            return parts[0] === 'nodes' && parts[1] === node_id && parts[2] === 'output';
-          })) continue;
-        const previous = node.output;
-        node.output = payload.structured_output;
-        let items;
-        try { items = resolveBindings({ items: binding }, bindingContext(state)).items; }
-        finally { node.output = previous; }
-        requireValue(Array.isArray(items) && items.length > 0, 'SUBAGENT_FANOUT_INPUT',
-          `Node ${node_id} must provide a nonempty ${consumer.fanout.input} list before ${consumer.id} can start`);
-      }
+      validateFanoutProducerOutput(definition, payload.structured_output, state, pins);
       if (['provider', 'thread'].includes(definition.executor?.kind) || definition.executor?.kind === 'main' && (state.constraints.require_main_session_identity === true || state.cost_ledger.budget || state.constraints.require_usage_ledger === true)) {
         requireValue(attempt.dispatch?.receipt, 'DISPATCH_RECEIPT_REQUIRED', 'Semantic completion requires a persisted exact task identity');
         if (state.cost_ledger.budget || state.constraints.require_usage_ledger === true) requireValue(state.cost_ledger.calls.find(item => item.call_id === attempt.dispatch.request_id)?.usage, 'USAGE_REQUIRED', 'Plan 1 semantic work needs recorded actual or explicitly unknown usage before completion');

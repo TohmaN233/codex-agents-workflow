@@ -85,7 +85,8 @@
 
 ## Run history
 
-- Run startup remove succeeded/failed history older than 24 hours, measured from terminal time. Manual cleanup removes eligible terminal history immediately. Preserve interrupted/unfinished Runs and unresolved live effects. Never remove task workspace outputs or recreate a deleted Run through queued writes.
+- Run startup removes succeeded/failed history older than 24 hours, measured from terminal time. Manual cleanup removes eligible terminal history immediately. Preserve interrupted/unfinished Runs and unresolved live effects, including exact child creation intents without a published child. Never remove task workspace outputs or recreate a deleted Run through queued writes.
+- Admit short Run-store transactions before taking root or Run locks; nested child/ancestor operations retain the same active admission. Agent execution remains parallel. Validate downstream semantic prerequisites before persisting an immutable Main result, and reuse that validation at completion.
 
 ## Release validation
 

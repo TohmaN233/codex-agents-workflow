@@ -80,7 +80,7 @@ export async function completeMainOrchestration(runtime, { run_id, control_token
   await runtime.reserveHostMainTurn(run_id, binding);
   try {
     validateData(output, semanticResultSchema(definition));
-    await preflightSemanticOutput(definition, output, envelope.workspace);
+    await preflightSemanticOutput(definition, output, envelope.workspace, record);
     const savedBefore = JSON.parse((await runtime.runs.readArtifact(run_id, receipt.before_snapshot)).toString('utf8'));
     const before = new Map(savedBefore.files); before.unreadablePaths = new Map(savedBefore.unreadable);
     const after = await snapshot(), changed = changedWorkspacePaths(before, after);
@@ -99,7 +99,7 @@ export async function completeMainOrchestration(runtime, { run_id, control_token
     await event('session_state', { status: 'closed' });
     await runtime.recordHostMainUsage(run_id, { ...binding, request_id: `dispatch-${attempt.id}`, usage: { unknown: true } });
     const final = record.pins.root.workflow.finalization?.node_id === definition.id;
-    return runtime.completeHostMainResult(run_id, binding,
+    return await runtime.completeHostMainResult(run_id, binding,
       final && !Object.hasOwn(definition.outputs_schema?.properties ?? {}, 'accepted') ? { accepted: true } : {});
   } catch (error) {
     await event('completion_invalid', { diagnostic: String(error.message).slice(0,900), thread_id });
