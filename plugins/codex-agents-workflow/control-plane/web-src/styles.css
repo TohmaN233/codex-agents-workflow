@@ -361,6 +361,38 @@ h3 { font-size: 15px; letter-spacing: -0.01em; }
 .node-kind { color: var(--accent); font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase; }
 .flow-node strong { font-size: 13px; }
 .node-binding { overflow: hidden; color: var(--muted); font-family: var(--font-mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.loop-node-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.loop-node-badge,
+.loop-round-badge { display: inline-flex; align-items: center; padding: 3px 6px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--line)); border-radius: 999px; font-family: var(--font-mono); font-size: 9px; white-space: nowrap; }
+.react-flow__node-loopRegion { padding: 0 !important; overflow: visible !important; background: transparent !important; border: 0 !important; box-shadow: none !important; pointer-events: none !important; }
+.loop-region-node { width: 100%; height: 100%; padding: 10px 12px; overflow: hidden; background: color-mix(in srgb, var(--accent-soft) 35%, transparent); border: 1px dashed color-mix(in srgb, var(--accent) 60%, var(--line)); border-radius: 13px; }
+.loop-region-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: var(--accent); font-size: 10px; }
+.loop-region-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loop-region-boundary { display: block; margin-top: 4px; color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+.loop-region-node .status { margin-top: 3px; font-size: 9px; }
+.loop-editor { margin: 22px 0; padding: 12px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: 8px; }
+.loop-editor-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.loop-editor-heading h3 { margin: 0; font-size: 13px; }
+.loop-editor-heading p { margin: 5px 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.loop-editor-heading button { flex-shrink: 0; padding: 6px 8px; font-size: 10px; }
+.loop-editor-item { padding-top: 9px; border-top: 1px solid var(--line); }
+.loop-editor-item summary { font-weight: 600; }
+.loop-editor-item .field { margin: 10px 0; font-size: 10px; }
+.loop-editor-item .field input,
+.loop-editor-item .field select,
+.loop-editor-item .field textarea { font-size: 10px; }
+.loop-node-list { max-height: 210px; margin: 10px 0; padding: 5px 10px; overflow: auto; border: 1px solid var(--line); border-radius: 5px; }
+.loop-node-list legend { padding: 0 4px; color: var(--muted); font-size: 10px; }
+.loop-node-list .check { margin: 6px 0; font-size: 10px; overflow-wrap: anywhere; }
+.loop-scope-fields { margin: 10px 0; padding: 4px 10px; border: 1px solid var(--line); border-radius: 5px; }
+.loop-scope-fields legend { padding: 0 4px; color: var(--muted); font-size: 10px; }
+.loop-node-list code { color: var(--muted); font-family: var(--font-mono); font-size: 9px; }
+.loop-editor-item > small { display: block; color: var(--muted); font-size: 9px; line-height: 1.5; }
+.loop-run-summary { margin: 14px 0; padding: 10px; background: var(--surface-muted); border: 1px solid var(--line); border-radius: 7px; }
+.loop-run-summary h3 { margin: 0 0 7px; font-size: 12px; }
+.loop-run-item { padding: 8px 0; border-top: 1px solid var(--line); }
+.loop-run-item > div:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; font-size: 10px; }
+.loop-run-item details { margin: 4px 0; }
 .react-flow__handle { width: 10px; height: 10px; background: var(--accent); border-color: var(--surface); }
 .react-flow__edge-path { stroke: #8c756f; stroke-width: 1.7; }
 .react-flow__edge.selected .react-flow__edge-path { stroke: var(--accent); stroke-width: 3; }

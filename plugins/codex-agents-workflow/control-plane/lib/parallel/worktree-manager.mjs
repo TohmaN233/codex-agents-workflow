@@ -1,12 +1,13 @@
 import { dirname, join, resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { GitWorktrees } from './git-worktrees.mjs';
-import { planParallelBranches, nodeBranchChain, branchOwner } from './branch-planner.mjs';
-import { nodeWorkspace } from './workspace.mjs';
+import { planParallelBranches, nodeBranchChain } from './branch-planner.mjs';
+import { nodeWorkspace, regionBranchOwner } from './workspace.mjs';
 import { digest, canonicalJSON } from '../workflow-revisions.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 import { advanceRun } from '../workflow-state.mjs';
 import { nodePermissions } from '../workflow-execution-envelope.mjs';
+import { loopParallelArchives } from '../workflow-loops.mjs';
 
 const managers = new Map();
 const samePath = (a, b) => process.platform === 'win32' ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b);
@@ -62,7 +63,7 @@ export class ParallelWorktreeManager {
   previousPaths(state, pins, workspace) {
     const executions = Object.entries(state.nodes).filter(([id]) => samePath(nodeWorkspace(id, state, pins), workspace))
       .flatMap(([, node]) => node.attempts.flatMap(attempt => attempt.completion?.changed_paths ?? []));
-    const integrations = Object.values(state.parallel ?? {}).filter(record => record.phase === 'merged' && samePath(record.base.workspace, workspace)).flatMap(record => record.proposal.changed_paths);
+    const integrations = [state.parallel ?? {}, ...loopParallelArchives(state).map(item=>item.parallel)].flatMap(records=>Object.values(records)).filter(record => record.phase === 'merged' && samePath(record.base.workspace, workspace)).flatMap(record => record.proposal.changed_paths);
     return [...new Set([...executions, ...integrations])];
   }
   async ensureNode(runtime, runId, args) {
@@ -89,10 +90,10 @@ export class ParallelWorktreeManager {
       record.phase = 'provisioning'; touch(state);
     });
     const { pins } = await runtime.runs.read(runId); const region = pins.parallel.regions.find(item => item.id === regionId);
-    for (const branch of region.branches) await runtime.transition(runId, 'parallel_branch', async state => {
+    for (const branch of region.branches) await runtime.transition(runId, 'parallel_branch', async (state, currentPins) => {
       active(state, { gate }); const record = state.parallel[regionId];
       if (record.branches[branch.id]) { await this.git.verify(record.branches[branch.id]); return; }
-      record.branches[branch.id] = await this.git.create(record.base, branchOwner(runId, regionId, branch.id)); touch(state);
+      record.branches[branch.id] = await this.git.create(record.base, regionBranchOwner(state, currentPins, regionId, branch.id)); touch(state);
     });
     await runtime.transition(runId, 'parallel_ready', state => {
       active(state, { gate }); const record = state.parallel[regionId];
@@ -166,28 +167,42 @@ export class ParallelWorktreeManager {
       requireValue(['succeeded', 'failed', 'cancelled'].includes(record.state.status), 'PARALLEL_CLEANUP_ACTIVE', 'Active Runs retain their worktrees');
       const regions = (record.pins.parallel?.regions ?? []).filter(region => region.isolated).sort((a, b) => a.node_ids.length - b.node_ids.length);
       const removed = [];
+      const maps=[{path:['parallel'],parallel:record.state.parallel??{}},...loopParallelArchives(record.state)];
+      const at=(state,path)=>path.reduce((value,key)=>value[key],state);
       for (const region of regions) {
-        const state = record.state.parallel[region.id]; if (!state) continue;
-        requireValue(state.phase === 'merged', 'PARALLEL_UNMERGED_RETAINED', 'Unaccepted branch changes remain available for inspection', { region_id: region.id });
+        const scopes=maps.filter(item=>item.parallel[region.id]).map(item=>({path:[...item.path,region.id],scope:item.parallel[region.id]}));
+        for(const {scope} of scopes)requireValue(scope.phase === 'merged', 'PARALLEL_UNMERGED_RETAINED', 'Unaccepted branch changes remain available for inspection', { region_id: region.id });
         for (const branch of region.branches) {
-          const ownership = state.branches[branch.id];
+          const groups=new Map();
+          for(const reference of scopes){const ownership=reference.scope.branches[branch.id];requireValue(ownership,'PARALLEL_OWNER_MISSING','Archived branch ownership is missing');
+            const group=groups.get(ownership.owner)??[];group.push(reference);groups.set(ownership.owner,group);}
+          for(const references of groups.values()){
+          const state=references[0].scope,ownership=state.branches[branch.id],ownerHash=digest(canonicalJSON(ownership));
+          const tree=state.proposal.branches.find(item=>item.branch_id===branch.id)?.tree;
+          requireValue(tree&&references.every(({scope})=>digest(canonicalJSON(scope.branches[branch.id]))===ownerHash&&scope.proposal.branches.find(item=>item.branch_id===branch.id)?.tree===tree),'PARALLEL_OWNER_CONFLICT','Archived ownership or accepted tree differs across loop histories');
           await runtime.runs.mutate(runId, 'parallel_cleanup', async current => {
-            const scope = current.parallel[region.id]; scope.cleaned_branches ??= []; scope.cleanup_intents ??= {};
-            if (scope.cleaned_branches.includes(branch.id) || scope.cleanup_intents[branch.id]) return;
+            const targets=references.map(item=>at(current,item.path));
+            for(const scope of targets){scope.cleaned_branches??=[];scope.cleanup_intents??={};}
+            if(targets.every(scope=>scope.cleaned_branches.includes(branch.id)||scope.cleanup_intents[branch.id]))return;
             requireValue(region.node_ids.every(id => current.nodes[id].attempts.every(attempt => !attempt.dispatch?.cancellation_pending && !['claimed', 'running'].includes(attempt.status))), 'PARALLEL_CLEANUP_PENDING', 'Branch executor shutdown has not been confirmed');
-            await this.git.verify(ownership);
-            scope.cleanup_intents[branch.id] = { owner_sha256: digest(canonicalJSON(ownership)), tree: scope.proposal.branches.find(item => item.branch_id === branch.id).tree }; touch(current);
+            const prior=targets.map(scope=>scope.cleanup_intents[branch.id]).find(Boolean);
+            if(prior)requireValue(prior.owner_sha256===ownerHash&&prior.tree===tree,'PARALLEL_CLEANUP_INTENT','Archived cleanup intent differs from exact ownership');
+            else await this.git.verify(ownership);
+            for(const scope of targets)scope.cleanup_intents[branch.id]={owner_sha256:ownerHash,tree};touch(current);
           });
           await runtime.runs.mutate(runId, 'parallel_cleanup', async current => {
-            const scope = current.parallel[region.id]; scope.cleaned_branches ??= [];
-            if (scope.cleaned_branches.includes(branch.id)) return;
-            requireValue(scope.cleanup_intents?.[branch.id]?.owner_sha256 === digest(canonicalJSON(ownership)), 'PARALLEL_CLEANUP_INTENT', 'Cleanup needs exact journaled ownership');
+            const targets=references.map(item=>at(current,item.path));
+            if(targets.every(scope=>scope.cleaned_branches.includes(branch.id)))return;
+            requireValue(targets.every(scope=>scope.cleanup_intents?.[branch.id]?.owner_sha256===ownerHash&&scope.cleanup_intents[branch.id].tree===tree),'PARALLEL_CLEANUP_INTENT','Cleanup needs exact journaled ownership');
+            if(!targets.some(scope=>scope.cleaned_branches.includes(branch.id)))
             await this.git.remove(ownership, { reconcile: true, beforeRemove: async () => {
               const snapshot = await this.git.snapshot(ownership.workspace, state.base.base_commit, branch.write_paths);
-              requireValue(snapshot.tree === scope.cleanup_intents[branch.id].tree, 'PARALLEL_BRANCH_CHANGED', 'A branch changed after its accepted snapshot; retain it for inspection');
+              requireValue(snapshot.tree === tree, 'PARALLEL_BRANCH_CHANGED', 'A branch changed after its accepted snapshot; retain it for inspection');
             } });
-            scope.cleaned_branches.push(branch.id); touch(current); removed.push(ownership.workspace);
+            for(const scope of targets)if(!scope.cleaned_branches.includes(branch.id))scope.cleaned_branches.push(branch.id);
+            touch(current);removed.push(ownership.workspace);
           });
+          }
         }
       }
       return { removed };

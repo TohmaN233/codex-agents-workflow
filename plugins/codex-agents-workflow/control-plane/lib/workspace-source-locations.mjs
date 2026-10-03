@@ -121,6 +121,7 @@ export async function revalidateBoundSourceLocations(node, state, pins) {
   const definitions = new Map((pins.root.workflow.nodes ?? []).map(item => [item.id, item]));
   const context = {
     inputs: state.inputs,
+    loops: state.loops ?? {},
     nodes: Object.fromEntries(Object.entries(state.nodes).map(([id, item]) => [id, { output: item.output }])),
   };
   const selected = new Set();

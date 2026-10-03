@@ -3,6 +3,7 @@ import { requireValue } from '../workflow-paths.mjs';
 import { resolveBindings, bindingPointers, pointerParts } from '../workflow-bindings.mjs';
 import { bindingContext } from '../workflow-execution-envelope.mjs';
 import { semanticResultSchema } from './host-main-automation.mjs';
+import { validateLoopExitOutput, validateLoopItemSources } from '../workflow-loops.mjs';
 
 export function validateFanoutProducerOutput(definition, output, state, pins) {
   for (const consumer of pins.root.workflow.nodes) {
@@ -29,11 +30,16 @@ export async function preflightSemanticOutput(definition, output, workspace, { s
     if (kind === WORKSPACE_SOURCE_LOCATIONS) await validateWorkspaceSourceLocations(output[output_name], workspace,
       { producer_node_id: definition.id, output_name });
   }
-  if (state && pins) validateFanoutProducerOutput(definition, output, state, pins);
+  if (state && pins) {
+    validateFanoutProducerOutput(definition, output, state, pins);
+    validateLoopExitOutput(state, pins.root.workflow, definition.id, output);
+    const proposed={...state,nodes:{...state.nodes,[definition.id]:{...state.nodes[definition.id],output,status:'succeeded'}}};
+    validateLoopItemSources(proposed, pins.root.workflow, {allowUnavailable:true});
+  }
 }
 
 export function correctableCompletionError(error) {
-  return ['DATA_INVALID', 'SOURCE_LOCATION_INVALID', 'HOST_MAIN_OUTPUT_JSON', 'SUBAGENT_FANOUT_INPUT'].includes(error?.code);
+  return ['DATA_INVALID', 'SOURCE_LOCATION_INVALID', 'HOST_MAIN_OUTPUT_JSON', 'SUBAGENT_FANOUT_INPUT', 'LOOP_VERDICT_INVALID'].includes(error?.code);
 }
 
 export function boundedCompletionDiagnostic(error) {

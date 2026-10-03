@@ -25,6 +25,7 @@ export function newNode(type: string, id = uid(type)): Json {
 function WorkflowNode({ data, selected }: NodeProps) {
   const t = useLocale();
   const node = data.definition as Json;
+  const loopMembership = data.loopMembership as Json[] | undefined;
   const kind = nodeKindLabel(node.type, t);
   const executorKind = ({main:node.executor?.mode === 'orchestration' ? t('主 Agent（orchestration）','Main (orchestration)') : t('主 Agent（worker）','Main (worker)'),provider:t('Provider','Provider'),thread:t('Codex task','Codex task'),human:t('人工','Human'),tool:t('工具','Tool'),subworkflow:t('子 Workflow','Subworkflow')} as Record<string,string>)[node.executor?.kind] ?? node.executor?.kind;
   const fanoutCount = node.type === 'agent' && node.executor?.kind && !['main','human','tool','subworkflow'].includes(node.executor.kind) && !(node.executor.kind === 'thread' && node.executor.lifecycle === 'continue')
@@ -34,15 +35,29 @@ function WorkflowNode({ data, selected }: NodeProps) {
     <span className="node-kind">{kind}</span><strong>{node.name || node.id}</strong>
     <span className="node-binding">{(node.executor?.kind === 'thread' ? `${t('Codex task','Codex task')} · ${data.providerLabel ?? node.executor.provider_id}` : data.providerLabel ?? executorKind ?? node.id)+fanoutCount}</span>
     {data.status != null && <Status value={String(data.status)}/>}
+    {!!loopMembership?.length && <div className="loop-node-badges">{loopMembership.map((loop: Json) => <span className="loop-node-badge" key={loop.id}>
+      {t('循环', 'Loop')} · {loop.round == null ? `${t('上限', 'limit')} ${loop.max_rounds}` : `${t('第', 'round ')}${loop.round}${t('轮', '')}/${loop.max_rounds}`}
+    </span>)}</div>}
     {node.type !== 'end' && <Handle type="source" position={Position.Right}/>}
   </div>;
 }
-const nodeTypes = { workflow: WorkflowNode };
+function LoopRegionNode({ data }: NodeProps) {
+  const t = useLocale(); const loop = data.definition as Json; const state = data.runtime as Json | null;
+  return <div className="loop-region-node">
+    <div className="loop-region-heading"><strong>{t('返修循环', 'Repair loop')} · {loop.id}</strong><span className="loop-round-badge">
+      {state?.round == null ? `${t('最多', 'up to')} ${loop.max_rounds} ${t('轮', 'rounds')}` : `${t('第', 'Round ')}${state.round}/${loop.max_rounds}`}
+    </span></div>
+    <span className="loop-region-boundary">{loop.entry_node || '…'} → {loop.exit_node || '…'}</span>
+    {state?.status && <Status value={String(state.status)}/>}
+  </div>;
+}
+const nodeTypes = { workflow: WorkflowNode, loopRegion: LoopRegionNode };
 function Surface({ workflow, onChange, onSelect, runtime, providers = EMPTY_PROVIDERS, readOnly = false }: { workflow: Json, onChange: (w: Json) => void, onSelect: (kind: string, id: string) => void, runtime?: Json, providers?: Json[], readOnly?: boolean }) {
   const t = useLocale();
   const displayGraph = () => {
     const graph = toCanvas(workflow, runtime);
     return { ...graph, nodes: graph.nodes.map((node: Json) => {
+      if (node.type === 'loopRegion') return node;
       const providerId = node.data.definition.executor?.provider_id;
       const provider = providers.find(item => item.id === providerId);
       return { ...node, data: { ...node.data, providerLabel: provider

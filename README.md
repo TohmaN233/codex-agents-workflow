@@ -101,6 +101,8 @@ Execution nodes write code and outputs directly into the assigned workspace, the
 
 Parallel nodes keep separate inputs, attempts, artifacts, and results. Successful shards remain accepted; a repair receives only the failed items and their evidence.
 
+A Workflow can also declare a bounded repair loop around a review-and-repair region. Its round limit includes the first review, while the graph itself stays a DAG. The Host retains accepted items, sends only failed original items with their findings to repair, and rechecks only accepted items affected by shared changes. If the round limit is exhausted, the Run fails without accepting the last unreviewed result. See the [Workflow schema reference](docs/reference/workflow-schema.md#bounded-repair-loops).
+
 ### 6. Roles work automatically in ordinary tasks
 
 A Role is a saved way for Main to call one helper. It says what work fits, which Provider to use, what the helper may change, and what instructions it receives. Once the plugin is loaded, Main automatically selects an enabled Role when delegation would help. The user does not need to name a Role or start a Workflow.

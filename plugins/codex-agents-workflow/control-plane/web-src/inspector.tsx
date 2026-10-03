@@ -1,5 +1,81 @@
-import { Field, JsonField, ProviderField, Select, Details, useLocale, type Json } from './shared';
+import { useState } from 'react';
+import { Field, JsonField, ProviderField, Select, Details, useLocale, type Json, uid } from './shared';
 import { findUpstreamThreadSources, resolveThreadSource } from './thread-source-options.mjs';
+import { renameLoopId } from './graph-adapter.mjs';
+
+function LoopSelectorField({ label, value, placeholder, onChange }: { label: string, value: any, placeholder: string, onChange: (value: any) => void }) {
+  const t = useLocale();
+  if (value !== undefined && value !== null && typeof value !== 'string') return <JsonField label={label} value={value} onChange={onChange}/>;
+  return <>
+    <Field label={label} value={value ?? ''} placeholder={placeholder} onChange={onChange}/>
+    <details><summary>{t('高级选择器（JSON）', 'Advanced selector (JSON)')}</summary><JsonField label={label} value={value ?? null} onChange={onChange}/></details>
+  </>;
+}
+
+function loopBooleanPath(condition: Json) {
+  if (condition?.op !== 'eq' || !Array.isArray(condition.args) || condition.args.length !== 2) return '';
+  const [left, right] = condition.args;
+  if (typeof left?.path === 'string' && right?.value === true) return left.path;
+  if (typeof right?.path === 'string' && left?.value === true) return right.path;
+  return '';
+}
+
+function LoopRegions({ workflow, change }: { workflow: Json, change: (w: Json) => void }) {
+  const t = useLocale(); const loops: Json[] = workflow.loops ?? []; const [roundInputs, setRoundInputs] = useState<Record<string, string>>({});
+  const setLoops = (next: Json[]) => change({ ...workflow, loops: next });
+  const patchLoop = (id: string, fields: Json) => setLoops(loops.map(loop => loop.id === id ? { ...loop, ...fields } : loop));
+  const setItemScope = (id: string, item_scope: Json | null) => setLoops(loops.map(loop => {
+    if (loop.id !== id) return loop;
+    const next = { ...loop }; if (item_scope) next.item_scope = item_scope; else delete next.item_scope; return next;
+  }));
+  const renameLoop = (oldId: string, id: string) => change(renameLoopId(workflow, oldId, id));
+  const addLoop = () => {
+    const id = uid('loop');
+    setLoops([...loops, { id, entry_node: '', exit_node: '', node_ids: [], max_rounds: 3, until: {} }]);
+  };
+  const nodeOptions = workflow.nodes.map((node: Json) => ({ value: node.id, label: `${node.name ?? node.id} · ${node.id}` }));
+  return <section className="loop-editor">
+    <div className="loop-editor-heading"><div><h3>{t('返修循环', 'Repair loops')}</h3><p>{t('只在所选 DAG 区域内重复审查与修复。循环次数包含第一轮审查。', 'Repeat review and repair only inside a selected DAG region. The round limit includes the first review.')}</p></div>
+      <button type="button" onClick={addLoop}>{t('添加循环', 'Add loop')} ＋</button></div>
+    {!loops.length && <p className="muted">{t('此 Workflow 尚未定义返修循环。', 'This Workflow has no repair loop.')}</p>}
+    {loops.map((loop, index) => <details className="loop-editor-item" key={index} open>
+      <summary>{loop.id || `${t('循环', 'Loop')} ${index + 1}`} · {loop.node_ids?.length ?? 0} {t('个节点', 'nodes')}</summary>
+      <Field label={t('循环 ID', 'Loop ID')} value={loop.id} onChange={id => renameLoop(loop.id, id)}/>
+      <Select label={t('入口节点', 'Entry node')} value={loop.entry_node ?? ''} options={[{ value: '', label: t('请选择入口节点', 'Choose an entry node') }, ...nodeOptions]} onChange={entry_node => patchLoop(loop.id, { entry_node })}/>
+      <Select label={t('出口节点', 'Exit node')} value={loop.exit_node ?? ''} options={[{ value: '', label: t('请选择出口节点', 'Choose an exit node') }, ...nodeOptions]} onChange={exit_node => patchLoop(loop.id, { exit_node })}/>
+      <fieldset className="loop-node-list"><legend>{t('循环区域内的节点', 'Nodes inside the region')}</legend>
+        {workflow.nodes.map((node: Json) => <label className="check" key={node.id}><input type="checkbox" checked={(loop.node_ids ?? []).includes(node.id)} onChange={event => {
+          const node_ids = event.target.checked ? [...(loop.node_ids ?? []), node.id] : (loop.node_ids ?? []).filter((id: string) => id !== node.id);
+          patchLoop(loop.id, { node_ids });
+        }}/>{node.name ?? node.id} <code>{node.id}</code></label>)}
+      </fieldset>
+      <small>{t('区域由这些节点组成；在 DAG 中连接入口到出口。保存为循环区域不会添加返向连线。', 'Choose the region nodes and connect its entry to its exit in the DAG. The region does not add a backward edge.')}</small>
+      <label className="field">{t('最大轮数（包含第一轮审查）', 'Maximum rounds (includes first review)')}<input type="number" min={1} step={1} value={roundInputs[loop.id] ?? String(loop.max_rounds ?? 3)} onChange={event => {
+        const value = event.target.value; setRoundInputs(current => ({ ...current, [loop.id]: value }));
+        if (value !== '' && Number.isInteger(Number(value))) patchLoop(loop.id, { max_rounds: Number(value) });
+      }} onBlur={() => { if (roundInputs[loop.id] === '') patchLoop(loop.id, { max_rounds: 0 }); }}/></label>
+      <Field label={t('结束条件的布尔 JSON Pointer', 'Boolean JSON Pointer for the stop condition')} value={loopBooleanPath(loop.until)} placeholder={t('例如：/nodes/review/output/accepted', 'For example: /nodes/review/output/accepted')} onChange={path => patchLoop(loop.id, { until: path ? { op: 'eq', args: [{ path }, { value: true }] } : {} })}/>
+      <details><summary>{t('高级结束条件 DSL（JSON）', 'Advanced stop condition DSL (JSON)')}</summary><JsonField label={t('条件 DSL', 'Condition DSL')} value={loop.until ?? {}} onChange={until => patchLoop(loop.id, { until })}/></details>
+      {loop.item_scope && <button type="button" onClick={() => patchLoop(loop.id, { until: { op: 'eq', args: [{ path: `/loops/${loop.id}/all_accepted` }, { value: true }] } })}>{t('设为“所有范围项均已接受”', 'Use “all scoped items accepted” condition')}</button>}
+      <small>{t('有逐项范围时可使用 all_accepted；否则请把条件指向审查节点的语义输出。', 'With an item scope, use all_accepted; otherwise point the condition to the review node’s semantic output.')}</small>
+      <JsonField label={t('反馈输入绑定（可选）', 'Feedback input bindings (optional)')} value={loop.feedback_bindings ?? {}} onChange={feedback_bindings => patchLoop(loop.id, { feedback_bindings })}/>
+      <label className="check"><input type="checkbox" checked={!!loop.item_scope} onChange={event => setItemScope(loop.id, event.target.checked ? { items: null, verdicts: null, paths_field: 'files' } : null)}/>{t('启用逐项审查与返修', 'Enable item-level review and repair')}</label>
+      {loop.item_scope && <fieldset className="loop-scope-fields"><legend>{t('原始项、审查结论和文件依赖', 'Original items, review verdicts, and file dependencies')}</legend>
+        <LoopSelectorField label={t('输入项绑定', 'Items binding')} value={loop.item_scope.items} placeholder="/inputs/items" onChange={items => setItemScope(loop.id, { ...loop.item_scope, items })}/>
+        <LoopSelectorField label={t('审查结论绑定', 'Review verdicts binding')} value={loop.item_scope.verdicts} placeholder="/nodes/review/output/verdicts" onChange={verdicts => setItemScope(loop.id, { ...loop.item_scope, verdicts })}/>
+        <Field label={t('产物路径字段（必须是字符串数组）', 'Artifact path field (string array)')} value={loop.item_scope.paths_field ?? ''} placeholder="files" onChange={paths_field => setItemScope(loop.id, { ...loop.item_scope, paths_field })}/>
+        <label className="check"><input type="checkbox" checked={loop.item_scope.dependencies_field !== undefined} onChange={event => {
+          const item_scope = { ...loop.item_scope };
+          if (event.target.checked) item_scope.dependencies_field = 'dependencies'; else delete item_scope.dependencies_field;
+          setItemScope(loop.id, item_scope);
+        }}/>{t('跟踪依赖文件', 'Track dependency files')}</label>
+        {loop.item_scope.dependencies_field !== undefined && <Field label={t('依赖路径字段（字符串数组）', 'Dependency path field (string array)')} value={loop.item_scope.dependencies_field} placeholder="dependencies" onChange={dependencies_field => setItemScope(loop.id, { ...loop.item_scope, dependencies_field })}/>}
+      </fieldset>}
+      <button type="button" className="danger" onClick={() => setLoops(loops.filter(item => item.id !== loop.id))}>{t('删除循环区域', 'Remove loop region')}</button>
+    </details>)}
+  </section>;
+}
+
 export function Inspector({ workflow, selection, providers, change, select, inline }: { workflow: Json, selection: { kind: string, id: string }, providers: Json[], change: (w: Json) => void, select: (kind: string, id: string) => void, inline: () => void }) {
   const t = useLocale();
   const node = workflow.nodes.find((item: Json) => item.id === selection.id); const edge = workflow.edges.find((item: Json) => item.id === selection.id);
@@ -113,6 +189,7 @@ export function Inspector({ workflow, selection, providers, change, select, inli
       <JsonField label={t('输入 Schema', 'Input schema')} value={workflow.inputs_schema} onChange={inputs_schema => change({ ...workflow, inputs_schema })}/>
       <JsonField label={t('输出 Schema', 'Output schema')} value={workflow.outputs_schema} onChange={outputs_schema => change({ ...workflow, outputs_schema })}/>
       <JsonField label={t('外部依赖要求', 'External requirements')} value={workflow.requirements} onChange={requirements => change({ ...workflow, requirements })}/>
+      <LoopRegions workflow={workflow} change={change}/>
       <JsonField label={t('标签', 'Tags')} value={workflow.tags ?? []} onChange={tags => change({ ...workflow, tags })}/>
     </>}
   </aside>;

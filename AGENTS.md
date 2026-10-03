@@ -49,6 +49,9 @@
 
 ## Fan-out and repair
 
+- Structured `loops` repeat a closed single-entry/single-exit DAG region under Host control. Loop rounds, local execution attempts and correction turns are distinct; immutable completed rounds survive recovery. Exit acceptance gates all outside successors. Exhaustion is visible failure, never successful finalization.
+- Item-loop findings are positional semantic verdicts. The Host projects failed items with findings to repair and invalidated items to review, hashes declared artifact/dependency files, and retains acceptance only for the reviewed revision. Previously accepted siblings are not rewritten. Build Workflow and Skill2Workflow compile and validate the same loop structure.
+
 - Default Agent retry is three total attempts unless the source explicitly requires another bound.
 - Runtime fan-out uses Host-generated deterministic assignments. `batch_size` controls items per child; `max_concurrency` controls active children.
 - Parallel bounded-write children must have disjoint Host-derived write paths. Shared changes go to one downstream integration owner.

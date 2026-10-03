@@ -18,13 +18,15 @@ import { initialRunState, advanceRun, graphInfo, setOutcome, interruptActiveNode
 import { resolveWorkflowPins } from './workflow-pins.mjs';
 import { childIdentity, childPermissions, validateChildClosure } from './workflow-subworkflow.mjs';
 import { planParallelBranches } from './parallel/branch-planner.mjs';
+import { nodeWorkspace } from './parallel/workspace.mjs';
 import { mainSessionIdentity, sameMainSession } from './execution/main-session-adapter.mjs';
 import { hostToolContracts, requireHostToolExecutionScope, validateHostToolReceipt } from './execution/host-tool-runner.mjs';
 import { recordUsage as commitUsage, reserveCost } from './workflow-cost-ledger.mjs';
 import { authoringReviewIdentity, isAuthoringRunProvenance } from './authoring/authoring-workflows.mjs';
 import { validateAuthoringAcceptance } from './skill-import/authoring-acceptance.mjs';
 import { assignFanoutItems, assignedFanoutIndices, assignedFanoutWritePaths, activeFanoutAssignmentIndices } from './execution/fanout-input-projection.mjs';
-import { semanticTurnsConsumed } from './execution/completion-turn-budget.mjs';
+import { semanticTurnsConsumed, currentRoundAttempts } from './execution/completion-turn-budget.mjs';
+import { loopRoundSignature, observeLoopItems, validateLoopExitOutput, validateLoopItemSources } from './workflow-loops.mjs';
 import { validateFanoutProducerOutput } from './execution/completion-preflight.mjs';
 import { WORKSPACE_SOURCE_LOCATIONS, revalidateBoundSourceLocations, validateWorkspaceSourceLocations } from './workspace-source-locations.mjs';
 
@@ -95,7 +97,7 @@ function completionPayload(payload) {
 }
 export function resolvedSubagentPlan(definition,state){
   if(definition.subagent_count===undefined)return null;
-  const inputs=resolveBindings(definition.input_bindings??{},{inputs:state.inputs,nodes:Object.fromEntries(Object.entries(state.nodes).map(([id,item])=>[id,{output:item.output}]))}),items=definition.fanout?inputs[definition.fanout.input]:null;
+  const inputs=resolveBindings(definition.input_bindings??{},bindingContext(state)),items=definition.fanout?inputs[definition.fanout.input]:null;
   if(definition.fanout)requireValue(Array.isArray(items)&&items.length>0,'SUBAGENT_FANOUT_INPUT','Fan-out input must resolve to a nonempty list');
   const batchSize=definition.fanout?.batch_size;
   const count=definition.subagent_count==='auto'?(definition.fanout?(batchSize?Math.ceil(items.length/batchSize):items.length):1):definition.subagent_count;
@@ -177,6 +179,7 @@ export class WorkflowRuntime {
     const pins = { schema_version: 1, thread_protocol_version: 2, ...(this.generationPolicy ? {generation:structuredClone(this.generationPolicy)} : {}), ...(this.authoringReviewer ? {authoring_reviewer:structuredClone(this.authoringReviewer)} : {}), root, providers: structuredClone(providers), children: closure.children, skills: closure.skills, resources: closure.resources };
     const controlToken = randomBytes(32).toString('hex');
     const state = initialRunState({ runId: run_id, pinsHash: digest(canonicalJSON(pins)), pins, inputs: structuredClone(inputs), permissions, constraints: structuredClone(constraints), controlHash: digest(controlToken), mainActor: main_actor, requireApproval: require_approval });
+    validateLoopItemSources(state, root.workflow, {allowUnavailable:true});
     const scopes = validateChildClosure(pins, state);
     for (const scope of scopes) {
       const graph = graphInfo(scope.pack.workflow);
@@ -658,9 +661,11 @@ export class WorkflowRuntime {
       const id = randomUUID(); const token = leaseToken(control_token, runId, node_id, id);
       const attempt = { id, owner, started_at: new Date().toISOString(), claim_request_id: request_id, lease_hash: digest(token), status: 'claimed', dispatch: null, completion_hash: null, reconciliation: null,
         ...(definition.executor?.kind === 'main' ? { completion_turns: 0 } : {}) };
+      const signature = loopRoundSignature(state, pins.root.workflow, node_id);
+      if (Object.keys(signature).length) { attempt.loop_rounds = signature; node.current_loop_rounds = signature; }
       if(definition.fanout?.result_mode==='per_item'){
         const inherited={};
-        for(const prior of node.attempts)for(const [itemIndex,item] of Object.entries(prior.native_item_results??{})){
+        for(const prior of currentRoundAttempts(node))for(const [itemIndex,item] of Object.entries(prior.native_item_results??{})){
           requireValue(!inherited[itemIndex]||canonicalJSON(inherited[itemIndex].result)===canonicalJSON(item.result),
             'NATIVE_ITEM_RESULT_CONFLICT',`Previously accepted item ${itemIndex} differs across attempts`);
           inherited[itemIndex]=structuredClone(item);
@@ -668,8 +673,11 @@ export class WorkflowRuntime {
         if(Object.keys(inherited).length){attempt.native_item_results=inherited;
           attempt.inherited_native_item_indices=Object.keys(inherited).map(Number).sort((a,b)=>a-b);}
       }
+      node.attempts.push(attempt); node.active_attempt_id = id; node.status = 'claimed';
+      const observation = await observeLoopItems(state, pins.root.workflow, node_id, nodeWorkspace(node_id, state, pins));
+      if (Object.keys(observation).length) attempt.loop_observation = { before: observation };
       const envelope = executionEnvelope(definition, state, pins, attempt, token);
-      node.attempts.push(attempt); node.active_attempt_id = id; node.status = 'claimed'; touch(state);
+      touch(state);
       return envelope;
     }, { expected_sequence });
     return { ...result.result, sequence: result.sequence, idempotent: result.idempotent ?? false };
@@ -802,6 +810,7 @@ export class WorkflowRuntime {
       }
       requireValue(definition.type !== 'subworkflow' || authority === CHILD_COMPLETION, 'CHILD_ACCEPTANCE_REQUIRED', 'SubWorkflow output must be collected from its exact accepted child Run');
       validateData(payload.structured_output, definition.outputs_schema);
+      validateLoopExitOutput(state, pins.root.workflow, node_id, payload.structured_output);
       for (const [output_name, kind] of Object.entries(definition.output_validators ?? {}))
         if (kind === WORKSPACE_SOURCE_LOCATIONS)
           payload.structured_output[output_name] = (await validateWorkspaceSourceLocations(payload.structured_output[output_name], state.permissions.workspace,
@@ -884,6 +893,7 @@ export class WorkflowRuntime {
         }
       }
       node.output = payload.structured_output; node.error = null;
+      if (attempt.loop_observation) attempt.loop_observation.after = await observeLoopItems(state, pins.root.workflow, node_id, nodeWorkspace(node_id, state, pins));
       attempt.status = 'succeeded'; attempt.finished_at = new Date().toISOString(); attempt.completion_hash = fingerprint; attempt.completion = payload;
       setOutcome(state, graphInfo(pins.root.workflow), node_id, 'succeeded');
       advanceRun(state, pins); touch(state);
@@ -946,7 +956,7 @@ export class WorkflowRuntime {
       // active. They must not also consume every explicit node-attempt slot:
       // otherwise a protocol/format failure permanently prevents a clean
       // retry after the Host or parser is repaired.
-      requireValue((definition.executor?.kind === 'main' ? semanticTurnsConsumed(node) : node.attempts.length) < definition.retry.max_attempts,
+      requireValue((definition.executor?.kind === 'main' ? semanticTurnsConsumed(node) : currentRoundAttempts(node).length) < definition.retry.max_attempts,
         'RETRY_LIMIT', 'Node exhausted its pinned attempt limit');
       const previous = node.attempts.at(-1);
       if (previous?.child_run_id) {

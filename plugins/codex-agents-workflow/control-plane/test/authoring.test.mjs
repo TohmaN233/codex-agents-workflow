@@ -15,7 +15,7 @@ import { canonicalJSON, digest, prepareResources, revisionHash } from '../lib/wo
 import { WorkflowStore } from '../lib/workflow-store.mjs';
 import { exportWorkflowPackage, installWorkflowPackage, validateWorkflowPackage } from '../lib/workflow-package.mjs';
 import { generationRetryClass, isGenerationContractFailure, MAX_PLANNER_ATTEMPTS } from '../lib/skill-import/generation-retry-policy.mjs';
-import { AUTHORING_PLANNER_PROMPT, AUTHORING_PLANNER_PROMPT_V14, AUTHORING_PLANNER_PROMPT_V15, AUTHORING_PLANNER_PROMPT_V20, AUTHORING_PLANNER_PROMPT_V22, AUTHORING_PLANNER_PROMPT_V26, AUTHORING_REVIEW_PROMPT_V12, AUTHORING_REVIEW_PROMPT_V13, AUTHORING_REVIEW_PROMPT_V14, AUTHORING_REVIEW_PROMPT_V15, AUTHORING_REVIEW_PROMPT_V16, AUTHORING_REVIEW_PROMPT_V17, AUTHORING_REVIEW_PROMPT_V18, AUTHORING_REVIEW_PROMPT_V19, AUTHORING_REVIEW_PROMPT_V20, AUTHORING_REVIEW_PROMPT_V21, AUTHORING_WORKFLOWS, authoringWorkflowForPack, createStoredAuthoringWorkflow, ensureStoredAuthoringWorkflows } from '../lib/authoring/authoring-workflows.mjs';
+import { AUTHORING_PLANNER_PROMPT, AUTHORING_PLANNER_PROMPT_V14, AUTHORING_PLANNER_PROMPT_V15, AUTHORING_PLANNER_PROMPT_V20, AUTHORING_PLANNER_PROMPT_V22, AUTHORING_PLANNER_PROMPT_V26, AUTHORING_PLANNER_PROMPT_V27, AUTHORING_REVIEW_PROMPT_V12, AUTHORING_REVIEW_PROMPT_V13, AUTHORING_REVIEW_PROMPT_V14, AUTHORING_REVIEW_PROMPT_V15, AUTHORING_REVIEW_PROMPT_V16, AUTHORING_REVIEW_PROMPT_V17, AUTHORING_REVIEW_PROMPT_V18, AUTHORING_REVIEW_PROMPT_V19, AUTHORING_REVIEW_PROMPT_V20, AUTHORING_REVIEW_PROMPT_V21, AUTHORING_REVIEW_PROMPT_V22, AUTHORING_WORKFLOWS, authoringWorkflowForPack, createStoredAuthoringWorkflow, ensureStoredAuthoringWorkflows } from '../lib/authoring/authoring-workflows.mjs';
 import { AUTHORING_RUNTIME_ENVELOPE_SCHEMA, EXPANSION_PROPOSAL_SCHEMA, authoringRunPack, decodeGeneratedProposalDetailed } from '../lib/skill-import/expansion-run.mjs';
 import { managedNativeResultSchema, strictAgentOutputSchema } from '../lib/execution/host-main-automation.mjs';
 import { validateWorkflowShape } from '../lib/workflow-schema.mjs';
@@ -1219,8 +1219,8 @@ test('Skill conversion and from-scratch authoring are two configurations of the 
   assert.equal(authoringWorkflowForPack({...pack,provenance:{kind:'skill_import',source_kind:'skill'}}).id,'system.skill2workflow');
   const job=authoringRunPack(pack,resources,providers[1],'authoring-contract',rules,false,providers[2],providers);
   assert.equal(job.provenance.authoring_workflow_id,'system.build-workflow');
-  assert.equal(job.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V26);
-  assert.equal(job.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(job.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V27);
+  assert.equal(job.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
   assert.doesNotMatch(AUTHORING_REVIEW_PROMPT_V15,/Only conversation_inputs.*may be not_applicable with an explanation/);
   assert.match(AUTHORING_REVIEW_PROMPT_V15,/artifact_interface_contract.*no matching typed requirement/s);
   assert.match(AUTHORING_REVIEW_PROMPT_V15,/a failing check cites only affected entities/);
@@ -1271,12 +1271,12 @@ test('authoring contract migration preserves supported user configuration while 
   await seedLegacyReady(store,legacy,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v2'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id),migratedPlanner=migrated.workflow.nodes.find(node=>node.id==='expand'),migratedReviewer=migrated.workflow.nodes.find(node=>node.id==='final');
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
   assert.equal(migrated.workflow.authoring.pipeline.contract,'codex-authoring-pipeline/v1');
   assert.equal(migrated.workflow.authoring.max_rounds,2);
   assert.equal(migratedPlanner.prompt_template,planner.prompt_template);assert.equal(migratedPlanner.approval.required,true);
   assert.equal(migratedReviewer.prompt_template,reviewer.prompt_template);assert.equal(migratedReviewer.approval.required,true);
-  assert.deepEqual(migrated.provenance.migration,{kind:'bundled_authoring_contract',from_contract:'codex-authoring-workflow/v2',to_contract:'codex-authoring-workflow/v29'});
+  assert.deepEqual(migrated.provenance.migration,{kind:'bundled_authoring_contract',from_contract:'codex-authoring-workflow/v2',to_contract:'codex-authoring-workflow/v30'});
 });
 
 test('semantic fan-out requires an explicit write owner for declared shared changes',()=>{
@@ -1356,9 +1356,9 @@ test('v20 bundled authoring prompts upgrade to v27 while custom prompt extension
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   for(const [index,definition] of AUTHORING_WORKFLOWS.entries()){
     const migrated=await store.snapshot(definition.id),planner=migrated.workflow.nodes.find(node=>node.id==='expand'),reviewer=migrated.workflow.nodes.find(node=>node.id==='final');
-    assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
-    assert.equal(planner.prompt_template,index===0?AUTHORING_PLANNER_PROMPT_V26:`${AUTHORING_PLANNER_PROMPT_V26} Keep my custom policy.`);
-    assert.equal(reviewer.prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+    assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
+    assert.equal(planner.prompt_template,index===0?AUTHORING_PLANNER_PROMPT_V27:`${AUTHORING_PLANNER_PROMPT_V27} Keep my custom policy.`);
+    assert.equal(reviewer.prompt_template,AUTHORING_REVIEW_PROMPT_V22);
   }
 });
 
@@ -1374,9 +1374,9 @@ test('v22 bundled authoring prompts adopt responsibility handoffs while configur
   await seedLegacyReady(store,previous,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v22'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id);
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V26);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V27);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
   assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').approval.required,true);
 });
 
@@ -1391,10 +1391,10 @@ test('v12 bundled authoring Workflows migrate the built-in reviewer prompt witho
   await seedLegacyReady(store,previous,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v12'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id);
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
   assert.equal(migrated.workflow.authoring.max_rounds,2);
   assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').approval.required,true);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
 });
 
 test('v13 bundled authoring Workflows replace their built-in reviewer wording without changing user slots',async t=>{
@@ -1409,11 +1409,11 @@ test('v13 bundled authoring Workflows replace their built-in reviewer wording wi
   await seedLegacyReady(store,previous,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v13'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id);
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
   assert.equal(migrated.workflow.authoring.max_rounds,2);
   assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').approval.required,true);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V26);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V27);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
 });
 
 test('v14 bundled authoring Workflows update both built-in prompts without changing configured slots',async t=>{
@@ -1428,11 +1428,11 @@ test('v14 bundled authoring Workflows update both built-in prompts without chang
   await seedLegacyReady(store,previous,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v14'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id);
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
   assert.equal(migrated.workflow.authoring.max_rounds,2);
   assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').approval.required,true);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V26);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V27);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
 });
 
 test('v15 authoring reviewer migrates to the Run-bound Main and runtime-path contract',async t=>{
@@ -1445,10 +1445,10 @@ test('v15 authoring reviewer migrates to the Run-bound Main and runtime-path con
   await seedLegacyReady(store,previous,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v15'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id);
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
   assert.equal(migrated.workflow.authoring.max_rounds,2);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V26);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V27);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
 });
 
 test('v16 authoring reviewer migrates its built-in continuation guidance without changing configured slots',async t=>{
@@ -1462,10 +1462,10 @@ test('v16 authoring reviewer migrates its built-in continuation guidance without
   await seedLegacyReady(store,previous,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v16'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id);
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
   assert.equal(migrated.workflow.authoring.max_rounds,2);
   assert.equal(migrated.workflow.nodes.find(node=>node.id==='expand').approval.required,true);
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
 });
 
 test('v17 authoring reviewer migration aligns semantic-edge evidence with the Host checklist',async t=>{
@@ -1478,8 +1478,8 @@ test('v17 authoring reviewer migration aligns semantic-edge evidence with the Ho
   await seedLegacyReady(store,previous,{provenance:{kind:'bundled_authoring_workflow',authoring_workflow_id:definition.id,builtin_contract:'codex-authoring-workflow/v17'}});
   await ensureStoredAuthoringWorkflows(store,{providers,routingRules:rules});
   const migrated=await store.snapshot(definition.id);
-  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v29');
-  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(migrated.workflow.authoring.contract,'codex-authoring-workflow/v30');
+  assert.equal(migrated.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
 });
 
 test('portable Workflow package validates content identity and installs atomically',async t=>{

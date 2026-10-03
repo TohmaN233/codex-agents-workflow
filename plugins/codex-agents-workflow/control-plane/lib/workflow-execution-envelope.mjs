@@ -39,7 +39,9 @@ export function nodePermissions(node, state) {
 }
 
 export function bindingContext(state) {
-  return { inputs: state.inputs, nodes: Object.fromEntries(Object.entries(state.nodes).map(([id, node]) => [id, { output: node.output }])) };
+  const loops = Object.fromEntries(Object.entries(state.loops ?? {}).map(([id, loop]) => [id,
+    Object.fromEntries(['round','status','feedback','all_accepted','review_items','repair_items'].filter(key => Object.hasOwn(loop, key)).map(key => [key, loop[key]]))]));
+  return { inputs: state.inputs, loops, nodes: Object.fromEntries(Object.entries(state.nodes).map(([id, node]) => [id, { output: node.output }])) };
 }
 
 export function approvalBinding(node, state, pins, attemptNumber = state.nodes[node.id].attempts.length + 1) {

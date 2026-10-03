@@ -1,3 +1,4 @@
+import { sourceRepairLoopIntentFindings } from '../authoring/semantic-loops.mjs';
 import { CONVERSION_CONTRACT, HOST_OWNED_REVIEW_IDS } from './conversion-contract.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 import { projectObservedRequirements } from './source-requirements.mjs';
@@ -52,7 +53,7 @@ export function routeReviewFindings(findings) {
 // Field paths are reviewer guidance and a static contract-coherence check,
 // not a second permission system. Stable semantic keys bound the repair.
 const editableFields=Object.freeze({
-  parallelism:['sequences','parallels','activities.inputs','activities.fanout'],agent_ownership:['activities.profile','activities.fanout'],human_intervention:['approvals','activities.inputs'],phase_order:['activities','sequences','choices','activities.inputs','activities.outputs'],hard_rules:['activities.instructions','activities.source_sections','activities.contract_refs'],requirement_coverage:['source_dispositions','requirement_assignments'],data_handoffs:['activities.inputs','activities.outputs','activities.fanout','approvals.subject'],failure_semantics:['activities.on_missing','activities.outcome','activities.fail_on_false','activities.repeat_until','activities.instructions','activities.outputs'],conversation_inputs:['activities.inputs','activities.on_missing'],human_confirmation:['approvals.subject','approvals.before'],conditional_dependencies:['activities.contract_refs','choices'],portable_artifact:['activities.outputs','activities.contract_refs'],review_scope:['activities.profile'],artifact_interface_contract:['activities.contract_refs','activities.outputs.contract_ref'],method_fidelity:['activities.instructions','activities.contract_refs'],validation_strength:['activities.outputs.contract_ref','activities.fail_on_false','activities.repeat_until','activities.fanout'],source_disposition:['source_dispositions'],
+  parallelism:['sequences','parallels','activities.inputs','activities.fanout'],agent_ownership:['activities.profile','activities.fanout'],human_intervention:['approvals','activities.inputs'],phase_order:['activities','sequences','choices','activities.inputs','activities.outputs'],hard_rules:['activities.instructions','activities.source_sections','activities.contract_refs'],requirement_coverage:['source_dispositions','requirement_assignments'],data_handoffs:['activities.inputs','activities.outputs','activities.fanout','approvals.subject'],failure_semantics:['loops','activities.on_missing','activities.outcome','activities.fail_on_false','activities.repeat_until','activities.instructions','activities.outputs'],conversation_inputs:['activities.inputs','activities.on_missing'],human_confirmation:['approvals.subject','approvals.before'],conditional_dependencies:['activities.contract_refs','choices'],portable_artifact:['activities.outputs','activities.contract_refs'],review_scope:['activities.profile'],artifact_interface_contract:['activities.contract_refs','activities.outputs.contract_ref'],method_fidelity:['activities.instructions','activities.contract_refs'],validation_strength:['loops','activities.outputs.contract_ref','activities.fail_on_false','activities.repeat_until','activities.fanout'],source_disposition:['source_dispositions'],
 });
 function schemaHasPath(path){
   let schema=SEMANTIC_BLUEPRINT_SCHEMA;
@@ -150,7 +151,7 @@ function deterministicFindings(proposal, resources, version) {
   const requirements = proposal.source_requirements ?? [];
   const nodes = new Map((proposal.nodes ?? []).map(node => [node.id, node]));
   const mappings = new Map((proposal.requirement_mappings ?? []).map(mapping => [mapping.requirement_id, mapping]));
-  const findings = [];
+  const findings = sourceRepairLoopIntentFindings(proposal,resources).map(item=>`[failure_semantics] ${item.message}`);
   for (const requirement of requirements) {
     const mapping = mappings.get(requirement.requirement_id);
     if (!mapping) { findings.push(`[requirement_coverage] ${requirement.requirement_id} has no mapping.`); continue; }

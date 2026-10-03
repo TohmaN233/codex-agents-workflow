@@ -8,7 +8,8 @@ import { bindingPointers } from '../workflow-bindings.mjs';
 import { CONVERSION_CONTRACT } from './conversion-contract.mjs';
 import { authoringSourcePath } from './authoring-source.mjs';
 import { SEMANTIC_BLUEPRINT_SCHEMA, CURRENT_AUTHORING_SEMANTIC_BLUEPRINT_SCHEMA, SEMANTIC_REPAIR_SCHEMA, SEMANTIC_BLUEPRINT_CONTRACT, AUTHORING_NODE_PROMPT_MAX_LENGTH } from '../authoring/blueprint-contract.mjs';
-import { AUTHORING_PLANNER_PROMPT_V26, AUTHORING_REVIEW_PROMPT_V21, authoringWorkflowForPack, instantiateAuthoringWorkflow, storedAuthoringBindings } from '../authoring/authoring-workflows.mjs';
+import { AUTHORING_PLANNER_PROMPT_V27, AUTHORING_REVIEW_PROMPT_V22, authoringWorkflowForPack, instantiateAuthoringWorkflow, storedAuthoringBindings } from '../authoring/authoring-workflows.mjs';
+import { LOOP_REGION_SCHEMA } from '../workflow-schema.mjs';
 import { WORKSPACE_SOURCE_LOCATIONS } from '../workspace-source-locations.mjs';
 
 // The finite runtime JSON-Schema vocabulary has no regular expressions; the
@@ -67,6 +68,7 @@ export const GENERATED_PROPOSAL_ENVELOPE_SCHEMA = Object.freeze({
   properties: { proposal: SEMANTIC_BLUEPRINT_SCHEMA },
 });
 export const GENERATED_PROPOSAL_ENVELOPE_SCHEMA_V21 = Object.freeze({type:'object',required:['proposal'],additionalProperties:false,properties:{proposal:CURRENT_AUTHORING_SEMANTIC_BLUEPRINT_SCHEMA}});
+EXPANSION_PROPOSAL_SCHEMA.properties.loops = {type:'array',maxItems:200,items:LOOP_REGION_SCHEMA};
 export const GENERATED_REPAIR_ENVELOPE_SCHEMA = Object.freeze({type:'object',required:['proposal'],additionalProperties:false,properties:{proposal:SEMANTIC_REPAIR_SCHEMA}});
 // Runtime persistence accepts either attempt contract. The Strict session picks
 // the exact initial/repair schema before each turn, so this union boundary never
@@ -235,8 +237,8 @@ export function authoringRunPack(pack, resources, provider, id, routingRules, _a
   // read on identical text. Referenced sibling files remain available.
   const plannerResources = Object.keys(planningResources).filter(path => path !== authoringSourcePath(resources) && path!=='analysis/review-request.txt').sort();
   const reviewResources = Object.keys(planningResources).filter(path => path !== authoringSourcePath(resources) && path!=='analysis/request.txt').sort();
-  const plannerPrompt=AUTHORING_PLANNER_PROMPT_V26;
-  const reviewPrompt=AUTHORING_REVIEW_PROMPT_V21;
+  const plannerPrompt=AUTHORING_PLANNER_PROMPT_V27;
+  const reviewPrompt=AUTHORING_REVIEW_PROMPT_V22;
   const workflow=instantiateAuthoringWorkflow({definition:authoring,templateWorkflow:authoringTemplate?.workflow,id,sourceName:pack.workflow.name,planner:provider,reviewer,generation,planningResources,plannerResources,reviewResources,plannerSchema:AUTHORING_RUNTIME_ENVELOPE_SCHEMA,plannerPrompt,reviewSchema:generation?reviewSchema(CONVERSION_CONTRACT.version):null,reviewPrompt});
   return { workflow, resources: planningResources,
     provenance: { kind: 'authoring_workflow_run', legacy_kind:'skill_expansion_job', authoring_workflow_id:authoring.id, authoring_contract:authoringTemplate?.workflow.authoring?.contract??authoring.contract, ...(authoringTemplate?{authoring_workflow_revision:authoringTemplate.revision_hash}:{}), source_kind:authoring.source_kind, ...(generation ? {generation,review_contract_version:CONVERSION_CONTRACT.version} : {}), source_workflow_id: pack.workflow.id, source_revision: pack.revision_hash, selected_provider_id: provider.id, review_provider_id:reviewer.id, ...(routingRules ? { routing_rules: structuredClone(routingRules), routing_catalog:packet.routing_catalog } : {}) },

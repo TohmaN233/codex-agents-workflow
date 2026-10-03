@@ -15,6 +15,7 @@ import { normalizeExecutableRequirements } from './runtime-requirements.mjs';
 import { isOperationalMemoryArtifactPath } from './artifact-policy.mjs';
 import { WORKSPACE_SOURCE_LOCATIONS } from './workspace-source-locations.mjs';
 import {firstAgentTranscriptionClause,hostOwnedAgentField} from './agent-transcription-policy.mjs';
+import { validateLoopRegions } from './workflow-loops.mjs';
 
 const EXECUTED = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
 const SHA = /^[a-f0-9]{64}$/;
@@ -30,10 +31,30 @@ function requiredHostOwnedAgentFields(schema,prefix='',found=[]){
   }
   return found;
 }
-function schemaAtPointer(pointer,workflow,nodes){
+function schemaAtPointer(pointer,workflow,nodes,visiting=new Set()){
   const parts=pointerParts(pointer);let schema,index;
   if(parts[0]==='inputs'){schema=workflow.inputs_schema??{};index=1;}
   else if(parts[0]==='nodes'&&nodes.has(parts[1])&&parts[2]==='output'){schema=nodes.get(parts[1]).outputs_schema??{};index=3;}
+  else if(parts[0]==='loops'){
+    const loop=(workflow.loops??[]).find(item=>item.id===parts[1]);
+    if(!loop||visiting.has(loop.id))return null;
+    const next=new Set(visiting);next.add(loop.id);
+    if(['review_items','repair_items'].includes(parts[2])&&loop.item_scope){
+      const binding=loop.item_scope.items,pointers=bindingPointers(binding);
+      schema=pointers.length===1?schemaAtPointer(pointers[0],workflow,nodes,next):null;
+      if(!schema)return null;
+      schema=structuredClone(schema);
+      if(parts[2]==='repair_items'&&schema.items?.type==='object'){
+        schema.items.properties={...schema.items.properties,findings:{}};
+        schema.items.required=[...new Set([...(schema.items.required??[]),'findings'])];
+      }
+      index=3;
+    } else if(parts[2]==='feedback'&&parts[3]&&Object.hasOwn(loop.feedback_bindings??{},parts[3])){
+      const pointers=bindingPointers(loop.feedback_bindings[parts[3]]);
+      schema=pointers.length===1?schemaAtPointer(pointers[0],workflow,nodes,next):null;index=4;
+    }else if(['round','status','all_accepted'].includes(parts[2])){schema={type:parts[2]==='round'?'integer':parts[2]==='status'?'string':'boolean'};index=3;}
+    else return null;
+  }
   else return null;
   for(;index<parts.length;index++){
     const part=parts[index];
@@ -173,12 +194,21 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     for (const edge of out.get(id)) { indegree.set(edge.target, indegree.get(edge.target) - 1); if (!indegree.get(edge.target)) { ready.push(edge.target); ready.sort(); } }
   }
   if (order.length !== nodes.size) issue('GRAPH_CYCLE', 'Workflow graphs must be acyclic');
+  if (order.length === nodes.size && edges.size === workflow.edges.length && nodes.size === workflow.nodes.length) {
+    try { validateLoopRegions(workflow); } catch (error) { issue(error.code ?? 'LOOP_SCHEMA', error.message); }
+  }
   const reachable = starts.length === 1 ? visit(starts[0].id) : new Set();
   const toEnd = new Set(ends.flatMap(node => [...visit(node.id, incoming)]));
   const hostOwnedIdentityField=name=>typeof name==='string'&&/(?:^|_)(?:id|ids|path|paths|sha256|hash|hashes|checksum|checksums|token|tokens|index|indices|revision|receipt|receipts|timestamp|timestamps|uuid|uuids|nonce|nonces|seed|seeds|encoding|encoded)$/.test(name);
   const hostOwnedPacketPointer=(pointer,requiredFields=[],visiting=new Set())=>{
     const parts=pointerParts(pointer);
     if(parts[0]==='inputs')return true;
+    if(parts[0]==='loops'&&['review_items','repair_items'].includes(parts[2])){
+      const loop=(workflow.loops??[]).find(item=>item.id===parts[1]);
+      if(!loop?.item_scope||visiting.has('loop:'+loop.id))return false;
+      const next=new Set(visiting);next.add('loop:'+loop.id);
+      return bindingPointers(loop.item_scope.items).every(source=>hostOwnedPacketPointer(source,requiredFields,next));
+    }
     if(parts[0]!=='nodes'||parts[2]!=='output')return false;
     const producer=nodes.get(parts[1]);
     if(producer?.type!=='tool'||producer.executor?.kind!=='tool'||visiting.has(producer.id))return false;
@@ -193,6 +223,27 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
     }
     return Object.values(producer.input_bindings??{}).every(binding=>bindingPointers(binding).every(source=>hostOwnedPacketPointer(source,[],next)));
   };
+  for(const loop of workflow.loops??[]){
+    try{
+      const check=pointer=>{
+        const parts=pointerParts(pointer);
+        if(parts[0]==='inputs')return;
+        if(parts[0]==='nodes'&&nodes.has(parts[1])&&parts[2]==='output'){
+          if(!schemaAtPointer(pointer,workflow,nodes)&&nodes.get(parts[1]).outputs_schema?.additionalProperties===false)throw new Error('Loop binding refers to an undeclared producer output');
+          return;
+        }
+        if(parts[0]==='loops'&&['round','status','feedback','all_accepted','review_items','repair_items'].includes(parts[2])&&(workflow.loops??[]).some(item=>item.id===parts[1]))return;
+        throw new Error('Unknown repair-region binding source');
+      };
+      validateExpression(loop.until,{onPointer:check});
+      for(const binding of Object.values(loop.feedback_bindings??{}))for(const pointer of bindingPointers(binding))check(pointer);
+      if(loop.item_scope){
+        for(const binding of [loop.item_scope.items,loop.item_scope.verdicts])for(const pointer of bindingPointers(binding))check(pointer);
+        if(!bindingPointers(loop.item_scope.items).every(pointer=>hostOwnedPacketPointer(pointer,[loop.item_scope.paths_field,...(loop.item_scope.dependencies_field?[loop.item_scope.dependencies_field]:[])])))
+          issue('LOOP_ITEM_SOURCE','Repair items and their artifact paths must originate from Run inputs or deterministic Host tools',{loop_id:loop.id});
+      }
+    }catch(error){issue(error.code??'LOOP_BINDING_INVALID',error.message,{loop_id:loop.id});}
+  }
   for (const node of nodes.values()) {
     const location = { node_id: node.id };
     if (node.skill_policy !== undefined) try { effectiveSkillPolicy(workflow.skill_policy, node.skill_policy); } catch (error) { issue(error.code, error.message, location); }
@@ -281,6 +332,14 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
       try {
         const parts = pointerParts(pointer);
         if (parts[0] === 'inputs') { checkSchemaPath(workflow.inputs_schema ?? {}, parts.slice(1)); return; }
+        if (parts[0] === 'loops') {
+          const loop=(workflow.loops??[]).find(item=>item.id===parts[1]);
+          if(!loop||!['round','status','feedback','all_accepted','review_items','repair_items'].includes(parts[2]))throw new Error('Unknown repair-region binding');
+          if(!loop.node_ids.includes(node.id)&&!visit(loop.exit_node).has(node.id))throw new Error('Repair-region context is available only within its body or after its exit');
+          const schema=schemaAtPointer(pointer,workflow,nodes);
+          if(!schema&&parts[2]!=='feedback')throw new Error('Repair-region binding has no declared item scope or field');
+          return;
+        }
         if (parts[0] !== 'nodes' || !nodes.has(parts[1]) || parts[2] !== 'output') throw new Error('Unknown binding source');
         if (parts[1] === node.id || !visit(parts[1]).has(node.id)) throw new Error('Binding must refer to an upstream producer');
         if (nodes.get(parts[1]).type === 'human_gate' && parts.length > 3 && !(parts.length === 4 && Object.hasOwn(HUMAN_GATE_OUTPUT, parts[3]))) throw new Error('Human gate output has only the approved field');
@@ -457,7 +516,7 @@ export function validateWorkflowGraph(workflow, context = {}, stack = []) {
   else for (const [binding, pointer] of Object.entries(workflow.output_bindings ?? {})) {
     try {
       const parts = pointerParts(pointer);
-      if (parts[0] !== 'inputs' && !(parts[0] === 'nodes' && nodes.has(parts[1]) && parts[2] === 'output')) throw new Error('Unknown workflow output source');
+      if (parts[0] !== 'inputs' && !(parts[0] === 'nodes' && nodes.has(parts[1]) && parts[2] === 'output') && !(parts[0]==='loops' && schemaAtPointer(pointer,workflow,nodes))) throw new Error('Unknown workflow output source');
       if (parts[0] === 'nodes' && nodes.get(parts[1]).type === 'human_gate' && parts.length > 3 && !(parts.length === 4 && Object.hasOwn(HUMAN_GATE_OUTPUT, parts[3]))) throw new Error('Human gate output has only the approved field');
     } catch (error) { issue('OUTPUT_BINDINGS', error.message, { binding }); }
   }

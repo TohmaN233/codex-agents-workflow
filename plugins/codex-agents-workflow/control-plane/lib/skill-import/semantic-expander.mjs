@@ -38,6 +38,7 @@ function requiredFalseGuard(node) {
 }
 
 function foldCompilerFinalizer(workflow, pack, resources) {
+  if(workflow.loops?.length)return false;
   if(!compilerOwnedFinal(pack,resources))return false;
   const finalInputs=workflow.edges.filter(edge=>edge.target==='final');
   if(finalInputs.length!==1)return false;
@@ -326,10 +327,23 @@ export function compileExpansion(pack, resources, proposal, context = {}) {
   const dispositionFindings = validateSourceDispositions(proposal, resources, { required: Array.isArray(proposal.source_dispositions) });
   requireValue(dispositionFindings.length === 0, 'EXPANSION_SOURCE_DISPOSITIONS', 'Source-section dispositions are incomplete or unsafe', { findings: dispositionFindings });
   const workflow = structuredClone(pack.workflow);
+  // Loop identities and bindings are already deterministic Host compiler output.
+  // Replace, rather than retain, regions belonging to an older generated graph.
+  if (proposal.loops !== undefined) workflow.loops = structuredClone(proposal.loops);
+  else delete workflow.loops;
   // The model declares logical future-Run inputs by using input:name. The Host
   // owns the root schema, including optional feedback supplied on a later Run.
   // A branch-local input must not become globally required at launch.
   const externalInputs=new Map();
+  for(const loop of proposal.loops??[])if(loop.item_scope){
+    for(const pointer of bindingPointers(loop.item_scope.items)){
+      const match=/^\/inputs\/([^/]+)$/.exec(pointer);if(!match)continue;
+      const name=match[1].replaceAll('~1','/').replaceAll('~0','~');
+      const properties={[loop.item_scope.paths_field]:{type:'array',items:{type:'string'},minItems:1}};
+      if(loop.item_scope.dependencies_field)properties[loop.item_scope.dependencies_field]={type:'array',items:{type:'string'}};
+      externalInputs.set(name,{type:'array',items:{type:'object',properties,required:[loop.item_scope.paths_field],additionalProperties:true}});
+    }
+  }
   // Final acceptance has its own input contract; it must not depend on an
   // ordinary activity redundantly consuming the task to declare that root input.
   for(const node of [...(proposal.nodes??[]),...workflow.nodes.filter(node=>node.id==='final')])for(const [bindingName,binding] of Object.entries(node.input_bindings??{}))for(const pointer of bindingPointers(binding)){
@@ -339,7 +353,7 @@ export function compileExpansion(pack, resources, proposal, context = {}) {
     const shape=node.fanout?.input===bindingName?{type:'array',items:{}}:{type:'string'};
     const prior=externalInputs.get(name);
     requireValue(!prior||prior.type===shape.type,'EXPANSION_INPUT_TYPE',`Future-Run input ${name} has conflicting semantic uses`);
-    externalInputs.set(name,shape);
+    if(!prior)externalInputs.set(name,shape);
   }
   if(externalInputs.size){
     const base=workflow.inputs_schema?.type==='object'?workflow.inputs_schema:{type:'object',properties:{},required:[],additionalProperties:true};

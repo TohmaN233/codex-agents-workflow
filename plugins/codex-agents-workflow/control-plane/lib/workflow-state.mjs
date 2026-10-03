@@ -3,6 +3,7 @@ import { validateData } from './workflow-data-schema.mjs';
 import { approvalBinding, bindingContext } from './workflow-execution-envelope.mjs';
 import { requireValue } from './workflow-paths.mjs';
 import { initialCostLedger } from './workflow-cost-ledger.mjs';
+import { initializeLoops, prepareLoops, settleLoops, loopBoundary } from './workflow-loops.mjs';
 
 export const FINISHED_NODES = new Set(['succeeded', 'failed', 'skipped', 'cancelled']);
 export const EXECUTOR_NODES = new Set(['agent', 'skill_ref', 'tool', 'human_gate', 'subworkflow']);
@@ -22,12 +23,12 @@ export function graphInfo(workflow) {
   while (todo.length) { const id = todo.shift(); order.push(id); for (const edge of out.get(id)) { degrees.set(edge.target, degrees.get(edge.target) - 1); if (!degrees.get(edge.target)) { todo.push(edge.target); todo.sort(); } } }
   requireValue(order.length === nodes.size, 'GRAPH_CYCLE', 'Pinned Workflow has a cycle');
   const regions = workflow.nodes.filter(node => node.type === 'parallel').map(node => ({ parallel: node, members: new Set(out.get(node.id).flatMap(edge => [...visit(edge.target, node.join_id)])) }));
-  return { nodes, out, incoming, visit, order, regions };
+  return { workflow, nodes, out, incoming, visit, order, regions };
 }
 
 export function initialRunState({ runId, pinsHash, pins, inputs, permissions, constraints, controlHash, mainActor, requireApproval }) {
   const now = new Date().toISOString();
-  return {
+  const state = {
     schema_version: 1, run_id: runId, workflow_id: pins.root.workflow.id, workflow_revision: pins.root.revision_hash,
     pins_hash: pinsHash, control_hash: controlHash, main_actor: mainActor, status: 'running',
     created_at: now, updated_at: now, inputs, permissions, constraints, require_approval: requireApproval,
@@ -40,12 +41,17 @@ export function initialRunState({ runId, pinsHash, pins, inputs, permissions, co
     }])),
     edges: Object.fromEntries(pins.root.workflow.edges.map(edge => [edge.id, 'pending'])),
   };
+  initializeLoops(state, pins.root.workflow);
+  return state;
 }
 
 export function setOutcome(state, graph, id, status, { selectedLabel } = {}) {
   const node = state.nodes[id]; node.status = status;
   const outgoing = graph.out.get(id);
   for (const edge of outgoing) {
+    if (['succeeded','failed'].includes(status) && loopBoundary(graph.workflow, id).some(loop => !loop.node_ids.includes(edge.target) && state.loops?.[loop.id]?.status !== 'accepted')) {
+      state.edges[edge.id] = 'pending'; continue;
+    }
     const matches = status === 'succeeded'
       ? ['success', 'always'].includes(edge.on ?? 'success') && (selectedLabel === undefined || edge.label === selectedLabel)
       : status === 'failed' && ['failure', 'always'].includes(edge.on ?? 'success');
@@ -63,7 +69,12 @@ export function setOutcome(state, graph, id, status, { selectedLabel } = {}) {
 export function advanceRun(state, pins) {
   if (state.status !== 'running') return;
   const workflow = pins.root.workflow; const graph = graphInfo(workflow);
+  const context = bindingContext(state);
+  prepareLoops(state, workflow, context);
+  settleLoops(state, workflow, graph, context);
+  if (state.status !== 'running') { interruptActiveNodes(state, 'Repair loop stopped without acceptance'); return; }
   for (const id of graph.order) {
+    prepareLoops(state, workflow, bindingContext(state));
     const definition = graph.nodes.get(id); const node = state.nodes[id];
     if (node.status !== 'pending') continue;
     const incoming = graph.incoming.get(id);
@@ -112,11 +123,15 @@ export function advanceRun(state, pins) {
       setOutcome(state, graph, id, 'succeeded');
     }
   }
+  // Control-only exits can finish during this pass. Reset/release a region
+  // before exposing its downstream nodes; the next pass sees the new round.
+  if (settleLoops(state, workflow, graph, bindingContext(state))) { advanceRun(state, pins); return; }
   const values = Object.values(state.nodes);
   if (values.every(node => FINISHED_NODES.has(node.status))) {
     const finalizer = state.nodes[workflow.finalization.node_id];
     const completedEnd = workflow.nodes.some(node => node.type === 'end' && state.nodes[node.id].status === 'succeeded');
-    if (finalizer.status === 'succeeded' && completedEnd && !values.some(node => node.status === 'failed' && !node.failure_handled)) {
+    const loopsAccepted=(workflow.loops??[]).every(loop=>['accepted','skipped'].includes(state.loops?.[loop.id]?.status));
+    if (finalizer.status === 'succeeded' && completedEnd && loopsAccepted && !values.some(node => node.status === 'failed' && !node.failure_handled)) {
       try {
         const output = workflow.output_bindings ? resolveBindings(workflow.output_bindings, bindingContext(state)) : finalizer.output;
         validateData(output, workflow.outputs_schema); state.output = output; state.status = 'succeeded';

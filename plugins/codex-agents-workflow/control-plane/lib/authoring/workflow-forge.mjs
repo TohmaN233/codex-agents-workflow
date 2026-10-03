@@ -1,3 +1,4 @@
+import { compileSemanticLoops, sourceRepairLoopIntentFindings } from './semantic-loops.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 import { compileExpansion } from '../skill-import/semantic-expander.mjs';
 import { sourceSectionInventory } from '../skill-import/source-dispositions.mjs';
@@ -161,7 +162,7 @@ function inflateBlueprint(raw){
     requireValue(Array.isArray(items),'AUTHORING_FORMAT',`Blueprint ${name} must be an array`);
     requireValue(new Set(items.map(item=>item?.key)).size===items.length,'AUTHORING_FORMAT',`Blueprint ${name} keys must be unique before compilation`);
   }
-  const activities=new Map((raw.activities ?? []).map(item=>[item.key,{...structuredClone(item),continues:item.continues || undefined,consumes:item.consumes.map(consume=>({name:consume.name,from:consume.source_kind==='input'?{input:consume.input}:{activity:consume.activity,output:consume.output}}))}]));
+  const activities=new Map((raw.activities ?? []).map(item=>[item.key,{...structuredClone(item),continues:item.continues || undefined,consumes:item.consumes.map(consume=>({name:consume.name,from:consume.source_kind==='input'?{input:consume.input}:consume.source_kind==='loop'?{loop:consume.loop,output:consume.output}:{activity:consume.activity,output:consume.output}}))}]));
   const approvals=new Map((raw.approvals ?? []).map(item=>[item.key,structuredClone(item)]));
   const sequences=new Map((raw.sequences ?? []).map(item=>[item.key,structuredClone(item)]));
   const parallels=new Map((raw.parallels ?? []).map(item=>[item.key,structuredClone(item)]));
@@ -202,6 +203,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
   const supporting=Object.keys(resources).filter(path=>path!==entrypoint);
   const resourceRefsForSections=ids=>[...new Set(ids.flatMap(id=>{const section=inventory.get(id);if(!section||section.source_span.resource!==entrypoint)return [];const text=entryLines.slice(section.source_span.start_line-1,section.source_span.end_line).join('\n').replaceAll('\\','/');return supporting.filter(path=>{const relative=path.startsWith('source/')?path.slice(7):path;return text.includes(path)||text.includes(relative);});}))];
   const routing=context.routing_rules;
+  const loopIds=new Map((blueprint.loops??[]).map((item,index)=>[item.key,`loop_${String(index+1).padStart(3,'0')}`]));
   const nodes=[],edges=[],stageIds=new Map(),activityIds=new Map(),activityOutputs=new Map(),compiledBlocks=new Map(),compilingBlocks=new Set(),edgeKeys=new Set(),approvalBindings=[];
   let nodeOrdinal=0,edgeOrdinal=0,parallelOrdinal=0;
   const nodeId=prefix=>`${prefix}_${String(++nodeOrdinal).padStart(3,'0')}`;
@@ -294,7 +296,9 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
       requireValue(spec.write_paths_field===undefined||activity.operation==='write'&&localKey(spec.write_paths_field),'AUTHORING_SEMANTIC',`Activity ${activity.key} write_paths_field needs a write activity and a portable Host item field name`);
       if(spec.write_paths_field!==undefined){
         const producerKey=consume?.from?.activity,producer=producerKey?activityByKey.get(producerKey):null;
-        const hostOwnedSource=typeof consume?.from?.input==='string'||producerKey&&hostOwnedPacketProducer(producerKey,consume?.from?.output,[spec.write_paths_field]);
+        const loop=(blueprint.loops??[]).find(item=>item.key===consume?.from?.loop),original=loop?.item_scope?.items;
+        const loopOwned=loop&&['repair_items','review_items'].includes(consume.from.output)&&loop.item_scope.paths_field===spec.write_paths_field&&typeof original==='string'&&(original.startsWith('input:')||hostOwnedPacketProducer(original.split('.')[0],original.slice(original.indexOf('.')+1),[spec.write_paths_field]));
+        const hostOwnedSource=loopOwned||typeof consume?.from?.input==='string'||producerKey&&hostOwnedPacketProducer(producerKey,consume?.from?.output,[spec.write_paths_field]);
         requireValue(hostOwnedSource,'AUTHORING_SEMANTIC',`Activity ${activity.key} per-item write packet must come from Host-owned data`,{findings:[{kind:'semantic',code:'fanout_host_item_source',message:`Activity ${activity.key} uses Host-owned per-item write paths, but ${producerKey||consume?.name||spec.input} depends on Agent output. Bind the fan-out list directly from a Workflow input or from Host tools whose inputs are themselves Host-owned.`,source_refs:spansFor(activity.source_sections),semantic_keys:[activity.key,...(producer?.key?[producer.key]:[])],affected_semantic_fields:[`activities.${activity.key}.inputs.${spec.input}`,`activities.${activity.key}.fanout.write_paths_field`],blocked_by:[],minimal_change:'Use the original Workflow input or a transitively Host-owned tool output as the fan-out input; keep Agent-produced semantic findings separate.'}]});
       }
       requireValue(spec.item_delivery===undefined||spec.item_delivery==='incremental'&&spec.result_mode==='per_item'&&Number.isInteger(spec.batch_size)&&spec.batch_size>=2,
@@ -405,6 +409,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     for(const consume of activity?.consumes ?? []){
       requireValue(object(consume)&&localKey(consume.name)&&object(consume.from),'AUTHORING_FORMAT','Activity consumption needs a named source');
       if(consume.from.input)bindings[consume.name]=`/inputs/${consume.from.input}`;
+      else if(consume.from.loop){const loopId=loopIds.get(consume.from.loop);requireValue(loopId,'AUTHORING_SEMANTIC','Consumed loop is unknown');bindings[consume.name]=`/loops/${loopId}/${consume.from.output}`;}
       else {const producer=activityIds.get(consume.from.activity),outputs=activityOutputs.get(consume.from.activity);requireValue(producer&&Object.hasOwn(outputs??{},consume.from.output),'AUTHORING_SEMANTIC','Consumed activity output is unknown');bindings[consume.name]=`/nodes/${producer}/output/${consume.from.output}`;}
     }
     nodes.find(item=>item.id===id).input_bindings=bindings;
@@ -418,6 +423,7 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     target.execution_target='thread';target.thread_lifecycle='continue';target.thread_source_node=source.id;
   }
   addEdge('start',program.entries[0]);for(const source of program.exits)addEdge(source,'final');
+  const loops=compileSemanticLoops({blueprint,nodes,edges,activityIds,activityOutputs,loopIds,nodeId,addEdge,evidence});
   const rules=(blueprint.semantic_rules ?? []).map((item,index)=>{
     requireValue(inventory.has(item.section_id)&&typeof item.statement==='string'&&item.statement.trim()&&Array.isArray(item.activity_keys)&&item.activity_keys.length>0,'AUTHORING_FORMAT','Semantic rules need source evidence, statement and responsible activities');
     return {requirement_id:`semantic_rule_${String(index+1).padStart(3,'0')}`,requirement_kind:'agent_judgment',source_spans:[inventory.get(item.section_id).source_span],trigger:item.applies_when || 'source_semantic_rule',required_result:item.statement,resource_refs:resourceRefsForSections([item.section_id]),details:{},activity_keys:item.activity_keys};
@@ -491,7 +497,9 @@ export function lowerSemanticBlueprint(pack,resources,rawBlueprint,context={}){
     const disposition=source_dispositions.find(entry=>entry.section_id===item.source_section);
     if(disposition)disposition.requirement_ids=[...new Set([...disposition.requirement_ids,runtimeDependencies.requirements[index].requirement_id])];
   }
-  const proposal={source_revision:pack.revision_hash,source_requirements:[...rules,...runtimeDependencies.requirements],requirement_mappings:[...mappings,...runtimeDependencies.mappings],source_dispositions,required_executables:[],planning_analysis:{parallelism:'Host-derived from nested semantic blocks.',main_responsibilities:'Host-derived from activity ownership.',human_intervention:'Host-derived from approval blocks.'},nodes,edges};
+  const proposal={source_revision:pack.revision_hash,source_requirements:[...rules,...runtimeDependencies.requirements],requirement_mappings:[...mappings,...runtimeDependencies.mappings],source_dispositions,required_executables:[],planning_analysis:{parallelism:'Host-derived from nested semantic blocks.',main_responsibilities:'Host-derived from activity ownership.',human_intervention:'Host-derived from approval blocks.'},nodes,edges,...(loops.length?{loops}:{})};
+  const loopIntentFindings=sourceRepairLoopIntentFindings(proposal,resources);
+  requireValue(loopIntentFindings.length===0,'AUTHORING_SEMANTIC','The graph does not preserve the explicit source repair-loop contract',{findings:loopIntentFindings});
   return proposal;
 }
 

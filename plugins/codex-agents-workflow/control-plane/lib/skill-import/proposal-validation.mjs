@@ -1,3 +1,4 @@
+import { sourceRepairLoopIntentFindings } from '../authoring/semantic-loops.mjs';
 import { requireValue } from '../workflow-paths.mjs';
 import { decodeGeneratedEnvelope, decodeGeneratedProposalDetailed } from './expansion-run.mjs';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
@@ -21,8 +22,8 @@ export function authoringPipelineTrace({pack,resources,authoringPlan,proposal,co
   const validation=compiled.validation;
   const resultById={
     source_snapshot:{source_revision:pack.revision_hash,resource_count:Object.keys(resources).length},
-    semantic_inventory:{contract:authoringPlan?.contract ?? 'legacy-proposal',activity_count:authoringPlan?.activities?.length ?? graphNodes.length,source_disposition_count:authoringPlan?.source_dispositions?.length ?? proposal.source_dispositions?.length ?? 0,control_group_counts:{sequence:authoringPlan?.sequences?.length ?? 0,parallel:authoringPlan?.parallels?.length ?? 0,choice:authoringPlan?.choices?.length ?? 0,approval:authoringPlan?.approvals?.length ?? 0},semantic_hash:digest(canonicalJSON(semantic))},
-    graph_assembly:{node_count:graphNodes.length,edge_count:graphEdges.length,graph_hash:digest(canonicalJSON({nodes:graphNodes.map(node=>node.id),edges:graphEdges.map(edge=>[edge.source,edge.target,edge.on ?? null,edge.label ?? null])}))},
+    semantic_inventory:{contract:authoringPlan?.contract ?? 'legacy-proposal',activity_count:authoringPlan?.activities?.length ?? graphNodes.length,source_disposition_count:authoringPlan?.source_dispositions?.length ?? proposal.source_dispositions?.length ?? 0,control_group_counts:{sequence:authoringPlan?.sequences?.length ?? 0,parallel:authoringPlan?.parallels?.length ?? 0,choice:authoringPlan?.choices?.length ?? 0,approval:authoringPlan?.approvals?.length ?? 0,loop:authoringPlan?.loops?.length ?? 0},semantic_hash:digest(canonicalJSON(semantic))},
+    graph_assembly:{node_count:graphNodes.length,edge_count:graphEdges.length,loop_count:proposal.loops?.length??0,graph_hash:digest(canonicalJSON({loops:proposal.loops??[],nodes:graphNodes.map(node=>node.id),edges:graphEdges.map(edge=>[edge.source,edge.target,edge.on ?? null,edge.label ?? null])}))},
     execution_binding:{access_counts:countsBy(executableNodes,'access'),executor_counts:countsBy(executableNodes.map(node=>node.executor ?? {}),'kind'),input_binding_count:executableNodes.reduce((total,node)=>total+Object.keys(node.input_bindings ?? {}).length,0),resource_binding_count:executableNodes.reduce((total,node)=>total+(node.resources?.length ?? 0),0),host_projection_count:repairs.length},
     deterministic_validation:{valid:validation.valid,launch_ready:validation.launch_ready,cycle_free:validation.valid,error_codes:validation.errors.map(item=>item.code),blocker_codes:validation.blockers.map(item=>item.code),topological_order:validation.order},
     semantic_review:{status:'pending'},
@@ -43,7 +44,7 @@ function missingContractFields(proposal) {
 }
 
 export function deterministicProposalFindings(proposal,compiled,version,resources={}) {
-  const mechanical=[],semantic=[];
+  const mechanical=[],semantic=sourceRepairLoopIntentFindings(proposal,resources);
   if (version>=6) mechanical.push(...missingContractFields(proposal));
   if (version>=4) {
     semantic.push(...compiled.workflow.import_status.requirement_coverage.filter(item=>item.status==='unsupported'));

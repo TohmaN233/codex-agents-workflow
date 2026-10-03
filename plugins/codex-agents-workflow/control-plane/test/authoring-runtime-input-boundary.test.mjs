@@ -39,10 +39,10 @@ for(const sourceKind of ['skill','brief'])test(`${sourceKind} authoring packets 
   const job=authoringRunPack(pack,compiled.resources,providers[0],`boundary-${sourceKind}`,routingRules,false,providers[1],providers);
   const definition=authoring.AUTHORING_WORKFLOWS.find(item=>item.source_kind===sourceKind);
   const planner=job.workflow.nodes.find(node=>node.id==='expand');
-  assert.equal(definition.contract,'codex-authoring-workflow/v29');
+  assert.equal(definition.contract,'codex-authoring-workflow/v30');
   assert.equal(authoring.authoringDependencyAssessmentRequired(definition.contract),true);
   assert.equal(job.provenance.authoring_workflow_id,definition.id);
-  assert.equal(planner.prompt_template,authoring.AUTHORING_PLANNER_PROMPT_V26);
+  assert.equal(planner.prompt_template,authoring.AUTHORING_PLANNER_PROMPT_V27);
   assert.match(planner.prompt_template,/host_validation workspace_source_locations/);
   assert.match(planner.prompt_template,/shared workspace_source_locations contract in the packet/);
   assert.doesNotMatch(planner.prompt_template,/workspace-relative path/);
@@ -50,7 +50,7 @@ for(const sourceKind of ['skill','brief'])test(`${sourceKind} authoring packets 
   assert.match(planner.prompt_template,/every unchanged pre-existing input or resource value/);
   assert.doesNotMatch(planner.prompt_template,/fewest meaningful activities/);
   assert.notEqual(planner.prompt_template,authoring.AUTHORING_PLANNER_PROMPT_V19);
-  assert.equal(job.workflow.nodes.find(node=>node.id==='final').prompt_template,authoring.AUTHORING_REVIEW_PROMPT_V21);
+  assert.equal(job.workflow.nodes.find(node=>node.id==='final').prompt_template,authoring.AUTHORING_REVIEW_PROMPT_V22);
   assert.match(job.workflow.nodes.find(node=>node.id==='final').prompt_template,/Return exactly one verdict for every checklist entry/);
   assert.match(job.workflow.nodes.find(node=>node.id==='final').prompt_template,/Do not return, quote or reproduce checklist IDs, node or edge IDs/);
   const stored=authoring.createStoredAuthoringWorkflow(definition,{planner:providers[0],reviewer:providers[1],maxRounds:2});

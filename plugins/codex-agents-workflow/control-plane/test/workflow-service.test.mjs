@@ -162,7 +162,7 @@ test('published connector Roles preserve unconfigured, fixed-scope, read-only an
 });
 import { nativeRejectedTurnHistory } from '../lib/workflow-runtime.mjs';
 import { readHostMainWorker, watchHostMainAuthority, writeHostMainWorker } from '../lib/execution/host-main-worker.mjs';
-import { AUTHORING_PLANNER_PROMPT_V26, AUTHORING_REVIEW_PROMPT_V21 } from '../lib/authoring/authoring-workflows.mjs';
+import { AUTHORING_PLANNER_PROMPT_V27, AUTHORING_REVIEW_PROMPT_V22 } from '../lib/authoring/authoring-workflows.mjs';
 import { leaseToken } from '../lib/workflow-execution-envelope.mjs';
 
 test('production WorkflowService keeps a running native Agent inside one Host event wait', async () => {
@@ -1002,13 +1002,13 @@ test('service exposes both authoring Workflows and installs an exported package 
   for(const definition of definitions){
     assert.match(definition.revision_hash,/^[a-f0-9]{64}$/);assert.equal(definition.status,'ready');
     const stored=await source.service.call('read',{workflow_id:definition.id,revision_hash:definition.revision_hash});
-    assert.equal(stored.provenance.kind,'bundled_authoring_workflow');assert.equal(stored.workflow.authoring.contract,'codex-authoring-workflow/v29');
-    assert.equal(stored.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V26);
-    assert.equal(stored.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V21);
+    assert.equal(stored.provenance.kind,'bundled_authoring_workflow');assert.equal(stored.workflow.authoring.contract,'codex-authoring-workflow/v30');
+    assert.equal(stored.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V27);
+    assert.equal(stored.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
     assert.equal(stored.workflow.authoring.pipeline.contract,'codex-authoring-pipeline/v1');
   }
   assert(definitions.every(item=>item.mechanical_repairs===0 && item.semantic_repairs===3));
-  assert(definitions.every(item=>item.contract==='codex-authoring-workflow/v29'));
+  assert(definitions.every(item=>item.contract==='codex-authoring-workflow/v30'));
   assert(definitions.every(item=>item.stages.map(stage=>stage.owner).join(',')==='host,planner,host,host,host,reviewer,human'));
   assert(definitions.every(item=>item.edges.map(edge=>`${edge.source}>${edge.target}`).join(',')==='start>expand,expand>graph_assembly,graph_assembly>execution_binding,execution_binding>deterministic_validation,deterministic_validation>final,final>end'));
   assert(definitions.every(item=>item.pipeline.repair.mode==='stable_key_delta'&&item.pipeline.repair.automatic_rounds===3));

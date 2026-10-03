@@ -5,6 +5,10 @@ import { WORKSPACE_SOURCE_LOCATIONS, WORKSPACE_SOURCE_LOCATIONS_SCHEMA } from '.
 
 export const NODE_TYPES = new Set(['start', 'end', 'agent', 'condition', 'parallel', 'join', 'skill_ref', 'subworkflow', 'tool', 'human_gate']);
 export const HUMAN_GATE_OUTPUT = Object.freeze({ approved: true });
+export const LOOP_REGION_SCHEMA = {
+  type:'object',required:['id','entry_node','exit_node','node_ids','max_rounds','until'],additionalProperties:false,
+  properties:{id:{type:'string'},entry_node:{type:'string'},exit_node:{type:'string'},node_ids:{type:'array',minItems:1,maxItems:512,items:{type:'string'}},max_rounds:{type:'integer',minimum:1,maximum:Number.MAX_SAFE_INTEGER},until:{type:'object'},feedback_bindings:{type:'object'},item_scope:{type:'object',required:['items','verdicts','paths_field'],additionalProperties:false,properties:{items:{},verdicts:{},paths_field:{type:'string'},dependencies_field:{type:'string'}}}}
+};
 
 export function validateWorkflowShape(workflow) {
   const encoded = canonicalJSON(workflow);
@@ -14,6 +18,8 @@ export function validateWorkflowShape(workflow) {
   requireValue(typeof workflow.name === 'string' && workflow.name.trim().length > 0 && workflow.name.length <= 256, 'WORKFLOW_NAME', 'Workflow requires a name of at most 256 characters');
   requireValue(['draft', 'ready'].includes(workflow.status), 'WORKFLOW_STATUS', 'Workflow status must be draft or ready');
   requireValue(Array.isArray(workflow.nodes) && Array.isArray(workflow.edges) && workflow.nodes.length <= 512 && workflow.edges.length <= 2048, 'WORKFLOW_GRAPH', 'Workflow needs bounded node and edge arrays');
+  requireValue(workflow.loops === undefined || Array.isArray(workflow.loops) && workflow.loops.length <= workflow.nodes.length,
+    'LOOP_SCHEMA', 'Repair regions must be an array bounded by the graph node count');
   requireValue(typeof workflow.enabled === 'boolean', 'WORKFLOW_ENABLED', 'Workflow enabled flag is required');
   requireValue(workflow.template_kind===undefined || ['role','workflow'].includes(workflow.template_kind), 'TEMPLATE_KIND', 'Template kind must be role or workflow');
   requireValue(workflow.role_prompt_mode===undefined || workflow.template_kind==='role'&&workflow.role_prompt_mode==='append_context','ROLE_PROMPT_MODE','Role prompt mode must be append_context on a Role template');
