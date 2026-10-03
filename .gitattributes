@@ -1,0 +1,11 @@
+*.sh text eol=lf
+*.mjs text eol=lf
+plugins/codex-agents-workflow/control-plane/web/workflows.* text eol=lf
+# Bundled SDKs contain intentional whitespace in JavaScript template literals.
+# Preserve upstream bytes; generated assets are checked by reproducible builds.
+plugins/codex-agents-workflow/control-plane/web/workflows.js whitespace=-blank-at-eol
+plugins/codex-agents-workflow/control-plane/web/app-client.js text eol=lf whitespace=-blank-at-eol
+plugins/codex-agents-workflow/control-plane/web/*-app.html text eol=lf whitespace=-blank-at-eol
+plugins/codex-agents-workflow/scripts/mcp-bootstrap.cjs text eol=lf
+plugins/codex-agents-workflow/scripts/build-mcp-entry.mjs text eol=lf
+plugins/codex-agents-workflow/.mcp.json text eol=lf

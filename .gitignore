@@ -1,0 +1,8 @@
+.DS_Store
+*.log
+__pycache__/
+node_modules/
+.chatgpt-review/
+.codegraph/
+/spikes/plan1-workflow-vs-skill/
+/local-experiments/
