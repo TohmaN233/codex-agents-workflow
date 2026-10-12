@@ -12,7 +12,7 @@
       "name": "GPT-6 Luna / Max",
       "kind": "native_agent",
       "enabled": true,
-      "description": "Native Codex model connection for routine bounded implementation Roles.",
+      "description": "Use for routine bounded inspection, documentation and implementation with explicit inputs and clear checks. Suitable for ordinary repository scanning and evidence-based audits; a read-only task does not require a stronger model.",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -34,7 +34,7 @@
       "name": "GPT-6.1 Sol / High",
       "kind": "native_agent",
       "enabled": true,
-      "description": "Native Codex model connection for complex implementation, repository analysis, and independent review Roles.",
+      "description": "Use for complex implementation, cross-module repository analysis and independent review. Select when the work needs difficult integration or a fresh critical judgment beyond routine bounded inspection.",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -56,7 +56,7 @@
       "name": "GPT-6 Astra / Medium",
       "kind": "native_agent",
       "enabled": true,
-      "description": "Native Codex model connection for planning, brainstorming, and focused problem-solving Roles.",
+      "description": "Use only for difficult planning, novel causal diagnosis and unresolved design tradeoffs. Ordinary scanning, documentation, checklist audits and straightforward route decisions do not justify this model. Main conversation decisions belong to Main orchestration.",
       "requires_user_approval": false,
       "capabilities": {
         "read": true,
@@ -246,7 +246,11 @@
       "description": "Inspect a bounded change, repair only evidenced defects, and verify the corrected result in one write-capable responsibility.",
       "role_instructions": "Review the supplied bounded change and repair only concrete defects found during that review. Preserve valid work, interfaces, ownership boundaries and concurrent edits. Verify every correction and return the remaining findings and one clear verdict. Do not rewrite successful work or widen scope.",
       "route": "audit",
-      "tags": ["review", "repair", "bounded-write"],
+      "tags": [
+        "review",
+        "repair",
+        "bounded-write"
+      ],
       "stages": [
         {
           "id": "review",
@@ -262,7 +266,7 @@
       "id": "brainstorm",
       "name": "Bounded brainstorm",
       "enabled": true,
-      "description": "Generate alternatives and discriminating checks without taking architecture authority away from the primary agent.",
+      "description": "Explore alternatives and discriminating checks for a difficult unresolved design tradeoff. Use when ordinary bounded work is insufficient; the primary agent retains architecture and user-decision authority.",
       "role_instructions": "Act as a read-only idea partner. Generate materially different options, identify their failure modes and unknowns, and propose the smallest discriminating check. Leave architecture choice and final acceptance with the primary agent, and never present speculation as observed evidence.",
       "route": "delegate",
       "tags": [

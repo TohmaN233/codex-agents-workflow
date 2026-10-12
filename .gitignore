@@ -6,3 +6,5 @@ node_modules/
 .codegraph/
 /spikes/plan1-workflow-vs-skill/
 /local-experiments/
+/verification/
+/work/

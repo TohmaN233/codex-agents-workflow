@@ -1,5 +1,6 @@
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import {readPinnedObject} from '../pinned-object-reader.mjs';
+import { dirname, join, relative, resolve } from 'node:path';
+import { augmentedRuntimeEnvironment } from '../runtime-environment-state.mjs';
 import { createManagedNativeSession } from './managed-native-session.mjs';
 import { createHostAuthBroker } from './codex-host-auth.mjs';
 import { createWorkflowResourceBroker, loadNodeSkillSnapshots } from './workflow-resource-broker.mjs';
@@ -36,11 +37,7 @@ const diagnosticOf = error => {
 };
 
 function within(path, boundary) { return boundary === '.' || path === boundary || path.startsWith(boundary.replaceAll('\\', '/').replace(/\/$/, '') + '/'); }
-function augmentedEnvironment(env, runtimeEnvironment) {
-  const directories = (runtimeEnvironment?.tools ?? []).filter(tool => tool.status === 'found' && typeof tool.path === 'string' && isAbsolute(tool.path)).map(tool => dirname(tool.path));
-  const inherited = env.PATH ?? env.Path ?? '';
-  return { ...env, PATH: [...new Set([...directories, ...inherited.split(delimiter).filter(Boolean)])].join(delimiter) };
-}
+
 function poolAssignments(subagents, accepted = {}) {
   if (!subagents?.fanout) return null;
   const { resolved_count: count, items, fanout } = subagents;
@@ -117,7 +114,7 @@ async function resourceItems(runtime, runId, envelope) {
   for (const path of envelope.resources) {
     const pin = record.pins.root.resources.find(item => item.path === path);
     requireValue(pin && pin.bytes <= 1024 * 1024, 'MANAGED_NATIVE_RESOURCE', `Pinned resource is unavailable or too large: ${path}`);
-    resources.push({ path, sha256: pin.sha256, bytes: await readFile(join(root, pin.sha256)) });
+    resources.push({ path, sha256: pin.sha256, bytes: await readPinnedObject(root,pin) });
   }
   return resources;
 }
@@ -266,7 +263,7 @@ export class ManagedNativeManager {
     if (adapter.settings.authentication.mode === 'host_chatgpt' && this.hostAuthBinary !== adapter.settings.codex_binary) {
       this.hostAuth?.clear(); this.hostAuth = createHostAuthBroker({ binary: adapter.settings.codex_binary, cwd: this.parent, env: this.env }); this.hostAuthBinary = adapter.settings.codex_binary;
     }
-    const env = augmentedEnvironment(this.env, record.state.runtime_environment ?? record.state.constraints?.runtime_environment);
+    const env = augmentedRuntimeEnvironment(this.env,envelope.constraints?.runtime_environment??record.state.runtime_environment??record.state.constraints?.runtime_environment,{workspace:envelope.workspace});
     entry.status = 'running'; await event('session_state', { status: 'running' });
     const sessionFor = async (index, dispatchId) => {
       const broker = await brokerFor(index);
@@ -275,6 +272,7 @@ export class ManagedNativeManager {
         hostAuth: adapter.settings.authentication.mode === 'host_chatgpt' ? this.hostAuth : undefined,
         binary: adapter.settings.codex_binary, expectedBinaryHash: adapter.settings.binary_sha256, expectedBinaryPath: adapter.qualification?.resolved_path,
         dynamicToolFormat: adapter.qualification?.dynamic_tool_format, authentication: adapter.settings.authentication,
+        rawObservation: adapter.qualification?.raw_observation,
         model: adapter.model, effort: adapter.effort, cwd: envelope.workspace, access: envelope.access, allowedPaths:assignmentWritePaths.get(index), env, toolBroker: broker, authorize: entry.authorize, assertActive: entry.assertActive,
         maxTurns: definition.fanout?.result_mode==='per_item'
           ? definition.retry.max_attempts+(definition.fanout.item_delivery==='incremental'
@@ -284,7 +282,7 @@ export class ManagedNativeManager {
         onProfilePrepared: profile => event('profile_owned', { home: profile.home, ...(profile.receipt_home ? {receipt_home:profile.receipt_home} : {}), executable_sha256: profile.binary_sha256 }),
         onModelCatalog: metadata => event('model_catalog', metadata),
         onEvent: metadata => {
-          if (!['thread/started', 'turn/started', 'turn/completed', 'thread/tokenUsage/updated', 'item/started', 'item/completed', 'error'].includes(metadata.method)) return;
+          if (!['thread/started', 'turn/started', 'turn/completed', 'thread/tokenUsage/updated', 'workflow/turnUsage', 'workflow/toolInterface', 'workflow/rawObservation', 'workflow/toolSearch', 'item/started', 'item/completed', 'error'].includes(metadata.method)) return;
           return event('codex_event', metadata);
         },
       });

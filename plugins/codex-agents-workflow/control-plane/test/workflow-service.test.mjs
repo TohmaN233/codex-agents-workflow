@@ -10,6 +10,7 @@ import { tmpdir } from './physical-tempdir.mjs';
 import { dirname, join, resolve } from 'node:path';
 import { loadConfig, saveConfig, configRevision, resolveAuditPath } from '../lib/config.mjs';
 import { WorkflowService } from '../lib/workflow-service.mjs';
+import { createPreparedStartup } from '../lib/execution/prepared-startup-record.mjs';
 import { ConnectorTaskStore } from '../connectors/task-store.mjs';
 import { ConnectorRegistry, connectorRegistryFor } from '../connectors/registry.mjs';
 import { DEFAULT_CONFIG_PATH, handleRpc, startConsole, stopConsole } from '../server.mjs';
@@ -20,9 +21,67 @@ import { hostResultProposalEnvelope } from '../lib/execution/host-main-automatio
 import { inspectNativeAgent } from '../lib/execution/native-agent-observer.mjs';
 import { createConversionCertificate, requireCurrentConversionCertificate } from '../lib/skill-import/conversion-certificate.mjs';
 import { CONVERSION_CONTRACT } from '../lib/skill-import/conversion-contract.mjs';
-import { digest } from '../lib/workflow-revisions.mjs';
+import { digest, canonicalJSON } from '../lib/workflow-revisions.mjs';
 import { workflowResourceProgramIdentity } from '../lib/execution/workflow-resource-program.mjs';
 import { qualifiedExecutionBinding } from '../lib/execution/codex-tool-broker.mjs';
+import { refreshCodexRegistration } from '../lib/execution/codex-runtime-registration.mjs';
+import { verifyCodexDistribution } from '../lib/execution/strict-config.mjs';
+import { readyWorkflow, edge } from './fixtures/workflow-fixtures.mjs';
+import { retainOwnedAuthority, replaceOwnedAuthority } from '../lib/execution/owned-workflow-authority.mjs';
+import {packDirectory} from '../lib/workflow-paths.mjs';
+
+test('service opening and Role discovery audit only Role candidates while ordinary reads still audit selected resources',async t=>{
+  const f=await fixture(t);await f.migrate();
+  const {store}=await f.service.open();
+  const unrelated=await store.create(createDraft('unrelated-corrupt-resource','Unrelated'),{resources:{'source.txt':'original'}});
+  const object=join(packDirectory(store.root,unrelated.workflow.id),'objects',unrelated.resources[0].sha256);
+  await writeFile(object,'corrupt');
+  await f.service.open();
+  const roles=await f.service.call('role_templates');assert(roles.length>0);
+  for(const role of roles.filter(item=>item.provider_kind==='native_agent')){
+    assert.equal(typeof role.provider_description,'string');assert.ok(role.provider_description.length>0);
+    if(role.provider_id==='native-astra')assert.match(role.provider_description,/only for difficult planning/);
+  }
+  await assert.rejects(store.list(),{code:'RESOURCE_CORRUPT'});
+  await assert.rejects(f.service.call('read',{workflow_id:unrelated.workflow.id}),{code:'RESOURCE_CORRUPT'});
+  const customization=await store.create(createDraft('malformed-role-customization','Role'),{
+    resources:{'role.txt':'original'},provenance:{kind:'role_customization',builtin_role_id:'builtin-role-repository-analysis'}});
+  const roleObject=join(packDirectory(store.root,customization.workflow.id),'objects',customization.resources[0].sha256);
+  await writeFile(roleObject,'corrupt');
+  await assert.rejects(f.service.open(),{code:'RESOURCE_CORRUPT'});
+  await writeFile(roleObject,'original');
+  await assert.rejects(f.service.open(),{code:'ROLE_CUSTOMIZATION_KIND'});
+});
+
+test('stale pinned child Host identity blocks publication and both launch entrypoints before a Run exists',async t=>{
+  const f=await fixture(t);await f.migrate();
+  const {store,runtime}=await f.service.open();
+  const child=readyWorkflow('stale-child-broker');
+  child.skill_policy={mode:'cooperative',implicit:'deny',ambient_allow:[],shadowed_skill_paths:[]};
+  child.host_tools=[{id:'child-check',identity:{...workflowResourceProgramIdentity(),sha256:'f'.repeat(64)},
+    argv:['node','scripts/check.mjs','work'],input_schema:{type:'object'},output_schema:{type:'object'},env_allow:[],
+    permissions:{network:false,read_paths:[],write_paths:['work']},output_cap_bytes:4096,deadline_ms:10000,idempotency:{mode:'safe'}}];
+  child.requirements.tools=['child-check'];
+  // Represent a historical immutable child whose registered broker has changed.
+  const pinned=await store.create(child);
+  const parent=readyWorkflow('stale-child-parent');parent.status='draft';
+  parent.skill_policy=structuredClone(child.skill_policy);
+  parent.nodes.splice(1,0,{id:'call-child',type:'subworkflow',executor:{kind:'subworkflow'},access:'read_only',
+    approval:{required:false},retry:{max_attempts:1},input_bindings:{},
+    subworkflow:{workflow_id:child.id,revision_pin:pinned.revision_hash,output_bindings:{result:'/output'}}});
+  parent.edges=[edge('start','call-child'),edge('call-child','final'),edge('final','end')];
+  const checked=await f.service.call('validate',{workflow:parent});
+  assert.equal(checked.valid,false);assert.equal(checked.launch_ready,false);
+  assert.ok(checked.errors.some(e=>e.workflow_id===child.id&&e.host_tool_id==='child-check'));
+  const draft=await store.create(parent);
+  await assert.rejects(f.service.call('publish',{workflow_id:parent.id,expected_revision:draft.revision_hash},{human:true}),{code:'WORKFLOW_NOT_READY'});
+  store.validationContext=(await f.service.validationContext(store,parent,store.validationContext)).context;
+  const historical=await store.save(parent.id,{...parent,status:'ready'},{expected_revision:draft.revision_hash});
+  const before=(await runtime.runs.list()).length;
+  for(const operation of ['start','begin_main'])await assert.rejects(f.service.call(operation,{workflow_id:parent.id,
+    revision_hash:historical.revision_hash,workspace:f.workspace,access:'read_only',main_actor:'root',inputs:{}}),{code:'HOST_TOOL_BINDING_STALE'});
+  assert.equal((await runtime.runs.list()).length,before);
+});
 
 test('customized connector Role delivers its current instructions without a legacy Task Type or Workflow Run',async t=>{
   const delivered=[];
@@ -162,7 +221,7 @@ test('published connector Roles preserve unconfigured, fixed-scope, read-only an
 });
 import { nativeRejectedTurnHistory } from '../lib/workflow-runtime.mjs';
 import { readHostMainWorker, watchHostMainAuthority, writeHostMainWorker } from '../lib/execution/host-main-worker.mjs';
-import { AUTHORING_PLANNER_PROMPT_V27, AUTHORING_REVIEW_PROMPT_V22 } from '../lib/authoring/authoring-workflows.mjs';
+import { AUTHORING_PLANNER_PROMPT_CURRENT, AUTHORING_REVIEW_PROMPT_CURRENT } from '../lib/authoring/authoring-workflows.mjs';
 import { leaseToken } from '../lib/workflow-execution-envelope.mjs';
 
 test('production WorkflowService keeps a running native Agent inside one Host event wait', async () => {
@@ -174,6 +233,7 @@ test('production WorkflowService keeps a running native Agent inside one Host ev
   const parentThreadId='01a0db25-ad92-72a0-b6fa-2519a6cfa2f8';
   const childThreadId='01a0db6b-704a-7470-bef4-7da3175bb140';
   let threadReads=0,turnReads=0,sessionCalls=0,complete=false,releaseEvent,settled=false;
+  let waitArmed=false,lifecycleReadsAfterArm=0;
   const client={async call(method,args){
     assert.equal(args.threadId,childThreadId);
     if(method==='thread/read'){
@@ -188,12 +248,15 @@ test('production WorkflowService keeps a running native Agent inside one Host ev
   const service=new WorkflowService({configPath:'unused-config.json',defaultConfigPath:'unused-default.json',env:{},
     capabilities:{nativeAgentObserverSession:async action=>{sessionCalls++;return action(client);}}});
   const pending=service.nativeAgentObserver([childThreadId],{parentThreadId,
-    readLifecycle:async()=>({turn_id:'turn-1',status:complete?'completed':'pending'}),
-    waitForChange:async()=>new Promise(resolve=>{releaseEvent=()=>{complete=true;resolve();};})}).finally(()=>{settled=true;});
+    readLifecycle:async()=>{if(waitArmed&&!complete)lifecycleReadsAfterArm++;
+      return {turn_id:'turn-1',status:complete?'completed':'pending'};},
+    waitForChange:async()=>new Promise(resolve=>{waitArmed=true;releaseEvent=()=>{complete=true;resolve();};})}).finally(()=>{settled=true;});
   await new Promise(resolve=>setTimeout(resolve,20));assert.equal(settled,false);
+  assert.equal(waitArmed,true);assert(lifecycleReadsAfterArm>=1,'the armed watcher must be followed by a fresh lifecycle race check');
+  assert.equal(threadReads,1);assert.equal(turnReads,1,'pending lifecycle must not trigger redundant full RPC inspections');
   releaseEvent();const result=await pending;
   assert.equal(result.status,'completed');assert.deepEqual(result.result,{done:true});
-  assert.equal(sessionCalls,1);assert.equal(threadReads>=3,true);assert.equal(turnReads>=3,true);
+  assert.equal(sessionCalls,1);assert.equal(threadReads,2);assert.equal(turnReads,2);
 });
 test('explicit host discovery never falls back to folder scanning for inventory or import', async t => {
   const f = await fixture(t); await f.migrate();
@@ -240,7 +303,7 @@ async function fixture(t, options = {}) {
     capabilities:{nativeAgentObserver:null,nativeParentVerifier:async()=>{},...options.capabilities} });
   return { root, configPath, workspace, service,
     migrate: () => service.call('migrate_v6', {}, { human: true }),
-    start: () => service.call('start', { workflow_id: 'brainstorm', workspace, access: 'read_only', main_actor: 'root', native_parent_thread_id:'01a0db81-70bf-7233-9021-4b4e3849bec7',inputs: { task: 'Synthetic workflow integration', context: 'Fixture only' } }),
+    start: ({workspace:runWorkspace=workspace}={}) => service.call('start', { workflow_id: 'brainstorm', workspace:runWorkspace, access: 'read_only', main_actor: 'root', native_parent_thread_id:'01a0db81-70bf-7233-9021-4b4e3849bec7',inputs: { task: 'Synthetic workflow integration', context: 'Fixture only' } }),
   };
 }
 const control = run => ({ run_id: run.run_id, control_token: run.control_token });
@@ -442,7 +505,7 @@ test('real MCP cancellation and EOF release a one-hour wait without cancelling i
   assert.equal((await f.service.call('get',{run_id:run.run_id})).status,'running');
 });
 
-test('native bridge exposes only the three argumentless deterministic operations', async () => {
+test('native bridge exposes three deterministic operations and only the Host-owned spawn batch identity', async () => {
   const nativeSchemas = Object.fromEntries(workflowToolDefinitions()
     .filter(tool => tool.name.startsWith('workflow_native_'))
     .map(tool => [tool.name, tool.inputSchema.required]));
@@ -451,8 +514,17 @@ test('native bridge exposes only the three argumentless deterministic operations
     workflow_native_spawned_batch:[],
     workflow_native_followed_up:[],
   });
-  for(const name of Object.keys(nativeSchemas))assert.deepEqual(
-    workflowToolDefinitions().find(tool=>tool.name===name).inputSchema.properties,{});
+  const definitions=workflowToolDefinitions();
+  for(const name of ['workflow_native_next','workflow_native_followed_up'])assert.deepEqual(
+    definitions.find(tool=>tool.name===name).inputSchema.properties,{});
+  const spawned=definitions.find(tool=>tool.name==='workflow_native_spawned_batch').inputSchema;
+  assert.deepEqual(Object.keys(spawned.properties),['batch_id']);
+  assert.equal(spawned.additionalProperties,false);
+  assert.equal(spawned.properties.batch_id.type,'string');
+  assert.equal(spawned.properties.batch_id.minLength,64);
+  assert.equal(spawned.properties.batch_id.maxLength,64);
+  assert.equal(spawned.properties.batch_id.pattern,'^[a-f0-9]+$');
+  assert.match(spawned.properties.batch_id.description,/Host-generated/);
   for(const retired of ['native_spawned','native_result','native_started','native_complete'])
     assert.equal(HOST_ONLY_WORKFLOW_OPERATIONS.has(retired),false);
 });
@@ -512,7 +584,7 @@ test('native wait supplies the recorded parent and journals identity registratio
   const diagnostic='Native Agent /root/fixture awaits registration under parent root';
   const f=await fixture(t,{capabilities:{nativeAgentObserver:async(ids,options)=>{
     assert.equal(options.parentThreadId,'01a0db81-70bf-7233-9021-4b4e3849bec7');
-    await options.onIdentityEvent({status:'waiting',code:'NATIVE_AGENT_IDENTITY_PENDING',diagnostic});
+    await options.onIdentityEvent({status:'waiting_native_registration',code:'NATIVE_AGENT_IDENTITY_PENDING',diagnostic});
     return {status:'completed',agent_id:ids[0],turn_id:'turn-path',result:{design:'ready'}};
   }}});await f.migrate();
   const run=await f.start(),binding=control(run),handoff=await f.service.call('native_next',binding);
@@ -613,7 +685,8 @@ test('native wait ownership permits another Run and releases after an observer f
   const f=await fixture(t,{capabilities:{nativeAgentObserver:observer}});await f.migrate();
   const bindings=[];
   for(const agent_id of ['slow-child','fast-child']){
-    const run=await f.start(),binding=control(run),handoff=await f.service.call('native_next',binding);
+    const workspace=join(f.root,agent_id);await mkdir(workspace);
+    const run=await f.start({workspace}),binding=control(run),handoff=await f.service.call('native_next',binding);
     await recordNativeSpawn(f,{...binding,attempt_id:handoff.attempt_id,index:0,agent_id});
     bindings.push({...binding,attempt_id:handoff.attempt_id});
   }
@@ -725,6 +798,159 @@ test('Host awaits and records a visible native child without Main polling or man
   assert.deepEqual(state.nodes.jobs.attempts[0].native_parallel_results[0].result,[42]);
 });
 
+async function mainStartupRegistrationFixture(t,{registrationError,qualificationError}={}) {
+  let modelCalls=0;
+  const f=await fixture(t,{fetchImpl:async()=>{modelCalls++;assert.fail('Startup qualification must not call a model');}});
+  await f.migrate();
+  const workflow=readyWorkflow('main-startup-registration');workflow.skill_policy.mode='cooperative';
+  const created=await f.service.call('create',{workflow},{human:true});
+  const binary=join(f.root,'current-codex'),bytes=Buffer.from('current local Codex fixture'),hash=digest(bytes);
+  await writeFile(binary,bytes);
+  const previous=await f.service.config();
+  previous.strict_executor={...previous.strict_executor,enabled:true,
+    codex_binary:join(f.root,'removed-install','codex'),binary_sha256:digest('removed local Codex fixture')};
+  await saveConfig(previous,{configPath:f.configPath});
+  const order=[],qualifications=[],launches=[];
+  assert.equal(f.service.capabilities.hostMainManager,undefined);
+  assert.equal(f.service.capabilities.strictManager,undefined);
+  f.service.hostMainManager.sessionFactory=()=>{modelCalls++;assert.fail('Startup qualification must not start a model session');};
+  f.service.hostMainManager.qualify=async current=>{
+    order.push('main_qualify');qualifications.push(structuredClone(current));
+    if(qualificationError)throw qualificationError;
+    await verifyCodexDistribution(current.strict_executor.codex_binary,{sha256:current.strict_executor.binary_sha256});
+    return current.strict_executor;
+  };
+  f.service.hostMainManager.launchRun=async args=>{order.push('launch');launches.push(args);return {status:'starting'};};
+  // Inject only local discovery/qualification into the real registration
+  // operation; keep the built-in manager so service registration stays enabled.
+  f.service.prepareCodexRegistration=async closure=>{
+    order.push('registration');assert(closure.packs.some(pack=>pack.workflow.id===workflow.id));
+    return refreshCodexRegistration({configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,
+      config:await f.service.config(),env:f.service.env,
+      discover:async()=>{order.push('discover');return {binary};},
+      qualify:async candidate=>{
+        order.push('registration_qualify');if(registrationError)throw registrationError;
+        await verifyCodexDistribution(candidate.strict_executor.codex_binary,{sha256:candidate.strict_executor.binary_sha256});
+        return candidate.strict_executor;
+      }});
+  };
+  return {...f,binary,hash,previous,order,qualifications,launches,modelCalls:()=>modelCalls,
+    request:{workflow_id:workflow.id,revision_hash:created.revision_hash,workspace:f.workspace,
+      access:'read_only',main_actor:'root',inputs:{},return_after_start:true}};
+}
+
+async function observeRunMainResourceAdmission(f,{mutateAfterEnvironment=false}={}){
+  const {store}=await f.service.open();
+  const previous=await store.snapshot(f.request.workflow_id,f.request.revision_hash);
+  const saved=await store.save(f.request.workflow_id,previous.workflow,{expected_revision:previous.revision_hash,
+    resources:{'startup-reference.txt':'trusted startup reference'}});
+  f.request.revision_hash=saved.revision_hash;
+  const objectPath=join(packDirectory(store.root,saved.workflow.id),'objects',saved.resources[0].sha256);
+  const scans=[],legacy={snapshot:0,resources:0};
+  let runtime;
+  const open=f.service.open.bind(f.service);
+  f.service.open=async(...args)=>{
+    const opened=await open(...args);runtime=opened.runtime;
+    const workflowStore=opened.store,read=workflowStore.snapshotWithResources.bind(workflowStore);
+    const snapshot=workflowStore.snapshot.bind(workflowStore),resources=workflowStore.resources.bind(workflowStore);
+    workflowStore.snapshot=async(id,...rest)=>{if(id===f.request.workflow_id)legacy.snapshot++;return snapshot(id,...rest);};
+    workflowStore.resources=async(id,...rest)=>{if(id===f.request.workflow_id)legacy.resources++;return resources(id,...rest);};
+    workflowStore.snapshotWithResources=async(id,...rest)=>{
+      const entry={attempted:id===f.request.workflow_id};if(entry.attempted)scans.push(entry);
+      try{
+        const result=await read(id,...rest);
+        if(entry.attempted)entry.scan=result.resource_scan;
+        return result;
+      }catch(error){if(entry.attempted)entry.error_code=error.code;throw error;}
+    };
+    const resolveEnvironment=runtime.environmentResolver;
+    runtime.environmentResolver=async(...environmentArgs)=>{
+      const result=await resolveEnvironment(...environmentArgs);
+      if(mutateAfterEnvironment)await writeFile(objectPath,'mutated during environment callback');
+      return result;
+    };
+    return opened;
+  };
+  return {scans,legacy,getRuntime:()=>runtime};
+}
+
+test('run_main reads each root resource once per same-phase pin admission',async t=>{
+  const f=await mainStartupRegistrationFixture(t),observed=await observeRunMainResourceAdmission(f);
+  const started=await f.service.call('run_main',f.request);
+  assert.equal(started.status,'starting');
+  assert.equal(observed.scans.length,2);
+  assert.deepEqual(observed.scans.map(item=>item.scan?.object_read_count),[1,1]);
+  assert.deepEqual(observed.scans.map(item=>item.scan?.resource_count),[1,1]);
+  assert(observed.scans.every(item=>Number.isFinite(item.scan?.elapsed_ms)&&item.scan.elapsed_ms>=0));
+  assert.deepEqual(observed.legacy,{snapshot:0,resources:0});
+});
+
+test('run_main rereads root resource bytes after its environment callback before publishing a Run',async t=>{
+  const f=await mainStartupRegistrationFixture(t),observed=await observeRunMainResourceAdmission(f,{mutateAfterEnvironment:true});
+  await assert.rejects(f.service.call('run_main',f.request),{code:'RESOURCE_CORRUPT'});
+  assert.equal(observed.scans.length,2);
+  assert.equal(observed.scans[0].scan.object_read_count,1);
+  assert.equal(observed.scans[1].error_code,'RESOURCE_CORRUPT');
+  assert.deepEqual(await observed.getRuntime().runs.list(),[]);
+  assert.deepEqual(observed.legacy,{snapshot:0,resources:0});
+});
+
+test('run_main refreshes removed Codex registration before built-in Main qualification and Run creation',async t=>{
+  const f=await mainStartupRegistrationFixture(t);
+  const started=await f.service.call('run_main',f.request);
+  assert.equal(started.status,'starting');assert.equal(f.modelCalls(),0);assert.equal(f.launches.length,1);
+  assert.deepEqual(f.order,['registration','discover','registration_qualify','main_qualify','registration','launch']);
+  assert.equal(f.qualifications.length,1);
+  assert.equal(f.qualifications[0].strict_executor.codex_binary,f.binary);
+  assert.equal(f.qualifications[0].strict_executor.binary_sha256,f.hash);
+  const saved=await f.service.config();
+  assert.equal(saved.strict_executor.codex_binary,f.binary);assert.equal(saved.strict_executor.binary_sha256,f.hash);
+  assert.deepEqual(saved.providers,f.previous.providers);
+  const audit=JSON.parse(await readFile(join(f.root,'codex-runtime-registration.json'),'utf8'));
+  assert.equal(audit.status,'registered');assert.equal(audit.reason,'stale_installation_rediscovered');
+  assert.equal(audit.previous_selected_path,f.previous.strict_executor.codex_binary);
+  const runs=await f.service.call('runs');assert.equal(runs.length,1);assert.equal(runs[0].run_id,started.run_id);
+  await f.service.historyMaintenance.task;
+});
+
+test('run_main registration and Main qualification failures propagate before Run creation or model launch',async t=>{
+  for(const stage of ['registration','Main qualification'])await t.test(stage,async t=>{
+    const error=Object.assign(new Error(`${stage} failed`),{code:stage==='registration'?'CODEX_CAPABILITY_UNSUPPORTED':'CODEX_CREDENTIAL_MISSING'});
+    const f=await mainStartupRegistrationFixture(t,stage==='registration'?{registrationError:error}:{qualificationError:error});
+    await assert.rejects(f.service.call('run_main',f.request),caught=>caught===error);
+    assert.equal(f.modelCalls(),0);assert.equal(f.launches.length,0);assert.deepEqual(await f.service.call('runs'),[]);
+    assert.deepEqual(f.order,stage==='registration'?['registration','discover','registration_qualify']:
+      ['registration','discover','registration_qualify','main_qualify']);
+    const saved=await f.service.config();
+    assert.equal(saved.strict_executor.codex_binary,stage==='registration'?f.previous.strict_executor.codex_binary:f.binary);
+    assert.equal(saved.strict_executor.binary_sha256,stage==='registration'?f.previous.strict_executor.binary_sha256:f.hash);
+  });
+});
+
+test('prepare_environment refreshes removed Codex registration without creating a Run or model session',async t=>{
+  const f=await mainStartupRegistrationFixture(t);
+  const environment=await f.service.call('prepare_environment',{
+    workflow_id:f.request.workflow_id,revision_hash:f.request.revision_hash});
+  assert.equal(environment.status,'ready');assert.deepEqual(environment.missing,[]);
+  assert.deepEqual(f.order,['registration','discover','registration_qualify']);
+  const saved=await f.service.config();
+  assert.equal(saved.strict_executor.codex_binary,f.binary);assert.equal(saved.strict_executor.binary_sha256,f.hash);
+  assert.equal(f.modelCalls(),0);assert.equal(f.qualifications.length,0);assert.equal(f.launches.length,0);
+  assert.deepEqual(await f.service.call('runs'),[]);
+});
+
+test('prepare_environment keeps missing ordinary dependencies ahead of Codex registration',async t=>{
+  const f=await mainStartupRegistrationFixture(t),{store}=await f.service.open();
+  const pack=await store.snapshot(f.request.workflow_id,f.request.revision_hash),workflow=structuredClone(pack.workflow);
+  const missing='codex-workflow-absent-registration-fixture';workflow.requirements.executables=[missing];
+  const saved=await store.save(workflow.id,workflow,{expected_revision:pack.revision_hash});
+  const environment=await f.service.call('prepare_environment',{workflow_id:workflow.id,revision_hash:saved.revision_hash});
+  assert.equal(environment.status,'installation_approval_required');assert.deepEqual(environment.missing,[missing]);
+  assert.deepEqual(f.order,[]);assert.equal(f.modelCalls(),0);assert.equal(f.launches.length,0);
+  assert.deepEqual((await f.service.config()).strict_executor,f.previous.strict_executor);
+  assert.deepEqual(await f.service.call('runs'),[]);
+});
+
 test('model-facing Main start returns its persisted Run while prior Provider work is still pending', async t => {
   const gate = deferred(); const entered = deferred(); let progress;
   const hostMainManager = {
@@ -754,12 +980,29 @@ test('model-facing Main start returns its persisted Run while prior Provider wor
 });
 
 test('workflow_start keeps native dispatch and opaque continuation inside its Host owner',async t=>{
+ for(const entry of ['workflow_start','workflow_start_prepared'])await t.test(entry,async t=>{
   const f=await fixture(t);await f.migrate();
   const launches=[],waits=[];
   const threadId='01a0db81-70bf-7233-9021-4b4e3849bec7';
-  const response=await handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'workflow_start',_meta:{threadId},arguments:{
+  let startArgs={
     workflow_id:'brainstorm',workspace:f.workspace,access:'read_only',inputs:{task:'Synthetic',context:'Fixture'},
-  }}},{configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{},serviceCapabilities:{
+  };
+  if(entry==='workflow_start_prepared'){
+    const {store}=await f.service.open(),workflow=structuredClone((await store.snapshot('brainstorm')).workflow);
+    workflow.id='prepared-native-public';
+    const initial={id:'choose',type:'agent',role:'advisor',executor:{kind:'main',mode:'orchestration'},access:'read_only',
+      prompt_template:'PARENT_FORMAT_REFERENCE_ONCE',approval:{required:false},retry:{max_attempts:1},input_bindings:{task:'/inputs/task'},
+      outputs_schema:{type:'object',properties:{summary:{type:'string'}},required:['summary'],additionalProperties:false},
+      completion_contract:{on_missing:'block',outcome:'validated_artifact'}};
+    const firstEdge=workflow.edges.find(edge=>edge.source==='start'),target=firstEdge.target;firstEdge.target=initial.id;
+    workflow.nodes.splice(1,0,initial);workflow.edges.push({id:'choose-native',source:initial.id,target});
+    const created=await f.service.call('create',{workflow});startArgs={...startArgs,workflow_id:workflow.id,revision_hash:created.revision_hash,
+      startup_inputs_sha256:digest(canonicalJSON(startArgs.inputs))};
+  }
+  const args=entry==='workflow_start_prepared'?{startup_reference:await createPreparedStartup(f.configPath,startArgs,
+    {typed:true,initialOutput:{summary:'Neutral initial route'}})}:startArgs;
+  const response=await handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:entry,_meta:{threadId},arguments:args}},
+  {configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{},serviceCapabilities:{
     hostMainManager:{qualify:async()=>({})},
     nativeParentVerifier:async parent=>{assert.equal(parent,threadId);return {agent_path:'/root'};},
     launchDetachedHostMain:async args=>{launches.push(args);return {run_id:args.runId,status:'starting'};},
@@ -775,9 +1018,13 @@ test('workflow_start keeps native dispatch and opaque continuation inside its Ho
   assert.equal(response.result.isError,undefined,JSON.stringify(response));
   const value=JSON.parse(response.result.content[0].text);
   assert.equal(launches.length,1);assert.equal(waits.length,1);
-  assert.equal(value.execution_owner,'host_main_worker');
-  assert.equal(value.wake_reason,'native_handoff_required');
-  assert.equal(value.control_token,undefined);assert.equal(value.packets,undefined);
+  assert.equal(value.status,'native_handoff');
+  assert.equal(value.next_action,'spawn_released_packets_then_journal_batch');
+  assert.equal(value.registration_tool,'workflow_native_spawned_batch');
+  assert.equal(value.control_token,undefined);assert(value.spawn_calls.length>0);assert.equal(value.packets,undefined);
+  assert(value.spawn_calls.every(call=>call.tool==='collaboration.spawn_agent'&&call.arguments.message&&call.arguments.task_name));
+  assert(value.spawn_calls.every(call=>!call.arguments.message.includes('PARENT_FORMAT_REFERENCE_ONCE')));
+  for(const key of ['workspace','access','allowed_paths','result_schema','run_id','attempt_id'])assert.equal(value[key],undefined);
   assert.deepEqual(value.next_action_args,{});
   const continued=await handleRpc({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'workflow_native_next',_meta:{threadId},arguments:{}}},
     {configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{},serviceCapabilities:{nativeParentVerifier:async parent=>({agent_path:parent===threadId?'/root':'invalid'})}});
@@ -786,6 +1033,120 @@ test('workflow_start keeps native dispatch and opaque continuation inside its Ho
   assert.equal(continuation.next_action,'spawn_released_packets_then_journal_batch');
   assert.deepEqual(continuation.next_action_args,{});
   assert.equal(continuation.control_token,undefined);
+  assert.deepEqual(continuation.spawn_calls,value.spawn_calls,'reopening the startup handoff retains its exact released native window');
+ });
+});
+
+test('public workflow_start returns its first Main orchestration task without a relay continuation', async t => {
+  const f = await fixture(t,{env:{WORKFLOW_MCP_TRANSPORT:'direct_mcp'}}); await f.migrate();
+  const workflow = readyWorkflow('direct-main-orchestration'); workflow.skill_policy.mode = 'cooperative';
+  const final = workflow.nodes.find(node => node.id === 'final');
+  final.executor = { kind: 'main', mode: 'orchestration' };
+  final.outputs_schema = { type: 'object', properties: { conclusion: { type: 'string' } }, required: ['conclusion'], additionalProperties: false };
+  await f.service.call('create', { workflow });
+  const threadId = '01a0db81-70bf-7233-9021-4b4e3849bec7'; let launches = 0, waits = 0, startedId;
+  const response = await handleRpc({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'workflow_start', _meta: { threadId }, arguments: {
+    workflow_id: workflow.id, workspace: f.workspace, access: 'read_only', inputs: { task: 'Use our conclusions', context: 'Current conversation' },
+  } } }, { configPath: f.configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {WORKFLOW_MCP_TRANSPORT:'direct_mcp'}, serviceCapabilities: {
+    nativeParentVerifier: async parent => { assert.equal(parent, threadId); },
+    launchDetachedHostMain: async args => { launches++; startedId = args.runId; return { run_id: args.runId, status: 'starting' }; },
+    waitForOwnedWorkflow: async (service, started) => {
+      waits++; const { drive } = await service.open();
+      const progress = await drive.advanceToMain(started.run_id, { control_token: started.control_token, owner: 'codex', request_prefix: 'startup-test' });
+      assert.equal(progress.stop_reason, 'main_orchestration');
+      return { run_id: started.run_id, control_token: started.control_token, status: 'running', wake_reason: 'native_handoff_required',
+        next_action: 'workflow_native_next', next_action_args: { run_id: started.run_id, control_token: started.control_token } };
+    },
+  } });
+  assert.equal(response.result.isError, undefined, JSON.stringify(response));
+  const result = JSON.parse(response.result.content[0].text);
+  assert.equal(result.status, 'orchestration_handoff'); assert.equal(result.context, 'current_conversation');
+  assert.equal(result.next_action, undefined); assert.equal(result.invocation_adapter.slot, 'output');
+  assert.equal(launches, 1); assert.equal(waits, 1);
+  for (const field of ['run_id', 'control_token', 'node_id', 'attempt_id', 'lease_token', 'host_binding']) assert.equal(result[field], undefined);
+  const runs = await f.service.call('runs'); assert.equal(runs.length, 1); assert.equal(runs[0].run_id, startedId);
+  const state = await f.service.call('get', { run_id: startedId });
+  assert.equal(state.nodes.final.attempts.length, 1); assert.equal(state.nodes.final.attempts[0].dispatch.receipt.thread_id, threadId);
+  const { runtime } = await f.service.open();
+  const authority = JSON.parse(await readFile(join(runtime.runs.directory(startedId), 'host-authority.json'), 'utf8'));
+  const waiting = { run_id: startedId, control_token: authority.control_token, status: 'running', wake_reason: 'native_handoff_required', next_action: 'workflow_native_next' };
+  await assert.rejects(f.service.modelStartedResult(waiting,{modelThreadId:'22345678-1234-4234-8234-123456789abc'}),{code:'MODEL_RUN_AUTHORITY'});
+  await assert.rejects(f.service.modelStartedResult({...waiting,run_id:'another-run'},{modelThreadId:threadId}),{code:'RUN_IDENTITY'});
+  await assert.rejects(f.service.modelStartedResult({...waiting,control_token:'wrong-token'},{modelThreadId:threadId}),{code:'RUN_AUTHORITY'});
+  const failure = Object.assign(new Error('exact continuation failure'), { code: 'EXACT_STARTUP_FAILURE' });
+  const originalOpen = f.service.open;
+  f.service.open = async () => { throw failure; };
+  await assert.rejects(f.service.modelStartedResult(waiting,{modelThreadId:threadId}),error=>error===failure);
+  f.service.open = originalOpen;
+  const output = { conclusion: 'Only the newly authored semantic conclusion' }; let completionCalls = 0, completionResponse;
+  const adapter=result.invocation_adapter;
+  assert.equal(adapter.kind,'direct_mcp');assert.equal(adapter.scope,'direct_mcp_only');
+  assert.equal(adapter.tool,'mcp__caw_execution__workflow_orchestration_complete');
+  assert.equal(adapter.slot,'output');assert.deepEqual(adapter.arguments,{});
+  for(const field of ['code','code_prefix','code_suffix'])assert.equal(Object.hasOwn(adapter,field),false);
+  const tools={
+    mcp__caw_execution__workflow_orchestration_complete: async args => {
+      completionCalls++; assert.deepEqual(JSON.parse(JSON.stringify(args)), { output });
+      return handleRpc({jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'workflow_orchestration_complete',_meta:{threadId},arguments:JSON.parse(JSON.stringify(args))}},
+        {configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{WORKFLOW_MCP_TRANSPORT:'direct_mcp'}});
+    },
+  };
+  completionResponse=await tools[adapter.tool]({...adapter.arguments,output});
+  assert.equal(completionCalls,1); assert.equal(completionResponse.result.isError,undefined,JSON.stringify(completionResponse));
+  assert.equal(JSON.parse(completionResponse.result.content[0].text).status,'succeeded');
+  const completed = await f.service.call('get',{run_id:startedId}); assert.deepEqual(completed.nodes.final.output,output);
+  assert.equal(completed.nodes.final.attempts.length,1); assert.equal(launches,1);
+});
+
+test('startup preparation leaves terminal, approval, Host failure and ordinary wait results unchanged', async () => {
+  const service = new WorkflowService({ configPath: join(tmpdir(), 'startup-boundary.json'), defaultConfigPath: DEFAULT_CONFIG_PATH, env: {} });
+  service.open = async () => assert.fail('Non-handoff startup outcomes must not advance a Run');
+  const relay = { run_id:'same-run',status:'running',wake_reason:'native_handoff_required',next_action:'workflow_native_next',next_action_args:{run_id:'same-run',control_token:'private'} };
+  const values = [
+    { ...relay, status:'succeeded' }, { ...relay, status:'failed',error:{code:'EXACT_FAILURE',message:'failed'} },
+    { ...relay, status:'blocked' }, { ...relay, pending_approvals:['pending'] }, { ...relay, attention:[{node_id:'gate',status:'awaiting_approval'}] },
+    { ...relay, host_worker:{phase:'failed',error:{code:'HOST_EXIT'}} }, { ...relay, host_worker:{phase:'stale'} },
+    { ...relay, wake_reason:'timeout',next_action:'workflow_wait' }, {status:'environment_attention'}, {status:'running',next_action:'other'},
+  ];
+  for (const value of values) assert.deepEqual(await service.modelStartedResult(value),service.modelResult(value));
+  assert.deepEqual(service.modelResult(relay),{...relay,next_action_args:{},invocation_adapter:service.modelResult(relay).invocation_adapter},'generic modelResult remains a projection without advancing');
+});
+
+for (const change of ['another Run', 'rotated token']) test(`startup continuation retains its exact Run when ${change} appears after the authority lookup`, async t => {
+  const f = await fixture(t); await f.migrate();
+  const runA = await f.start(), { runtime } = await f.service.open();
+  await retainOwnedAuthority(runtime, runA);
+  const threadId = '01a0db81-70bf-7233-9021-4b4e3849bec7';
+  const originalCall = f.service.call.bind(f.service), originalOpen = f.service.open.bind(f.service);
+  let switched = false, selectedRun = runA;
+  // Startup's private continuation retains the already resolved identity.
+  // Change real authority at its next execution open, not a bypassed public call.
+  f.service.open = async (...args) => {
+    if (!switched) {
+      switched = true;
+      if (change === 'another Run') {
+        await runtime.cancel(runA.run_id, { control_token: runA.control_token });
+        selectedRun = await originalCall('start', { workflow_id: 'brainstorm', workspace: f.workspace, access: 'read_only',
+          main_actor: 'root', native_parent_thread_id: threadId, inputs: { task: 'New Run B', context: 'Fixture only' } });
+        await retainOwnedAuthority(runtime, selectedRun);
+      } else {
+        const replacement = 'replacement-control-token';
+        await runtime.runs.mutate(runA.run_id, 'control_recovery', state => { state.control_hash = digest(replacement); });
+        await replaceOwnedAuthority(runtime, { run_id: runA.run_id, control_token: replacement });
+      }
+    }
+    return originalOpen(...args);
+  };
+  const pending = f.service.modelStartedResult({ run_id: runA.run_id, control_token: runA.control_token, status: 'running',
+    wake_reason: 'native_handoff_required', next_action: 'workflow_native_next' }, { modelThreadId: threadId });
+  if (change === 'another Run') {
+    const result = await pending;
+    assert.equal(result.run_id, runA.run_id);
+    assert.equal(result.status, 'cancelled');
+  } else await assert.rejects(pending, { code: 'RUN_AUTHORITY' });
+  assert.equal(switched, true);
+  const record = await runtime.runs.read(selectedRun.run_id);
+  for (const node of Object.values(record.state.nodes)) assert.equal(node.attempts.length, 0, 'replacement authority must not claim or dispatch any node');
 });
 
 test('native_next refuses an unbound logical controller before any native dispatch or observation',async t=>{
@@ -900,6 +1261,30 @@ test('Role build is a direct agent profile while Workflow build keeps the shared
   assert.equal((await f.service.call('route',{task:'Run new-review-role to review the patch.'})).candidates.some(item=>item.id===published.workflow.id),false);
   assert(workflowToolDefinitions().find(item=>item.name==='workflow_build_workflow').inputSchema.properties.template_kind);
 });
+test('Role profiles retain structured constraints through builtin and stored append-context compilation',async t=>{
+  const f=await fixture(t);await f.migrate();
+  const constraints={owned_paths:['src/parser.mjs'],network:false,limits:{max_files:0},excluded:['gold','other-arm']};
+  const task={task:'Change only the supplied parser.',constraints};
+  const builtin=await f.service.call('role_template',{workflow_id:'builtin-role-judgment-heavy-change',...task});
+  const extract=profile=>profile.instructions.split('\n\nCONSTRAINTS AND OWNERSHIP\n')[1].split('\n\nVERIFICATION\n')[0];
+  assert.deepEqual(JSON.parse(extract(builtin)),constraints);
+  assert.doesNotMatch(builtin.instructions,/\[object Object\]/);
+  const role=await f.service.call('build_workflow',{workflow_id:'structured-constraint-role',name:'Structured constraints',brief:'Implement the supplied bounded parser change.',template_kind:'role',access:'bounded_write'});
+  const ready=await f.service.call('publish',{workflow_id:role.workflow.id,expected_revision:role.revision_hash},{human:true});
+  const stored=await f.service.call('role_template',{workflow_id:ready.workflow.id,...task});
+  assert.deepEqual(JSON.parse(extract(stored)),constraints);
+  for(const value of [['one','two'],false,0]){
+    const profile=await f.service.call('role_template',{workflow_id:'builtin-role-judgment-heavy-change',task:task.task,constraints:value});
+    assert.deepEqual(JSON.parse(extract(profile)),value);
+  }
+  for(const value of [undefined,null,'Only parser.mjs']){
+    const profile=await f.service.call('role_template',{workflow_id:'builtin-role-judgment-heavy-change',task:task.task,constraints:value});
+    assert.equal(extract(profile),value??'(not provided)');
+  }
+  await assert.rejects(f.service.call('role_template',{workflow_id:'builtin-role-judgment-heavy-change',task:task.task,constraints:{oversize:'x'.repeat(200000)}}),{code:'ROLE_TASK'});
+  assert.equal((await f.service.call('runs')).length,0);
+});
+
 test('GPT reviewer Role reuses the configured web-review Provider without creating a duplicate Role',async t=>{
   const f=await fixture(t,{configure:config=>{
     const provider=config.providers.find(item=>item.id==='chatgpt-web-pro');
@@ -993,6 +1378,56 @@ test('compact main-session service starts, projects one node and completes to th
   assert.equal(terminal.stop_reason, 'terminal'); assert.equal(terminal.status, 'succeeded');
 });
 
+test('actual model MCP authoring starts carry executable Host continuations for Skill and brief',async t=>{
+ const preparations=[];
+ const strictManager={entries:new Map(),fenceRun:()=>{},fenceAttempt:()=>{},capability:async()=>({available:true}),stopRun:async()=>{},stopRecovered:async()=>{},
+  prepare:async(runtime,runId,args)=>{
+   await runtime.authorizeController(runId,args);preparations.push(runId);
+   throw Object.assign(new Error('Offline boundary reached without launching a model'),{code:'OFFLINE_AUTHORING_DISPATCH'});
+  }};
+ const capabilities={strictManager,nativeParentVerifier:async()=>{}};
+ const f=await fixture(t,{capabilities});await f.migrate();await f.service.call('authoring_workflows');
+ const folder=join(f.workspace,'skills'),entry=join(folder,'readme');await mkdir(entry,{recursive:true});
+ await writeFile(join(entry,'SKILL.md'),'---\nname: fixture-readme\ndescription: Write a README\n---\n# README\nRead supplied repository facts, then write README.md only.');
+ const inventory=await f.service.call('skill_inventory',{discovery:'folders',folder});
+ const skill=await f.service.call('import_skill',{discovery:'folders',folder,skill_id:inventory.entries[0].id,workflow_id:'controller-skill'});
+ const brief=await f.service.call('build_workflow',{workflow_id:'controller-brief',name:'Controller brief',brief:'Read supplied repository facts and write README.md only.'});
+ const rpc=async(name,args)=>handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args,_meta:{threadId:'01a0db81-70bf-7233-9021-4b4e3849bec7'}}},
+  {configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{},serviceCapabilities:capabilities});
+ const parse=response=>{assert.notEqual(response.result.isError,true,JSON.stringify(response.result));return JSON.parse(response.result.content[0].text);};
+ const invoke=async adapter=>{
+  let response;
+  const tools={[`mcp__codex_agents_workflow__${adapter.tool_name}`]:async args=>{response=await rpc(adapter.tool_name,JSON.parse(JSON.stringify(args)));return response.result;}};
+  await new (await import('node:vm')).Script(`(async()=>{\n${adapter.code}\n})()`).runInNewContext({tools,text:()=>{}});
+  return response;
+ };
+ for(const [pack,workflow_id] of [[skill,'system.skill2workflow'],[brief,'system.build-workflow']]){
+  const started=parse(await rpc('workflow_start',{workflow_id,workspace:f.workspace,access:'bounded_write',allowed_paths:['.'],inputs:{source_workflow_id:pack.workflow.id,source_revision:pack.revision_hash}}));
+  assert.equal(started.status,'running');assert.equal(started.control_token,undefined);
+  assert.equal(started.next_action,'workflow_drive');assert.equal(started.invocation_adapter.slot,'none');
+  const wrong=await rpc('workflow_drive',{run_id:started.run_id,control_token:'incorrect-controller'});
+  assert.match(JSON.stringify(wrong.result),/RUN_AUTHORITY/);assert(!preparations.includes(started.run_id));
+  const before=preparations.length;
+  const state=await f.service.call('get',{run_id:started.run_id});
+  const recovered=parse(await rpc('workflow_recover_control',{run_id:started.run_id,expected_sequence:state.sequence,main_actor:'codex',reason:'Continue the existing authorized authoring task.'}));
+  assert.equal(recovered.status,'paused');assert.equal(recovered.control_token,undefined);
+  assert.deepEqual(recovered.recovery_errors,[]);
+  assert.equal(recovered.control_recovery.authorization_source,'existing_task');
+  assert.equal(recovered.invocation_adapter.tool_name,'workflow_resume');assert.equal(preparations.length,before);
+  assert.equal(recovered.cancellation_invocation_adapter.tool_name,'workflow_cancel');
+  const resumed=parse(await invoke(recovered.invocation_adapter));
+  assert.equal(resumed.status,'running');assert.equal(resumed.control_token,undefined);
+  assert.equal(resumed.invocation_adapter.tool_name,'workflow_drive');assert.equal(preparations.length,before);
+  const stale=await invoke(started.invocation_adapter);
+  assert.equal(stale.result.isError,true);assert.match(JSON.stringify(stale.result),/RUN_AUTHORITY/);assert.equal(preparations.length,before);
+  const response=await invoke(resumed.invocation_adapter);
+  assert.equal(preparations.length,before+1);assert.equal(preparations.at(-1),started.run_id);
+  assert.equal(response.result.isError,true);assert.match(JSON.stringify(response.result),/OFFLINE_AUTHORING_DISPATCH/);
+  const cancelled=parse(await invoke(recovered.cancellation_invocation_adapter));
+  assert.equal(cancelled.status,'cancelled');assert.equal(preparations.length,before+1);
+ }
+});
+
 test('service exposes both authoring Workflows and installs an exported package from HTTPS', async t => {
   const source=await fixture(t);await source.migrate();
   const definitions=await source.service.call('authoring_workflows');
@@ -1002,13 +1437,13 @@ test('service exposes both authoring Workflows and installs an exported package 
   for(const definition of definitions){
     assert.match(definition.revision_hash,/^[a-f0-9]{64}$/);assert.equal(definition.status,'ready');
     const stored=await source.service.call('read',{workflow_id:definition.id,revision_hash:definition.revision_hash});
-    assert.equal(stored.provenance.kind,'bundled_authoring_workflow');assert.equal(stored.workflow.authoring.contract,'codex-authoring-workflow/v30');
-    assert.equal(stored.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_V27);
-    assert.equal(stored.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_V22);
+    assert.equal(stored.provenance.kind,'bundled_authoring_workflow');assert.equal(stored.workflow.authoring.contract,'codex-authoring-workflow/v31');
+    assert.equal(stored.workflow.nodes.find(node=>node.id==='expand').prompt_template,AUTHORING_PLANNER_PROMPT_CURRENT);
+    assert.equal(stored.workflow.nodes.find(node=>node.id==='final').prompt_template,AUTHORING_REVIEW_PROMPT_CURRENT);
     assert.equal(stored.workflow.authoring.pipeline.contract,'codex-authoring-pipeline/v1');
   }
   assert(definitions.every(item=>item.mechanical_repairs===0 && item.semantic_repairs===3));
-  assert(definitions.every(item=>item.contract==='codex-authoring-workflow/v30'));
+  assert(definitions.every(item=>item.contract==='codex-authoring-workflow/v31'));
   assert(definitions.every(item=>item.stages.map(stage=>stage.owner).join(',')==='host,planner,host,host,host,reviewer,human'));
   assert(definitions.every(item=>item.edges.map(edge=>`${edge.source}>${edge.target}`).join(',')==='start>expand,expand>graph_assembly,graph_assembly>execution_binding,execution_binding>deterministic_validation,deterministic_validation>final,final>end'));
   assert(definitions.every(item=>item.pipeline.repair.mode==='stable_key_delta'&&item.pipeline.repair.automatic_rounds===3));
@@ -1269,8 +1704,8 @@ test('WorkflowDrive executes a Run-pinned resource tool and journals its output 
   const contract={id:'pinned-host-join-tool',identity:workflowResourceProgramIdentity(),argv:['node',path,'work/.workflow-runtime'],
     input_schema:{type:'object',additionalProperties:false},output_schema:output,env_allow:[],
     permissions:{network:false,read_paths:[path],write_paths:['work']},output_cap_bytes:4096,deadline_ms:30000,idempotency:{mode:'safe'}};
-  const workflow={...createDraft('pinned-host-join','Pinned Host join'),status:'ready',
-    requirements:{providers:[],tools:[],mcp_servers:[],executables:['node']},
+  const workflow={...createDraft('pinned-host-join','Pinned Host join'),status:'draft',
+    requirements:{providers:[],tools:[contract.id],mcp_servers:[],executables:['node']},
     skill_policy:{mode:'cooperative',implicit:'deny',ambient_allow:[],shadowed_skill_paths:[]},host_tools:[contract],
     inputs_schema:{type:'object',properties:{task:{type:'string'}},required:['task'],additionalProperties:false},
     finalization:{required:true,node_id:'final'},nodes:[{id:'start',type:'start'},
@@ -1279,8 +1714,18 @@ test('WorkflowDrive executes a Run-pinned resource tool and journals its output 
       {id:'final',type:'agent',role:'finalizer',executor:{kind:'main'},access:'read_only',approval:{required:false},retry:{max_attempts:1},
         input_bindings:{task:'/inputs/task',joined:'/nodes/join/output'},prompt_template:'Report result.'},{id:'end',type:'end'}],
     edges:[{id:'start-join',source:'start',target:'join'},{id:'join-final',source:'join',target:'final'},{id:'final-end',source:'final',target:'end'}]};
+  const absent=structuredClone(workflow);absent.requirements.tools=['unknown-required-tool'];
+  const rejected=await f.service.call('validate',{workflow:absent});
+  assert.equal(rejected.launch_ready,false);
+  assert.ok(rejected.blockers.some(b=>b.code==='REQUIREMENT_UNAVAILABLE'&&b.requirement==='unknown-required-tool'));
+  const stale=structuredClone(workflow);stale.host_tools[0].identity.sha256='f'.repeat(64);
+  const staleCheck=await f.service.call('validate',{workflow:stale});
+  assert.equal(staleCheck.valid,false,'Alias resolution never bypasses qualified broker identity validation');
   const created=await f.service.call('create',{workflow,resources:{[path]:source}},{human:true});
-  const run=await f.service.call('start',{workflow_id:workflow.id,revision_hash:created.revision_hash,workspace:f.workspace,
+  const published=await f.service.call('publish',{workflow_id:workflow.id,expected_revision:created.revision_hash},{human:true});
+  assert.equal(published.workflow.status,'ready');
+  assert.equal((await f.service.call('validate',{workflow:published.workflow})).launch_ready,true);
+  const run=await f.service.call('start',{workflow_id:workflow.id,revision_hash:published.revision_hash,workspace:f.workspace,
     access:'bounded_write',allowed_paths:['work'],main_actor:'root',inputs:{task:'Join'},environment_directories:[dirname(process.execPath)]});
   await mkdir(join(f.workspace,'work'));
   const progress=await f.service.call('drive',control(run));
@@ -1657,7 +2102,11 @@ test('explicit fail_node fences an in-flight API attempt before allowing retry',
 });
 
 test('retry_node rejects a failed attempt that still owns external work', async t => {
-  const f = await fixture(t); await f.migrate(); const run = await f.start(); const args = leaseArgs(run, await claim(f, run));
+  const f = await fixture(t); await f.migrate();
+  const {store}=await f.service.open(),pack=await store.snapshot('brainstorm');
+  pack.workflow.nodes.find(node=>node.id==='implementation').retry.max_attempts=2;
+  await store.save('brainstorm',pack.workflow,{expected_revision:pack.revision_hash});
+  const run = await f.start(); const args = leaseArgs(run, await claim(f, run));
   const owner = f.service.attemptAdmission.begin(run.run_id, args.node_id, args.attempt_id, 'direct_api');
   const { runtime } = await f.service.open();
   await runtime.failNode(run.run_id, { ...args, error: { code: 'FIXTURE_FAILED', message: 'The owner has not stopped' } });
