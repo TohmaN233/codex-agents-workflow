@@ -475,16 +475,18 @@ test('current generation succeeds in one planner round when the planner omits ho
   const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'host-projection'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   for(const phase of ['generating','reviewing','review_required']){assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
   const projected=await f.service.call('get',control);const projectedProposal=projected.nodes.expand.output.proposal;
+  const {runtime}=await f.service.open();const projection=(await runtime.runs.read(run.run_id)).state.generation_projection;
   assert.equal(projected.generation_projection.contract_version,CONVERSION_CONTRACT.version);
-  assert.deepEqual(projected.generation_projection.review_inputs_schema.properties.task,{type:'string'});
-  assert(projected.generation_projection.repair_actions.some(item=>item.kind==='host_contract_projection'));
-  assert.equal(projected.generation_projection.pipeline_trace.contract,'codex-authoring-pipeline/v1');
-  assert.equal(projected.generation_projection.pipeline_trace.stages.find(stage=>stage.id==='deterministic_validation').result.cycle_free,true);
+  assert.deepEqual(projected.generation_projection.review_inputs_schema,projection.review_inputs_schema);
+  assert(projection.repair_actions.some(item=>item.kind==='host_contract_projection'));
+  assert.equal(projection.pipeline_trace.contract,'codex-authoring-pipeline/v1');
+  assert.equal(projection.pipeline_trace.stages.find(stage=>stage.id==='deterministic_validation').result.cycle_free,true);
   assert.deepEqual(projectedProposal.nodes[0].input_bindings,{});
   assert.deepEqual(projectedProposal.nodes[0].resource_refs,['source/SKILL.md']);
   assert.deepEqual(projectedProposal.nodes[0].requirement_ids,[]);
   const clientApi=(operation,args)=>f.service.call(operation,args,{human:true});
   const discovered=await discoverSavedAuthoring(clientApi,pack);
+  assert.deepEqual(projection.review_inputs_schema,discovered.preview.workflow.inputs_schema,'Review must receive the actual compiled future-Run schema, not the coarse task scaffold');
   const uiCalls=[];
   const saved=await acceptDisplayedAuthoring(async(operation,args)=>{uiCalls.push(operation);return clientApi(operation,args);},pack,discovered.preview,new Map(),()=>{});
   assert(uiCalls.includes('adopt_run'));assert(uiCalls.includes('recover_strict_result'));assert(uiCalls.includes('resume'));
@@ -493,7 +495,7 @@ test('current generation succeeds in one planner round when the planner omits ho
   assert.deepEqual(saved.workflow.edges,discovered.preview.workflow.edges);
   const node=saved.workflow.nodes.find(item=>item.id==='activity_001');
   assert.deepEqual(node.input_bindings,{});assert.deepEqual(node.resources,[]);assert.equal(f.sessions.length,2);
-  assert.equal(saved.workflow.nodes.find(item=>item.id==='final').input_bindings.task,'/inputs/task');
+  assert.equal(Object.hasOwn(saved.workflow.nodes.find(item=>item.id==='final').input_bindings,'task'),false,'Do not invent a production binding to the authoring scaffold task');
 });
 
 test('host/compiler upgrades recheck an exact persisted proposal without another planner call', async t => {

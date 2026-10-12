@@ -510,8 +510,14 @@ test('sync and async admission observer failures remain visible after exact chil
 });
 
 test('real child diagnostic send failure and ACK channel loss cannot become successful audits',async t=>{
- for(const mode of ['send_failure','disconnect']){
-  const workerPrelude=`const originalSend=process.send.bind(process);process.send=(message,callback)=>{
+ for(const mode of ['send_failure','disconnect','disconnect_after_ack']){
+  const workerPrelude=mode==='disconnect_after_ack'?`const originalSend=process.send.bind(process);let delivery;
+   process.send=(message,callback)=>{
+    if(message.type==='admission'){delivery=callback;return originalSend(message,error=>{if(error){delivery=null;callback(error);}});}
+    return originalSend(message,callback);
+   };
+   process.on('message',message=>{if(message.type==='admission_ack'&&delivery){const callback=delivery;delivery=null;process.disconnect();callback();}});
+  `:`const originalSend=process.send.bind(process);process.send=(message,callback)=>{
    if(message.type==='admission'){
     ${mode==='send_failure'?"callback(Object.assign(new Error('neutral send failure'),{code:'NEUTRAL_SEND'}));return false;":"return originalSend(message,error=>{process.disconnect();callback(error);});"}
    }return originalSend(message,callback);

@@ -692,7 +692,7 @@ test('automatic planning pins model suitability and compiles main, independent p
   const context={providers,roles:roleProfiles,routing_rules:rules,tools:['read_workflow_resource']};
   const planningPrompt=expansionPacket(pack,resources,providers[0],rules,providers).prompt;
   assert.doesNotMatch(planningPrompt,/Fast bounded evidence extraction/);
-  assert.match(planningPrompt,/Routing is entirely Host-owned/);
+  assert.match(planningPrompt,/Default responsibility and model suitability/);
   const result=compileExpansion(pack,resources,proposal,context);
   assert.equal(result.validation.valid,true);
   assert.notEqual(result.workflow.import_status.conversion_level,'unsupported',JSON.stringify(result.workflow.import_status.requirement_coverage));
@@ -806,7 +806,7 @@ test('routed expansion assigns each responsibility independently and pins editab
   rules.routes.implementation.provider_id='native-luna';
   assert.equal(job.provenance.routing_rules.routes.implementation.provider_id,'native-luna');
   assert.doesNotMatch(job.resources['analysis/request.txt'],/Every agent requires task_type/);
-  assert.match(job.resources['analysis/request.txt'],/compact activity profile/);
+  assert.match(job.resources['analysis/request.txt'],/semantic execution profile/);
   const dependencyPack=structuredClone(pack);dependencyPack.workflow.requirements.executables=['ffmpeg','ffprobe'];
   const dependencyJob=expansionRunPack(dependencyPack,resources,providers[0],'dependency-planning-job',packet.routing_rules,false,providers[1],providers);
   assert.match(dependencyJob.resources['analysis/request.txt'],/Imported Draft baseline requirements/);

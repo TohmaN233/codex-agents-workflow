@@ -300,6 +300,7 @@
 - Tests support the declared Node minimum and use portable local fixtures. Real integration dependencies are provisioned explicitly by CI; release versions come from matching package and plugin metadata.
 - Derive the contiguous bundled-authoring migration range from the registered current contract, preserve configured prompts and approvals, and reject future, malformed or foreign contracts. Verify the immediate predecessor for both authoring routes against the installed plugin, not only fresh-library fixtures.
 - CI runs the complete manifest once on each of Windows, Linux and macOS. Repository checks run independently with `--static-only`; local verification scripts run the full manifest by default. Static checks use standard shell tools rather than requiring ripgrep.
+- PR commits run the matrix through `pull_request`; only mainline pushes also trigger it, avoiding duplicate branch-push and PR verification of the same candidate. Release qualification preserves failed full-suite evidence, fixes every finding, verifies the changed boundary and collects the stable final matrix before merge. Ready history-worker IPC closure without a terminal result is a transport failure regardless of ACK-send/OS-exit event ordering; never let a successful send callback imply worker acceptance or success.
 - A Workflow Run starts only from a Ready, launchable, hash-consistent package with all runtime dependencies resolved.
 
 

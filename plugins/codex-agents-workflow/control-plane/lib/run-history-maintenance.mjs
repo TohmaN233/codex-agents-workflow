@@ -275,7 +275,14 @@ export function launchHistoryWorker({runRoot,owner,signal,onReady,onAdmission=ad
   const stderrDigest=createHash('sha256');
   let ipcClosed=!child.connected,resolveIPC;
   const ipcSettled=new Promise(resolveIPCClosed=>{resolveIPC=resolveIPCClosed;if(ipcClosed)resolveIPCClosed();});
-  child.once('disconnect',()=>{ipcClosed=true;resolveIPC();});
+  child.once('disconnect',()=>{
+   ipcClosed=true;
+   // A successful send callback only confirms transport submission. The child
+   // can lose its ACK channel before reporting completion; classify that observed
+   // transition here, rather than letting OS-exit ordering choose the fault.
+   if(ready&&!terminal)failure??=fail('RUN_HISTORY_WORKER_IPC','History worker IPC closed before its terminal result');
+   resolveIPC();
+  });
   const disconnect=()=>{if(child.connected)child.disconnect();};
   const failProtocol=(code,message)=>{
    failure??=fail(code,message);
