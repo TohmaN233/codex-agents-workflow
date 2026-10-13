@@ -4,6 +4,7 @@
 
 All product instructions are grouped here; reusable Workflow package bodies, usage notes and examples are maintained in the separate [Workflow Package repository](https://github.com/TohmaN233/workflow-package).
 
+- [Installation procedure](../INSTALL.md): dependencies, executable steps for an LLM, and live connection checks.
 - [User guide](guides/usage.md): setup, Providers, Roles, authoring, execution and recovery.
 - [Architecture](architecture/overview.md): Main, Host, node contexts and execution boundaries.
 - [Format reference](reference/README.md): supported Workflow fields.

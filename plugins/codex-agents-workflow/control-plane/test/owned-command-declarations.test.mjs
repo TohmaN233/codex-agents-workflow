@@ -141,7 +141,7 @@ async function hostFixture(t,{toolMode='code_mode_only',tamperSemantic=false,res
     completeHostMainResult:async()=>{commits++;}};
   const strict={enabled:true,codex_binary:process.execPath,binary_sha256:'b'.repeat(64),
     authentication:{mode:'managed_chatgpt',api_key_env:''},main_model:'declarations-model',main_reasoning_effort:'high',inactivity_timeout_ms:0};
-  const manager=new HostMainManager({configPath:join(root,'control-plane.json'),env:{},qualify:async()=>strict,
+  const manager=new HostMainManager({register:async({config})=>config,configPath:join(root,'control-plane.json'),env:{},qualify:async()=>strict,
     getConfig:async()=>({global:{enabled:true},strict_executor:strict,providers:[]}),
     mainModelSelection:async()=>({model:'declarations-model',effort:'high'}),sessionFactory:async options=>{
       sessionFixture=await fixture(t,{toolMode,sessionOptions:options,resultText});

@@ -50,8 +50,10 @@ Requires **Node.js 20+**, **Git**, and a Codex host supporting plugins and MCP E
 git clone https://github.com/TohmaN233/codex-agents-workflow.git
 cd codex-agents-workflow
 codex plugin marketplace add .
-codex plugin add codex-agents-workflow@codex-agents-workflow
+node plugins/codex-agents-workflow/scripts/install-local.mjs
 ```
+
+For dependency setup, automated installation and verification, follow [INSTALL.md](INSTALL.md).
 
 In a Codex task, open the workbench:
 

@@ -30,6 +30,8 @@ The Windows launcher follows Codex's installed-plugin record. The macOS/Linux sc
 
 A fresh library contains only **Build Workflow** and **Skill to Workflow**. Roles appear in their own section.
 
+Fresh installations create a v7 configuration and Workflow store directly. Current built-in Role definitions are separate from user configuration. Existing older configurations retain their explicit migration and restore path; a new installation does not require a v6 migration step.
+
 ![Current workflow library](../assets/tutorial/workbench-library.png)
 
 ## 2. Understand Providers, Roles, and Workflows
@@ -45,6 +47,7 @@ When no Ready Workflow matches a concrete request and a helper would materially 
 Release defaults:
 
 - Native Codex Providers are enabled; external Providers are disabled.
+- Strict is enabled for fresh installations; the Host discovers and registers the required local executor on first use, including its digest. Existing explicit settings are preserved. Cooperative routes do not require enabling Strict.
 - Cross-review and GPT reviewer Roles are visible but disabled. Each also needs its Provider enabled before use.
 - Build Workflow and Skill to Workflow are the only built-in Workflows.
 - Optional packages are installed from the separate [Workflow Package collection](https://github.com/TohmaN233/workflow-package).
