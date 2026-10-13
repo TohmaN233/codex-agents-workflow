@@ -1092,10 +1092,20 @@ test('model environment diagnosis retains missing dependency and approval instru
  assert.equal(f.launches.length,0);assert.equal(f.modelCalls(),0);
 });
 
-test('model-facing Main start returns its persisted Run while prior Provider work is still pending', async t => {
-  const gate = deferred(); const entered = deferred(); let progress;
+test('model-facing Main start returns its persisted Run while prior Provider work is still pending', {timeout:15_000}, async t => {
+  const gate = deferred(); const entered = deferred(); let progress, progressSettled=false, released=false, launches=0, entries=0;
+  const bounded=async(promise,label)=>{
+    let timer;
+    try { return await Promise.race([promise,new Promise((_resolve,reject)=>{
+      timer=setTimeout(()=>reject(new Error('Timed out waiting for '+label)),5000);
+    })]); } finally { clearTimeout(timer); }
+  };
   const hostMainManager = {
-    launchRun: ({ drive }) => { progress = drive.advanceToMain(); return { status: 'starting' }; },
+    launchRun: ({ drive }) => {
+      launches++;progress = drive.advanceToMain();
+      progress.then(()=>{progressSettled=true;},()=>{progressSettled=true;});
+      return { status: 'starting' };
+    },
     launch: async () => ({ status: 'host-owned' }), stopRun: async () => {}, qualify: async () => ({}),
   };
   const strictManager = { capability: async () => true, stopRun: async () => {} };
@@ -1103,7 +1113,7 @@ test('model-facing Main start returns its persisted Run while prior Provider wor
   const originalOpen = f.service.open.bind(f.service);
   f.service.open = async () => {
     const opened = await originalOpen();
-    opened.drive.advanceToMain = async () => { entered.resolve(); return gate.promise; };
+    opened.drive.advanceToMain = async () => { entries++;entered.resolve(); return gate.promise; };
     return opened;
   };
   const pending = f.service.call('run_main', {
@@ -1111,13 +1121,20 @@ test('model-facing Main start returns its persisted Run while prior Provider wor
     inputs: { task: 'Synthetic workflow integration', context: 'Fixture only' }, return_after_start: true,
   });
   try {
-    await entered.promise;
-    const settled = await Promise.race([pending.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 50))]);
-    assert.equal(settled, true, 'startup must not await prior Provider execution');
-    const result = await pending;
+    await bounded(entered.promise,'the prior Provider execution boundary');
+    // Verify ordering against the unreleased Provider gate, rather than a
+    // 50ms wall-clock assumption that includes response/audit filesystem I/O.
+    const result = await bounded(pending,'startup while the Provider gate remains held');
+    assert.equal(launches,1);assert.equal(entries,1);
+    assert.equal(released,false);assert.equal(progressSettled,false);
     assert.equal(result.status, 'starting'); assert.equal(typeof result.control_token, 'string');
     assert((await f.service.call('runs')).some(run => run.run_id === result.run_id));
-  } finally { gate.resolve({ status: 'running', stop_reason: 'no_deterministic_progress' }); if (progress) await progress; }
+    assert.equal(progressSettled,false,'Provider execution must remain pending through persisted-Run inspection');
+  } finally {
+    released=true;gate.resolve({ status: 'running', stop_reason: 'no_deterministic_progress' });
+    if (progress) await progress;
+    await bounded(pending,'released startup cleanup');
+  }
 });
 
 test('workflow_start keeps native dispatch and opaque continuation inside its Host owner',async t=>{
