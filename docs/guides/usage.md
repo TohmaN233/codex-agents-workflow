@@ -47,7 +47,7 @@ Release defaults:
 - Native Codex Providers are enabled; external Providers are disabled.
 - Cross-review and GPT reviewer Roles are visible but disabled. Each also needs its Provider enabled before use.
 - Build Workflow and Skill to Workflow are the only built-in Workflows.
-- Math, Zenonzard, and video-use are optional packages, not automatic installs.
+- Optional packages are installed from the separate [Workflow Package collection](https://github.com/TohmaN233/workflow-package).
 
 A disabled Provider is not silently replaced. A Workflow that depends on one may be installed or edited, but cannot start until its Provider is available.
 
@@ -119,7 +119,7 @@ Import does not modify the source Skill or execute its business task. Publishing
 
 ## 6. Install an optional Workflow
 
-The [optional package index](../../plugins/codex-agents-workflow/examples/workflows/README.md) lists the Math, Zenonzard, and video-use examples. In the workbench, choose **Install Workflow** and select a `*.workflow-package.json` file. Installation checks format, content hashes, compatibility, and dependency declarations; it does not install missing software.
+The [Workflow Package collection](https://github.com/TohmaN233/workflow-package) provides generally useful packages, currently Answer me with HTML and GitHub README generator. All explanations and examples are grouped under its `workflow_explanations/` directory. In the workbench, choose **Install Workflow** and select a `*.workflow-package.json` file. Installation checks format, content hashes, compatibility, and dependency declarations; it does not install missing software.
 
 If an installed Workflow cannot start, check its declared local tools, node Providers, any required Role and Provider, and the inputs for this Run. Some example packages reference Cross-review. They can be installed while that Role is disabled, but require both the Role and a usable Provider before launch.
 
@@ -177,9 +177,8 @@ To run an installed, published Workflow from Codex:
 
 ```text
 Use $codex-agents-workflow:workflow-control-plane.
-Run my installed video-use Workflow.
-The source folder for this Run is D:/demo/recordings.
-Stop at the plan and preview approval gates.
+Run the Workflow I installed from Workflow Package for this task.
+Use the source material and goal I provided in this conversation.
 ```
 
 If no matching published Workflow exists, Main should say so instead of inventing one or silently choosing another.

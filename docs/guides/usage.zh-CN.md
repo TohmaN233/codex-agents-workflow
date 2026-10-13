@@ -47,7 +47,7 @@ Windows 启动器根据 Codex 已安装插件记录启动；macOS/Linux 脚本�
 - 原生 Codex Provider 已启用；外部 Provider 已关闭。
 - Cross-review 与 GPT reviewer Role 会显示但默认关闭；使用时还要分别启用对应 Provider。
 - Build Workflow 与 Skill to Workflow 是仅有的内置 Workflow。
-- Math、Zenonzard 与 video-use 是可选安装包，不会自动安装。
+- 可选安装包统一从独立的 [Workflow Package 仓库](https://github.com/TohmaN233/workflow-package)安装。
 
 关闭的 Provider 不会被静默替换。依赖该 Provider 的 Workflow 可以安装或编辑，但在 Provider 可用前不能启动。
 
@@ -119,7 +119,7 @@ authoring 会返回语义步骤；Host 负责组装任务图并检查绑定、�
 
 ## 6. 安装可选 Workflow
 
-[可选安装包索引](../../plugins/codex-agents-workflow/examples/workflows/README.md)列出 Math、Zenonzard 与 video-use 示例。在工作台中选择 **安装 Workflow**，然后选择 `*.workflow-package.json` 文件。安装会检查格式、内容哈希、兼容性和依赖声明，但不会安装缺失的软件。
+[Workflow Package 仓库](https://github.com/TohmaN233/workflow-package)提供通用安装包，目前有 Answer me with HTML 和 GitHub README generator；说明和样例统一放在其 `workflow_explanations/` 目录。在工作台中选择 **安装 Workflow**，然后选择 `*.workflow-package.json` 文件。安装会检查格式、内容哈希、兼容性和依赖声明，但不会安装缺失的软件。
 
 安装后不能启动时，检查所声明的本机工具、节点 Provider、所需的 Role 与 Provider，以及本次 Run 的输入。部分示例包引用 Cross-review：Role 关闭时仍可安装，但启动前需要同时启用 Role 和可用 Provider。
 
@@ -177,9 +177,8 @@ max_concurrent_threads_per_session = 8
 
 ```text
 使用 $codex-agents-workflow:workflow-control-plane。
-运行我已安装的 video-use Workflow。
-本次素材目录是 D:/demo/recordings。
-方案或预览需要确认时停下来。
+运行我从 Workflow Package 安装、用于当前任务的 Workflow。
+使用我在本次对话中提供的目标与材料。
 ```
 
 如果没有匹配的已发布 Workflow，Main 应明确说明，不会虚构或静默改用另一条定义。

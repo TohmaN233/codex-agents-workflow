@@ -1,27 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from './physical-tempdir.mjs';
 import { WorkflowService } from '../lib/workflow-service.mjs';
 import { loadConfig, saveConfig } from '../lib/config.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
-
-const EXAMPLES=fileURLToPath(new URL('../../examples/workflows/',import.meta.url));
-const PACKAGES=[
-  'mathematical-research-hybrid.workflow-package.json',
-  'video-use.workflow-package.json',
-  'zenonzard-card-implementation.workflow-package.json',
-];
-
-async function installExamplePackage(service,filename){
-  try{return await service.call('install_workflow_package',{package_path:join(EXAMPLES,filename)});}
-  catch(error){
-    error.message=`${filename}: ${error.code}: ${error.message}; validation=${JSON.stringify(error.validation??null)}`;
-    throw error;
-  }
-}
+import { createDraft } from '../lib/workflow-schema.mjs';
 
 async function fixture(t){
   const root=await mkdtemp(join(tmpdir(),'workflow-release-defaults-'));
@@ -30,7 +15,7 @@ async function fixture(t){
   await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
   const service=new WorkflowService({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{}});
   await service.call('migrate_v6',{}, {human:true});
-  return {service,configPath};
+  return {service,configPath,root};
 }
 
 test('fresh release library exposes only the two built-in authoring Workflows',async t=>{
@@ -100,24 +85,29 @@ test('Cross-review uses Grok and requires both its Role and Provider to be enabl
   assert.match(profile.instructions,/Review this change/);
 });
 
-test('optional example packages install, delete, and reinstall from local files',async t=>{
-  const {service}=await fixture(t);
-  for(const filename of PACKAGES){
-    const packagePath=join(EXAMPLES,filename);
-    const text=await readFile(packagePath,'utf8');
-    assert.doesNotMatch(text,/[A-Za-z]:[\\/](?:Users|Documents)[\\/]/i);
-    const first=await installExamplePackage(service,filename);
-    const installed=await service.call('read',{workflow_id:first.workflow.id,revision_hash:first.revision_hash});
-    assert.equal(installed.validation.valid,true,`${filename} must remain structurally installable`);
-    assert.equal(installed.workflow.status,'ready');
-
-    await service.call('delete',{workflow_id:first.workflow.id,expected_revision:first.revision_hash});
-    assert.equal((await service.call('list')).some(item=>item.id===first.workflow.id),false);
-
-    const second=await installExamplePackage(service,filename);
-    assert.equal(second.workflow.id,first.workflow.id);
-    assert.equal(second.revision_hash,first.revision_hash);
-    await service.call('delete',{workflow_id:second.workflow.id,expected_revision:second.revision_hash});
-  }
+test('portable packages install, delete, and reinstall from a generated local fixture',async t=>{
+  const {service,root}=await fixture(t);
+  const output={type:'object',properties:{result:{type:'string'}},required:['result'],additionalProperties:false};
+  const workflow={...createDraft('release-portable-fixture','Portable release fixture'),status:'ready',
+    skill_policy:{mode:'cooperative',implicit:'deny',ambient_allow:[],shadowed_skill_paths:[]},
+    inputs_schema:{type:'object',properties:{task:{type:'string'}},required:['task'],additionalProperties:false},
+    finalization:{required:true,node_id:'final'},
+    nodes:[{id:'start',type:'start'},{id:'final',type:'agent',executor:{kind:'main',mode:'orchestration'},role:'finalizer',access:'read_only',approval:{required:false},retry:{max_attempts:1},input_bindings:{task:'/inputs/task'},prompt_template:'Return the task result.',outputs_schema:output},{id:'end',type:'end'}],
+    edges:[{id:'start-final',source:'start',target:'final'},{id:'final-end',source:'final',target:'end'}]};
+  const source=await service.call('create',{workflow},{human:true});
+  const bundle=await service.call('export_workflow_package',{workflow_id:workflow.id,revision_hash:source.revision_hash,package_version:'1.0.0'});
+  const packagePath=join(root,'portable.workflow-package.json');
+  await writeFile(packagePath,JSON.stringify(bundle));
+  await service.call('delete',{workflow_id:workflow.id,expected_revision:source.revision_hash});
+  const first=await service.call('install_workflow_package',{package_path:packagePath});
+  const installed=await service.call('read',{workflow_id:first.workflow.id,revision_hash:first.revision_hash});
+  assert.equal(installed.validation.valid,true);
+  assert.equal(installed.workflow.status,'ready');
+  await service.call('delete',{workflow_id:first.workflow.id,expected_revision:first.revision_hash});
+  assert.equal((await service.call('list')).some(item=>item.id===first.workflow.id),false);
+  const second=await service.call('install_workflow_package',{package_path:packagePath});
+  assert.equal(second.workflow.id,first.workflow.id);
+  assert.equal(second.revision_hash,first.revision_hash);
+  await service.call('delete',{workflow_id:second.workflow.id,expected_revision:second.revision_hash});
   assert.deepEqual((await service.call('list')).map(item=>item.id),['system.build-workflow','system.skill2workflow']);
 });

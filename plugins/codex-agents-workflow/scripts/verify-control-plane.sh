@@ -154,8 +154,10 @@ for operation in workflow_start workflow_native_next workflow_native_spawned_bat
 done
 pass "v7 execution, v6 compatibility, connector contracts, and three-platform CI documented"
 
-node "$script_dir/rebind-workflow-packages.mjs" --check
-pass "shipped packages use current built-in Host implementations"
+# The engine ships no personal Workflow packages. Package collections validate
+# their selected exports separately; retain the explicit-folder maintenance CLI.
+node --check "$script_dir/rebind-workflow-packages.mjs"
+pass "package maintenance CLI syntax"
 
 node --check "$server"
 node --check "$control/open-console.mjs"

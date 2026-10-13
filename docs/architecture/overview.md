@@ -48,7 +48,7 @@ Automatic completion is the current authoring default: after review and Host che
 
 ## Boundaries and evidence
 
-Task-scoped inputs are a context-selection boundary; they do not establish operating-system filesystem isolation. Concurrency and context selection can help focus work, but do not guarantee lower total cost, shorter elapsed time, or a cache hit. The [experiment reports](../experiments/README.md) describe particular historical samples and their limits, not a general performance promise or a measurement of every current 1.2 path.
+Task-scoped inputs are a context-selection boundary; they do not establish operating-system filesystem isolation. Concurrency and context selection can help focus work, but do not guarantee lower total cost, shorter elapsed time, or a cache hit. The [package comparisons](https://github.com/TohmaN233/workflow-package/blob/main/workflow_explanations/experiments/results.md) report specific tasks, not a general performance promise.
 
 For operational details, see [Providers, Roles, recovery, and configuration](../guides/usage.md). For the supported Workflow fields, see the [schema reference](../reference/workflow-schema.md).
 

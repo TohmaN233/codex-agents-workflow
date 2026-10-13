@@ -90,7 +90,7 @@ async function fixture(t,{toolMode='code_mode_only',submissionError,bindingMutat
 for(const access of ['bounded_write','read_only'])test('authenticated Main execution policy reaches actual thread and owned command RPC '+access,async t=>{
   const context={parent_thread_id:'authenticated-parent',sandbox_type:'danger-full-access'};
   const f=await fixture(t,{toolMode:'direct',runCommand:true,sessionOptions:{access,allowedPaths:access==='bounded_write'?['.']:[],
-    ...(access==='bounded_write'?{isolatedWorkspace:{read_path:'unused qualification sentinel',outside_directories:[]}}:{}),
+    ...(access==='bounded_write'?{ownedCommandTemp:true}:{}),
     resolveModelSelection:async()=>({model:'declarations-model',effort:'high',main_execution_context:context})}});
   const result=await f.session.turn('Neutral task');
   assert.equal(f.threads[0].sandbox,access==='bounded_write'?'danger-full-access':'read-only');
@@ -385,7 +385,7 @@ test('declaration serialization derives callable names and preserves all supplie
   assert.throws(()=>ownedCommandDeclarations(OWNED_MCP_NAMESPACE,invalid),{code:'INVALID_JSON'});
 });
 
-const completionOptions={access:'bounded_write',allowedPaths:['.'],isolatedWorkspace:{read_path:'unused qualification sentinel',outside_directories:[]},resolveModelSelection:async()=>({model:'declarations-model',effort:'high',main_execution_context:{parent_thread_id:'authenticated-parent',sandbox_type:'danger-full-access'}})};
+const completionOptions={access:'bounded_write',allowedPaths:['.'],ownedCommandTemp:true,resolveModelSelection:async()=>({model:'declarations-model',effort:'high',main_execution_context:{parent_thread_id:'authenticated-parent',sandbox_type:'danger-full-access'}})};
 
 test('command completion boundary settles transport and renews only for same-thread correction',async t=>{
  const f=await fixture(t,{toolMode:'direct',runCommand:true,sessionOptions:completionOptions});
