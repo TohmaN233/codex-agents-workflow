@@ -2,6 +2,8 @@
 
 ## Working standard
 
+- 2026-10-13 package verification boundary: the engine ships only its default authoring configuration, so static engine checks must not scan a removed examples/workflows directory. The package identity maintenance CLI requires an explicit selected package directory; missing or invalid targets remain visible errors. Validate exported packages in their own collection. Version remains 1.2.
+
 - 2026-10-13 semantic JSON carrier: terminal Main receives declared JSON inputs as complete native values rather than JSON-encoded strings inside its JSON handoff. Preserve canonical sidecar bytes, source pins, text/UTF-8 fidelity, size-bound file delivery and rejection of changed sources. This is a generic format correction, not content compression or a measured performance claim. Version remains 1.2.
 
 - 2026-10-12 direct startup: supplied Ready identity and inputs_path go directly to the startup tool. Host reads the input and resolves/registers dependencies; Main does not enumerate tools or run a separate environment precheck. Optional model-facing environment diagnosis returns readiness and actionable missing-tool errors, omitting mechanical search-path history; human diagnostics retain full evidence. This is generic execution behavior, not a content-length constraint. Version remains 1.2.
