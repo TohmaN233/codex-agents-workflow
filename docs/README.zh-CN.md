@@ -4,6 +4,7 @@
 
 产品说明统一放在这里；可复用 Workflow 的本体、使用说明和产物样例在独立的 [Workflow Package 仓库](https://github.com/TohmaN233/workflow-package)维护。
 
+- [安装步骤](../INSTALL.zh-CN.md)：依赖、LLM 可执行步骤与当前连接验收。
 - [使用指南](guides/usage.zh-CN.md)：安装、Provider、Role、创建、执行与恢复。
 - [架构](architecture/overview.zh-CN.md)：Main、Host、节点上下文与执行边界。
 - [格式参考](reference/README.zh-CN.md)：受支持的 Workflow 字段。

@@ -1,10 +1,10 @@
 import { readFile, realpath } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { configRevision, loadConfig, saveConfig } from '../config.mjs';
 import { digest } from '../workflow-revisions.mjs';
 import { writeDurableJSON } from '../workflow-events.mjs';
 import { requireValue } from '../workflow-paths.mjs';
-import { qualifiedStrictSettings, codexQualification } from './strict-config.mjs';
+import { qualifiedStrictSettings, qualifiedCooperativeSettings, codexQualification } from './strict-config.mjs';
 import { discoverLocalCodex } from './local-codex-catalog.mjs';
 
 // Registration belongs to pre-Run preparation. An ordinary in-place update at
@@ -12,23 +12,34 @@ import { discoverLocalCodex } from './local-codex-catalog.mjs';
 // replacing its local identity; running
 // attempts keep their original identity and reject executable drift.
 export async function refreshCodexRegistration({ configPath, defaultConfigPath, config, env = process.env,
-  qualify = qualifiedStrictSettings, persist = saveConfig, discover = discoverLocalCodex } = {}) {
+  strict = true, scope = 'main', qualify = strict ? qualifiedStrictSettings : qualifiedCooperativeSettings, persist = saveConfig, discover = discoverLocalCodex } = {}) {
   config ??= await loadConfig({ configPath, defaultConfigPath });
   const settings = config.strict_executor;
-  if (!settings?.enabled) return config;
+  if (strict && !settings?.enabled) return config;
+  const discoverReceivingCodex = () => {
+    const override = env.CODEX_CATALOG_BINARY;
+    requireValue(!override || isAbsolute(override), 'CODEX_CATALOG_PATH', 'CODEX_CATALOG_BINARY must be absolute');
+    return discover({env:override?{...env,PATH:'',Path:'',LOCALAPPDATA:''}:env,extra:override?[override]:[]});
+  };
   let registeredPath = settings.codex_binary, selected, reason = 'executable_updated';
-  try { selected = await realpath(registeredPath); }
+  try {
+    if (!registeredPath) {
+      const source = await discoverReceivingCodex();
+      registeredPath = source.selected_path ?? source.binary; reason = 'initial_registration';
+    }
+    selected = await realpath(registeredPath);
+  }
   catch (error) {
     if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
-    const source = await discover({ env });
-    registeredPath = source.binary; selected = await realpath(registeredPath); reason = 'stale_installation_rediscovered';
+    const source = await discoverReceivingCodex();
+    registeredPath = source.selected_path ?? source.binary; selected = await realpath(registeredPath); reason = 'stale_installation_rediscovered';
   }
   const observed = digest(await readFile(selected));
   if (observed === settings.binary_sha256 && registeredPath === settings.codex_binary) return config;
   const candidate = structuredClone(config);
   candidate.strict_executor.binary_sha256 = observed;
   candidate.strict_executor.codex_binary = registeredPath;
-  const qualified = await qualify(candidate, env);
+  const qualified = await qualify(candidate, env, { scope });
   requireValue(await realpath(registeredPath) === selected && digest(await readFile(selected)) === observed,
     'CODEX_BINARY_CHANGED', 'Selected Codex executable changed during registration');
   const path = join(dirname(configPath), 'codex-runtime-registration.json');

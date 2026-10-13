@@ -30,6 +30,8 @@ Windows 启动器根据 Codex 已安装插件记录启动；macOS/Linux 脚本�
 
 全新流程库只包含 **Build Workflow** 与 **Skill to Workflow**。Role 会单独显示。
 
+新安装直接创建 v7 配置和 Workflow 存储，当前内置 Role 定义与用户配置分开维护。已有旧配置保留明确的升级与恢复路径；新安装无需先经过 v6 迁移。
+
 ![当前流程库](../assets/tutorial/workbench-library.png)
 
 ## 2. 理解 Provider、Role 与 Workflow
@@ -45,6 +47,7 @@ Windows 启动器根据 Codex 已安装插件记录启动；macOS/Linux 脚本�
 发布默认配置：
 
 - 原生 Codex Provider 已启用；外部 Provider 已关闭。
+- 全新安装默认启用 Strict；首次需要本地执行器时，Host 自动发现、注册并计算摘要。已有明确设置保留，cooperative 路线无需额外开启 Strict。
 - Cross-review 与 GPT reviewer Role 会显示但默认关闭；使用时还要分别启用对应 Provider。
 - Build Workflow 与 Skill to Workflow 是仅有的内置 Workflow。
 - 可选安装包统一从独立的 [Workflow Package 仓库](https://github.com/TohmaN233/workflow-package)安装。

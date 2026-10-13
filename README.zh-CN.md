@@ -50,8 +50,10 @@ flowchart LR
 git clone https://github.com/TohmaN233/codex-agents-workflow.git
 cd codex-agents-workflow
 codex plugin marketplace add .
-codex plugin add codex-agents-workflow@codex-agents-workflow
+node plugins/codex-agents-workflow/scripts/install-local.mjs
 ```
+
+依赖配置、LLM 自动安装步骤和验收方法见[安装说明](INSTALL.zh-CN.md)。
 
 在 Codex task 中打开工作台：
 

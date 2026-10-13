@@ -14,7 +14,7 @@ import { StrictSessionManager, strictOutputByteBudget } from '../lib/execution/s
 import { refreshCodexRegistration } from '../lib/execution/codex-runtime-registration.mjs';
 import { EXECUTOR_RESULT_MAX_BYTES } from '../lib/workflow-run-store.mjs';
 import { codexStructuredSchema, restoreOptionalOmissions } from '../lib/execution/codex-structured-output.mjs';
-import { validateStrictConfig, qualifiedStrictSettings, qualifiedCodexBinary, verifyCodexDistribution, codexQualification, qualifyCodexRawObservation } from '../lib/execution/strict-config.mjs';
+import { validateStrictConfig, qualifiedStrictSettings, qualifiedCooperativeSettings, qualifiedCodexBinary, verifyCodexDistribution, codexQualification, qualifyCodexRawObservation } from '../lib/execution/strict-config.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 import { randomUUID } from 'node:crypto';
 import { processIdentity } from '../lib/execution/codex-process-ownership.mjs';
@@ -986,7 +986,11 @@ test('Strict settings are opt-in, reject secrets/unknown fields and verify selec
   assert.equal(validateStrictConfig().enabled, false);
   assert.equal(validateStrictConfig().authentication.mode, 'host_chatgpt');
   assert.throws(() => validateStrictConfig({ authentication: { api_key: 'secret' } }), { code: 'STRICT_CONFIG' });
-  assert.throws(() => validateStrictConfig({ enabled: true }), { code: 'STRICT_CONFIG' });
+  assert.equal(validateStrictConfig({ enabled: true }).codex_binary, '');
+  assert.throws(() => validateStrictConfig({ enabled: true, codex_binary: resolve('fake.exe') }), { code: 'STRICT_CONFIG' });
+  assert.throws(() => validateStrictConfig({ enabled: true, binary_sha256: 'a'.repeat(64) }), { code: 'STRICT_CONFIG' });
+  await assert.rejects(qualifiedStrictSettings({strict_executor:{enabled:true}}), { code: 'CODEX_REGISTRATION_REQUIRED' });
+  await assert.rejects(qualifiedStrictSettings({strict_executor:{enabled:false}}), { code: 'STRICT_DISABLED' });
   assert.equal(validateStrictConfig({ main_model: 'gpt-5.6-luna' }).main_model, 'gpt-5.6-luna');
   assert.equal(validateStrictConfig({ main_model: 'future-model', main_reasoning_effort: 'medium' }).main_model, 'future-model');
   assert.equal(validateStrictConfig().main_model, '');
@@ -1165,6 +1169,93 @@ test('Strict prepare qualification survives config revalidation and reaches actu
   await f.service.call('dispatch',f.args);await f.entry(f.args).job;
   assert.equal(f.sessions[0].settings.expectedBinaryPath,q.binary);
   assert.equal(f.sessions[0].settings.dynamicToolFormat,'untagged_function');
+});
+
+test('fresh cooperative Main discovers and qualifies Codex while Strict remains disabled',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const config=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  assert.equal(config.strict_executor.enabled,true);
+  assert.equal(config.strict_executor.codex_binary,'');
+  config.strict_executor.enabled=false;
+  await saveConfig(config,{configPath});
+  const manager=new HostMainManager({configPath,getConfig:async()=>config,env:f.options.env});
+  const saved=await refreshCodexRegistration({configPath,config,env:f.options.env,strict:false,
+    discover:async()=>({binary:f.binary}),qualify:candidate=>manager.qualify(candidate,f.options.env,f.options)});
+  const settings=await manager.qualify(saved,f.options.env,f.options);
+  assert.equal(settings.enabled,false);
+  assert.equal(settings.codex_binary,f.binary);
+  assert.equal(settings.binary_sha256,f.settings.binary_sha256);
+  assert.deepEqual(saved.strict_executor.authentication,config.strict_executor.authentication);
+  assert.deepEqual(saved.providers,config.providers);
+  assert.equal(codexQualification(settings).model_calls,0);
+  assert(f.calls.every(method=>!['thread/start','turn/start'].includes(method)));
+  await assert.rejects(qualifiedStrictSettings(saved,f.options.env,f.options),{code:'STRICT_DISABLED'});
+});
+
+test('fresh enabled Strict defers identity to qualified receiving-host registration',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const config=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  assert.equal(config.strict_executor.enabled,true);
+  assert.equal(config.strict_executor.codex_binary,'');assert.equal(config.strict_executor.binary_sha256,'');
+  const env={...f.options.env,CODEX_CATALOG_BINARY:f.binary,PATH:'unrelated'};
+  const saved=await refreshCodexRegistration({configPath,config,env,
+    discover:async options=>{assert.deepEqual(options.extra,[f.binary]);assert.equal(options.env.PATH,'');return {binary:f.binary,selected_path:f.binary};},
+    qualify:(candidate,selectedEnv,options)=>qualifiedStrictSettings(candidate,selectedEnv,{...f.options,...options})});
+  const settings=await qualifiedStrictSettings(saved,env,f.options);
+  assert.equal(settings.enabled,true);assert.equal(settings.binary_sha256,f.settings.binary_sha256);
+  assert.deepEqual(saved.strict_executor.authentication,config.strict_executor.authentication);
+  assert.deepEqual(saved.providers,config.providers);
+  const audit=JSON.parse(await readFile(join(f.root,'codex-runtime-registration.json'),'utf8'));
+  assert.equal(audit.status,'registered');assert.equal(audit.reason,'initial_registration');
+  assert.equal(audit.qualification.model_calls,0);
+  assert(f.calls.every(method=>!['thread/start','turn/start'].includes(method)));
+});
+
+test('cooperative qualification retains explicit authentication and missing/unsupported binary errors',async t=>{
+  const f=await qualificationFixture(t),config={strict_executor:{...f.settings,enabled:false}};
+  await qualifiedCooperativeSettings(config,f.options.env,f.options);
+  await assert.rejects(qualifiedCooperativeSettings({strict_executor:{...config.strict_executor,codex_binary:join(f.root,'missing')}},f.options.env,f.options),{code:'CODEX_BINARY_MISSING'});
+  const auth={strict_executor:{...config.strict_executor,authentication:{mode:'environment_api_key',api_key_env:'COOPERATIVE_FIXTURE_KEY'}}};
+  await assert.rejects(qualifiedCooperativeSettings(auth,f.options.env,f.options),{code:'CODEX_CREDENTIAL_MISSING'});
+  await assert.rejects(qualifiedCooperativeSettings({strict_executor:{...auth.strict_executor,authentication:{mode:'environment_api_key'}}},{...f.options.env,'':'invalid-empty-key'},f.options),{code:'CODEX_CREDENTIAL_MISSING'});
+  await assert.rejects(qualifiedCooperativeSettings(config,f.options.env,{...f.options,cache:new Map(),schemaReader:async()=>({ClientRequest:{oneOf:[]}})}),{code:'CODEX_CAPABILITY_UNSUPPORTED'});
+  await assert.rejects(qualifiedCooperativeSettings(config,f.options.env,{...f.options,cache:new Map(),clientFactory:()=>({initialized(){},async close(){},async call(method){if(method==='initialize')return {};if(method==='account/read')return {account:null,requiresOpenaiAuth:true};assert.fail(method);}})}),{code:'CODEX_AUTH_REQUIRED'});
+});
+
+test('actual standalone managed native preparation registers fresh cooperative SDK execution without enabling Strict',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const config=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  config.strict_executor.enabled=false;await saveConfig(config,{configPath});
+  const provider=config.providers.find(item=>item.id==='native-luna');
+  const qualifier=(candidate,env,options)=>qualifiedCooperativeSettings(candidate,env,{...f.options,...options});
+  let discoveries=0;
+  const manager=new ManagedNativeManager({configPath,env:f.options.env,getConfig:()=>loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH}),qualify:qualifier,
+    register:options=>refreshCodexRegistration({...options,discover:async()=>{discoveries++;return {binary:f.binary};}}),
+    sessionFactory:()=>assert.fail('Preparation must not start a model')});
+  const envelope={skill_policy:{mode:'cooperative'},provider};
+  const prepared=await manager.prepare(null,'zero-model-run',{},envelope);
+  assert.equal(prepared.execution,'managed_native_codex');assert.equal(discoveries,1);
+  assert.equal(prepared.settings.enabled,false);assert.equal(prepared.executable_sha256,f.settings.binary_sha256);
+  assert.equal(prepared.qualification.scope,'managed_native');assert.equal(prepared.qualification.model_calls,0);
+  await manager.prepare(null,'another-zero-model-run',{},envelope);assert.equal(discoveries,1);
+  const selected=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  assert.equal(selected.strict_executor.enabled,false);assert.deepEqual(selected.providers,config.providers);
+  await manager.close();
+});
+
+test('a pinned Strict Run cannot launch its later Main worker after the user disables Strict',async t=>{
+  const f=await fixture(t);await f.service.call('dispatch',f.args);await f.entry(f.args).job;
+  await f.service.call('collect_strict',f.args);
+  const binding=await f.claim('final'),{runtime}=await f.service.open(),record=await runtime.runs.read(f.run.run_id);
+  assert.equal(record.pins.root.workflow.skill_policy.mode,'strict');
+  const config=await f.service.config();config.strict_executor.enabled=false;await saveConfig(config,{configPath:f.configPath});
+  let qualified=0,started=0;
+  const manager=new HostMainManager({configPath:f.configPath,getConfig:()=>f.service.config(),env:{},
+    qualify:()=>{qualified++;assert.fail('Disabled Strict must fail before qualification');},sessionFactory:()=>{started++;assert.fail('Disabled Strict must not start a model');}});
+  t.after(()=>manager.close());
+  await assert.rejects(manager.executeNode({runtime,runId:f.run.run_id,stopping:false,status:'running'},
+    {host_binding:binding,agent_packet:{prompt:'Review the completed fixture'}}),{code:'STRICT_DISABLED'});
+  assert.equal(qualified,0);assert.equal(started,0);
 });
 
 test('in-place Codex upgrade re-registers only the proved local executable before a new Run',async t=>{

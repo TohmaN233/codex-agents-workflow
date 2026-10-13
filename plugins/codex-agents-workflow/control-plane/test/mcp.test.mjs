@@ -1,3 +1,4 @@
+import { legacyConfig } from './legacy-config.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -236,7 +237,8 @@ test('stdio MCP lists control tools and returns sanitized status', async (t) => 
   });
   const status = JSON.parse(statusResponse.result.content[0].text);
   assert.equal(status.effective_enabled, true);
-  assert.ok(status.task_types.some((taskType) => taskType.id === 'bounded-code-change'));
+  assert.equal(status.version,7);
+  assert.deepEqual(status.task_types,[]);
   assert.doesNotMatch(statusResponse.result.content[0].text, /CONSTRAINTS AND OWNERSHIP/);
   assert.doesNotMatch(statusResponse.result.content[0].text, /example\.invalid/);
 
@@ -265,7 +267,7 @@ test('real stdio server keeps ping responsive and drains invocation before signa
   });
   http.listen(0, '127.0.0.1'); await once(http, 'listening');
   t.after(() => { release(); http.closeAllConnections(); http.close(); });
-  const config = JSON.parse(await readFile(join(controlDir, 'default-config.json'), 'utf8'));
+  const config = await legacyConfig();
   config.global.allow_direct_api = true;
   const provider = config.providers.find(p => p.id === 'custom-openai-compatible');
   provider.enabled = true; provider.config.auth_type = 'none'; provider.config.timeout_ms = 10000;

@@ -19,6 +19,7 @@ async function fixture(t) {
   const secondDirectory = join(root, 'second-tools');
   await Promise.all([mkdir(workspace), mkdir(home), mkdir(firstDirectory), mkdir(secondDirectory)]);
   const configPath = join(root, 'control-plane.json');
+  const binary=join(root,'fixture-codex');await writeFile(binary,'runtime registration fixture executor');
   const service = new WorkflowService({
     configPath,
     defaultConfigPath: DEFAULT_CONFIG_PATH,
@@ -27,7 +28,8 @@ async function fixture(t) {
       HOME: home,
       PATH: [firstDirectory, secondDirectory].join(delimiter),
     },
-    capabilities: { nativeAgentObserver: null, nativeParentVerifier: async () => {} },
+    capabilities: { nativeAgentObserver: null, nativeParentVerifier: async () => {},
+      codexRegistrationDiscovery:async()=>({binary}),codexRegistrationQualifier:async config=>config.strict_executor },
   });
   t.after(async () => {
     await Promise.allSettled([...service.attemptAdmission.drainJobs.values()]);

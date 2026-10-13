@@ -14,7 +14,6 @@ async function fixture(t){
   const configPath=join(root,'control-plane.json');
   await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
   const service=new WorkflowService({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{}});
-  await service.call('migrate_v6',{}, {human:true});
   return {service,configPath,root};
 }
 
@@ -30,7 +29,13 @@ test('external Providers, GPT reviewer, and Cross-review are disabled by default
   const nativeIds=new Set(['native-luna','native-sol','native-astra']);
   assert(defaults.providers.filter(provider=>!nativeIds.has(provider.id)).every(provider=>provider.enabled===false));
   assert(defaults.providers.filter(provider=>nativeIds.has(provider.id)).every(provider=>provider.enabled===true));
-  assert.equal(defaults.task_types.find(item=>item.id==='cross-review').enabled,false);
+  assert.equal(defaults.version,7);
+  assert.deepEqual(defaults.strict_executor,{enabled:true});
+  assert.equal(Object.hasOwn(defaults,'task_types'),false);
+  const {roles:definitions}=JSON.parse(await readFile(new URL('../builtin-role-definitions.json',import.meta.url),'utf8'));
+  assert.equal(definitions.length,8);
+  assert(definitions.every(item=>item.stages.length===1));
+  assert.equal(definitions.find(item=>item.id==='cross-review').enabled,false);
 
   const {service}=await fixture(t);
   const roles=await service.call('role_templates');
@@ -110,4 +115,21 @@ test('portable packages install, delete, and reinstall from a generated local fi
   assert.equal(second.revision_hash,first.revision_hash);
   await service.call('delete',{workflow_id:second.workflow.id,expected_revision:second.revision_hash});
   assert.deepEqual((await service.call('list')).map(item=>item.id),['system.build-workflow','system.skill2workflow']);
+});
+
+
+test('direct fresh service startup needs no migration and missing existing stores stay visible', async t => {
+  const root=await mkdtemp(join(tmpdir(),'workflow-release-direct-bootstrap-'));
+  t.after(()=>rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100}));
+  const configPath=join(root,'control-plane.json');
+  const service=new WorkflowService({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{}});
+  assert.deepEqual((await service.call('list')).map(item=>item.id),['system.build-workflow','system.skill2workflow']);
+  const config=JSON.parse(await readFile(configPath,'utf8'));
+  assert.equal(config.version,7);
+  assert.equal(Object.hasOwn(config,'task_types'),false);
+  const storeRoot=join(root,config.workflow_store.relative_path);
+  assert.equal(resolve(storeRoot),join(resolve(root),'workflows'));
+  await rm(storeRoot,{recursive:true});
+  await assert.rejects(service.call('list'),{code:'ENOENT'});
+  assert.equal(JSON.parse(await readFile(configPath,'utf8')).workflow_store.relative_path,'workflows');
 });

@@ -12,6 +12,7 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;})
 
 test('managed preparation accepts exact pinned Skill allowances for native session policy',async()=>{
   const manager=new ManagedNativeManager({configPath:'C:\\fixture\\managed-skills.json',env:{},getConfig:async()=>({}),
+    register:async({config})=>config,
     qualify:async()=>({binary_sha256:'a'.repeat(64)})});
   const envelope={skill_policy:{mode:'cooperative'},provider:{kind:'native_agent',config:{model:'gpt-test',reasoning_effort:'low'}},
     skill_ref:{path:'skills/exact/SKILL.md'},allowed_skills:[{path:'skills/exact/SKILL.md',resources:[]}]};
