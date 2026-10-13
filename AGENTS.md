@@ -2,6 +2,8 @@
 
 ## Working standard
 
+- 2026-10-13 semantic JSON carrier: terminal Main receives declared JSON inputs as complete native values rather than JSON-encoded strings inside its JSON handoff. Preserve canonical sidecar bytes, source pins, text/UTF-8 fidelity, size-bound file delivery and rejection of changed sources. This is a generic format correction, not content compression or a measured performance claim. Version remains 1.2.
+
 - 2026-10-12 direct startup: supplied Ready identity and inputs_path go directly to the startup tool. Host reads the input and resolves/registers dependencies; Main does not enumerate tools or run a separate environment precheck. Optional model-facing environment diagnosis returns readiness and actionable missing-tool errors, omitting mechanical search-path history; human diagnostics retain full evidence. This is generic execution behavior, not a content-length constraint. Version remains 1.2.
 
 - 2026-10-12 Host probe removal: cooperative fan-out does not perform OS read/write-denial or shell capability probes before worker dispatch or business commands. Experiment isolation is separate contexts, selected resources and disjoint workspaces. Preserve authenticated Codex permission inheritance, logical write-scope checks, actual command failure reporting and owned temporary cleanup. This supersedes earlier qualification instructions; no benchmark-only override or permission elevation. Version remains 1.2.

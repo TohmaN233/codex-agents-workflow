@@ -2671,7 +2671,7 @@ test('terminal Main semantic inputs carry complete declared 13KB input without p
   const start=await f.service.call('native_next',{},MODEL_REQUEST);
   const handoff=await f.service.call('native_spawned_batch',{batch_id:start.batch_id},MODEL_REQUEST);
   assert.equal(handoff.status,'orchestration_handoff');
-  assert.deepEqual(JSON.parse(handoff.semantic_inputs.proposal.content),{summary:content});
+  assert.deepEqual(handoff.semantic_inputs.proposal.content,{summary:content});
   assert.equal(handoff.semantic_inputs.proposal.format,'json');
   const task=handoff.task_bundle.task,inputs=JSON.parse(task.split('\nInputs:\n')[1].split('\n')[0]);
   assert.deepEqual(inputs.proposal,{delivery:'inline',value_path:['semantic_inputs','proposal','content'],format:'json'});

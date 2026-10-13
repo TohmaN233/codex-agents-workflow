@@ -34,6 +34,23 @@ test('terminal semantic input carrier excludes resources and verified binary fil
   assert.deepEqual(await readTerminalMainInputs(receipt),{});
 });
 
+test('terminal JSON carrier supplies its complete native value without a second JSON string encoding',async t=>{
+  const root=await fixture(t);
+  const value={pages:[{source:'Quote "hello", path \\neutral and line\r\n🌱'.repeat(260)}],settings:{enabled:true,count:3}};
+  const receipt=await materializeMainTaskBundle({directory:join(root,'terminal-native-json'),
+    envelope:{workspace:root,access:'read_only',inputs:{manuscripts:value},resources:[],prompt_template:'Read the complete manuscript'}});
+  const carrier=await readTerminalMainInputs(receipt);
+  assert.equal(carrier.semantic_inputs.manuscripts.format,'json');
+  assert.equal(typeof carrier.semantic_inputs.manuscripts.content,'object','Host must supply a native JSON value');
+  assert.deepEqual(carrier.semantic_inputs.manuscripts.content,value);
+  assert(JSON.stringify(carrier).length<JSON.stringify({semantic_inputs:{manuscripts:{format:'json',content:canonicalJSON(value)}}}).length);
+  const metadata=JSON.parse(await readFile(join(root,'terminal-native-json','context-preparation.json'),'utf8'));
+  const input=metadata.inputs.find(item=>item.name==='manuscripts');
+  assert.equal(await readFile(input.path,'utf8'),canonicalJSON(value),'Canonical bound bytes remain unchanged');
+  await writeFile(input.path,canonicalJSON({pages:[]}));
+  await assert.rejects(readTerminalMainInputs(receipt),{code:'MAIN_ORCHESTRATION_BUNDLE'});
+});
+
 test('native public carrier uses an exact 1024 UTF8 byte boundary for legacy semantic projections',async t=>{
   const root=await fixture(t);
   for(const [size,prefix]of [[1024,''],[1025,''],[1025,'雪'.repeat(200)]]){
