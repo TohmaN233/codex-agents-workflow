@@ -22,6 +22,7 @@ const names = [
   'typed-batch-output-transport.test.mjs',
   'bounded-read.test.mjs',
   'host-tool-scoped-environment-upgrade.test.mjs',
+  'host-tool-deadline.test.mjs',
   'branch-runtime-dependencies.test.mjs',
   'approval-compiler.test.mjs',
   'run-store-admission.test.mjs',

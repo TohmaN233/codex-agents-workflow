@@ -10,6 +10,12 @@ The native task index is currently capped at 16 KiB of serialized UTF-8, includi
 
 Fixed instructions, schemas and reference metadata must still fit the index budget. If they cannot fit after bound inputs move to files, preparation fails visibly. Output content follows its declared schema and artifact contract; there is no universal 16 KiB writing limit.
 
+## Host tool deadlines
+
+Each `host_tools` contract declares `deadline_ms` from 1 through 3,600,000 milliseconds (one hour). The Host runner forwards that pinned deadline to the qualified resource program's command broker, including after executable environment preparation. Ordinary task-program broker calls retain their existing five-minute default unless the Host explicitly supplies a bounded deadline; model command arguments cannot extend it.
+
+Timeout and cancellation still require confirmed process termination and observed effects before a stopped receipt can settle. Failed or unconfirmed execution does not become success or silently retry.
+
 ## Automatic Main completion checks
 
 A writable Main orchestration node may attach a mechanical check to its existing completion contract:
