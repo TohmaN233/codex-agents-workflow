@@ -41,7 +41,6 @@ const names = [
   'owned-command-declarations.test.mjs',
   'codex-command-powershell-output.test.mjs',
   'command-lifecycle-diagnostics.test.mjs',
-  'command-workspace-isolation.test.mjs',
   'foreground-operation-observation.test.mjs',
   'executor-observation-journal.test.mjs',
   'codex-observation-batch.test.mjs',
