@@ -244,7 +244,7 @@ export async function loadWorkflowInputsFile(request,{model=false}={}){
 const REMOTE_PACKAGE_LIMIT=70*1024*1024;
 const BUILTIN_ROLE_PREFIX='builtin-role-';
 const nativeDriveOwners=new Map();
-import { isWorkerMain, hasOrchestrationMain } from './execution/main-execution-mode.mjs';
+import { hasOrchestrationMain } from './execution/main-execution-mode.mjs';
 import { prepareMainOrchestration, completeMainOrchestration } from './execution/main-orchestration.mjs';
 import {startupSemanticContract,startupSemanticNode} from './execution/workflow-startup-semantic.mjs';
 import { WORKFLOW_CALL_DEFAULTS, WORKFLOW_LONG_CALL_TOOLS, workflowCallArguments, workflowInvocationAdapters, workflowAuthoringControllerAdapterDescriptor, workflowControllerAdapterDescriptor } from './execution/workflow-call-adapter.mjs';
@@ -695,12 +695,10 @@ export class WorkflowService {
   async prepareCodexRegistration(closure) {
     const config = await this.config();
     const strict = closure.packs.some(pack => pack.workflow.skill_policy.mode === 'strict');
-    const main = closure.packs.some(pack => pack.workflow.skill_policy.mode === 'cooperative' && pack.workflow.nodes.some(isWorkerMain));
-    // Explicitly supplied executor managers own their own registration. The
-    // Cooperative native Provider handoffs use the initiating conversation's
-    // model-side spawn route and do not need an SDK executor registration.
-    if (!(strict && !this.capabilities.strictManager)
-      && !(main && !this.capabilities.hostMainManager && !this.capabilities.strictManager)) return;
+    // Strict qualification is a launch policy. Cooperative SDK registration
+    // belongs to the exact manager execution route, after preceding native,
+    // tool or conversation work has actually reached that worker.
+    if (!strict || this.capabilities.strictManager) return;
     await refreshCodexRegistration({ configPath: this.configPath, defaultConfigPath: this.defaultConfigPath, config,
       env: this.env, strict, qualify: this.capabilities.codexRegistrationQualifier,
       discover: this.capabilities.codexRegistrationDiscovery });
@@ -2182,11 +2180,6 @@ export class WorkflowService {
         if(parent)request.constraints={...request.constraints,native_parent_thread_id:parent};
         requireValue(!closure.packs.some(item => hasOrchestrationMain(item.workflow)) || parent, 'MAIN_ORCHESTRATION_CONTEXT', 'Start this Workflow from the current Codex conversation: orchestration needs its existing working context. No Run was started.');
         if(args.native_bridge===true)await this.nativeParentVerifier(parent);
-        if (operation === 'run_main' && (args.return_after_start === true || args.native_bridge === true)
-          && pack.workflow.nodes.some(isWorkerMain)) {
-          await this.prepareCodexRegistration(closure);
-          await observeForegroundPhase('q', async () => hostMainManager.qualify(await this.config(), this.env));
-        }
         const run = await runtime.start(request,{preparedEnvironment:environment,retainHostAuthority:Boolean(parent)});
         if (parent) await retainOwnedAuthority(runtime, run);
         if (bridgeHooks?.runStarted) await bridgeHooks.runStarted({ run_id: run.run_id, control_token: run.control_token });

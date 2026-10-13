@@ -205,7 +205,7 @@ async function preparedMainFixture(t, { beforeStart,closeError,strictEnabled=tru
     recordExecutorEvent: async (_id, args) => events.push(args.event), recordHostMainUsage: async (_id,args) => metered.push(args), completeHostMainResult: async () => {commits++;} };
   const strict = { enabled: strictEnabled, codex_binary: process.execPath, binary_sha256: 'b'.repeat(64), authentication: { mode: 'managed_chatgpt', api_key_env: '' },
     main_model: 'current-main', main_reasoning_effort: 'high', inactivity_timeout_ms: 0 };
-  const manager = new HostMainManager({ configPath: join(root, 'control-plane.json'), env: {}, qualify: async () => strict,
+  const manager = new HostMainManager({register:async({config})=>config, configPath: join(root, 'control-plane.json'), env: {}, qualify: async () => strict,
     getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }),
     mainModelSelection: async () => ({ model: 'current-main', effort: 'high' }), sessionFactory: async options => {
       if(options.resolveModelSelection)Object.assign(options,await options.resolveModelSelection({}));
@@ -450,7 +450,7 @@ for (const finalDeclaresAcceptance of [true, false]) test(`ordinary logical Main
     return handoff('final');
   } };
   const strict = { enabled: true, codex_binary: process.execPath, binary_sha256: 'b'.repeat(64), authentication: { mode: 'managed_chatgpt', api_key_env: '' }, main_model: 'gpt-5.6-terra', main_reasoning_effort: 'medium', inactivity_timeout_ms: 0 };
-  const manager = new HostMainManager({ configPath: join(root, 'control-plane.json'), env: {}, getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }), qualify: async () => strict,
+  const manager = new HostMainManager({register:async({config})=>config, configPath: join(root, 'control-plane.json'), env: {}, getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }), qualify: async () => strict,
     mainModelSelection: async current => {
       assert.equal(current, record);
       return { model: 'current-user-model', effort: 'xhigh' };
@@ -518,7 +518,7 @@ test('recoverable blocked Main result gets one correction turn and accounts for 
   const binding = { protocol: 'host-main-v1', run_id: 'run-1', control_token: 'control', node_id: 'work', attempt_id: 'attempt-1', lease_token: 'lease', owner: 'logical-main', final_acceptance: false };
   const handoff = { host_binding: binding, agent_packet: { prompt: 'Create the artifact', response_form: { schema } } };
   const strict = { enabled: true, codex_binary: process.execPath, binary_sha256: 'b'.repeat(64), authentication: { mode: 'managed_chatgpt', api_key_env: '' }, main_model: 'gpt-5.6-terra', main_reasoning_effort: 'medium', inactivity_timeout_ms: 0 };
-  const manager = new HostMainManager({ configPath: join(root, 'control-plane.json'), env: {}, getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }), qualify: async () => strict,
+  const manager = new HostMainManager({register:async({config})=>config, configPath: join(root, 'control-plane.json'), env: {}, getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }), qualify: async () => strict,
     sessionFactory: async options => {
       assert.equal(options.maxTurns, 2);
       if(options.resolveModelSelection)Object.assign(options,await options.resolveModelSelection({}));
@@ -583,7 +583,7 @@ test('Main preflight corrects schema and real source locations in one thread bef
     completeHostMainResult: async () => { completed = true; }, failNode: async () => assert.fail('Completion should be corrected') };
   const binding = { run_id: 'run-1', control_token: 'control', node_id: 'work', attempt_id: 'attempt-1', lease_token: 'lease' };
   const strict = { enabled: true, codex_binary: process.execPath, binary_sha256: 'b'.repeat(64), authentication: { mode: 'managed_chatgpt', api_key_env: '' }, main_model: 'gpt-5.6-terra', main_reasoning_effort: 'medium', inactivity_timeout_ms: 0 };
-  const manager = new HostMainManager({ configPath: join(root, 'control-plane.json'), env: {}, getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }), qualify: async () => strict,
+  const manager = new HostMainManager({register:async({config})=>config, configPath: join(root, 'control-plane.json'), env: {}, getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }), qualify: async () => strict,
     sessionFactory: async options => {
       assert.equal(options.maxTurns, 3);
       if(options.resolveModelSelection)Object.assign(options,await options.resolveModelSelection({}));
@@ -638,7 +638,7 @@ test('Host Main retains a session handed off before factory initialization fails
     agent_packet: { prompt: envelope.prompt_template, response_form: { schema: output(false) } } };
   const strict = { enabled: true, codex_binary: process.execPath, binary_sha256: 'b'.repeat(64), authentication: { mode: 'managed_chatgpt', api_key_env: '' }, main_model: 'gpt-5.6-terra', main_reasoning_effort: 'medium', inactivity_timeout_ms: 0 };
   let allowClose = false; let closeCalls = 0; let owned;
-  const manager = new HostMainManager({ configPath: join(root, 'control-plane.json'), env: {},
+  const manager = new HostMainManager({register:async({config})=>config, configPath: join(root, 'control-plane.json'), env: {},
     getConfig: async () => ({ global: { enabled: true }, strict_executor: strict, providers: [] }), qualify: async () => strict,
     sessionFactory: async options => {
       owned = { async interrupt() {}, async close() {

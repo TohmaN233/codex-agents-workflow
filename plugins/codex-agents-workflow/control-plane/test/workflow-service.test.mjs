@@ -299,13 +299,9 @@ async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'workflow-service-')); const workspace = join(root, 'workspace'); await mkdir(workspace);
   t.after(async () => { await Promise.allSettled([...service.attemptAdmission.drainJobs.values()]); assert(resolve(root).startsWith(resolve(tmpdir()))); await rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 }); });
   const configPath = join(root, 'control-plane.json'); const config = await loadLegacyConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
-  const binary=join(root,'fixture-codex');await writeFile(binary,'synthetic service executor');
   if (options.configure) { options.configure(config); await saveConfig(config, { configPath }); }
   const service = new WorkflowService({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {}, ...options,
-    capabilities:{nativeAgentObserver:null,nativeParentVerifier:async()=>{},
-      codexRegistrationDiscovery:async()=>({binary}),
-      codexRegistrationQualifier:async current=>{await verifyCodexDistribution(current.strict_executor.codex_binary,{sha256:current.strict_executor.binary_sha256});return current.strict_executor;},
-      ...options.capabilities} });
+    capabilities:{nativeAgentObserver:null,nativeParentVerifier:async()=>{},...options.capabilities} });
   return { root, configPath, workspace, service,
     migrate: () => service.call('migrate_v6', {}, { human: true }),
     start: ({workspace:runWorkspace=workspace}={}) => service.call('start', { workflow_id: 'brainstorm', workspace:runWorkspace, access: 'read_only', main_actor: 'root', native_parent_thread_id:'01a0db81-70bf-7233-9021-4b4e3849bec7',inputs: { task: 'Synthetic workflow integration', context: 'Fixture only' } }),
@@ -807,7 +803,7 @@ async function mainStartupRegistrationFixture(t,{registrationError,qualification
   let modelCalls=0;
   const f=await fixture(t,{fetchImpl:async()=>{modelCalls++;assert.fail('Startup qualification must not call a model');}});
   await f.migrate();
-  const workflow=readyWorkflow('main-startup-registration');workflow.skill_policy.mode='cooperative';
+  const workflow=readyWorkflow('main-startup-registration');workflow.skill_policy.mode='strict';
   const created=await f.service.call('create',{workflow},{human:true});
   const binary=join(f.root,'current-codex'),bytes=Buffer.from('current local Codex fixture'),hash=digest(bytes);
   await writeFile(binary,bytes);
@@ -825,6 +821,7 @@ async function mainStartupRegistrationFixture(t,{registrationError,qualification
     await verifyCodexDistribution(current.strict_executor.codex_binary,{sha256:current.strict_executor.binary_sha256});
     return current.strict_executor;
   };
+  f.service.strictManager.qualify=f.service.hostMainManager.qualify;
   f.service.hostMainManager.launchRun=async args=>{order.push('launch');launches.push(args);return {status:'starting'};};
   // Inject only local discovery/qualification into the real registration
   // operation; keep the built-in manager so service registration stays enabled.
@@ -859,37 +856,66 @@ async function freshExecutorStartupFixture(t,{registrationError}={}){
     if(method==='config/read')return {config:{}};if(method==='model/list')return {data:[]};if(method==='skills/list')return {data:[{skills:[],errors:[]}]};
     assert.fail(`Startup must not call ${method}`);
   }})};
-  let discoveries=0;
+  let discoveries=0,sessionStarts=0;
+  const preparedStop=Object.assign(new Error('Qualified fixture stopped before model execution'),{code:'FIXTURE_QUALIFIED_STOP'});
   const service=new WorkflowService({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env,capabilities:{nativeAgentObserver:null,nativeParentVerifier:async()=>{},
     codexRegistrationDiscovery:async()=>{discoveries++;if(registrationError)throw registrationError;return {binary};},
     codexRegistrationQualifier:(config,env,scope)=>qualifiedCooperativeSettings(config,env,{...options,...scope})}});
   service.hostMainManager.qualify=(config,env,scope)=>qualifiedCooperativeSettings(config,env,{...options,...scope});
+  service.hostMainManager.register=registration=>refreshCodexRegistration({...registration,discover:service.capabilities.codexRegistrationDiscovery});
   service.strictManager.qualify=(config,env,scope)=>qualifiedStrictSettings(config,env,{...options,...scope});
-  service.hostMainManager.sessionFactory=()=>assert.fail('Startup must not create a model session');
-  service.hostMainManager.launchRun=async()=>({status:'starting'});
-  t.after(async()=>{await service.historyMaintenance.task;await Promise.allSettled([...service.attemptAdmission.drainJobs.values()]);await rm(root,{recursive:true,maxRetries:3,retryDelay:100});});
-  return {root,workspace,configPath,binary,hash:digest(bytes),defaults,service,calls,discoveries:()=>discoveries};
+  service.hostMainManager.sessionFactory=()=>{sessionStarts++;throw preparedStop;};
+  t.after(async()=>{await service.hostMainManager.close();await service.historyMaintenance.task;await Promise.allSettled([...service.attemptAdmission.drainJobs.values()]);await rm(root,{recursive:true,maxRetries:3,retryDelay:100});});
+  return {root,workspace,configPath,binary,hash:digest(bytes),defaults,service,calls,discoveries:()=>discoveries,sessionStarts:()=>sessionStarts};
 }
 
-for(const strictEnabled of [true,false])test(`fresh cooperative run_main registers receiving Codex before Run creation with Strict ${strictEnabled}`,async t=>{
+for(const strictEnabled of [true,false])test(`fresh cooperative Main registers receiving Codex at authorized execution with Strict ${strictEnabled}`,async t=>{
   const f=await freshExecutorStartupFixture(t),workflow=readyWorkflow('fresh-cooperative-start');workflow.skill_policy.mode='cooperative';
   if(!strictEnabled){const config=await f.service.config();config.strict_executor.enabled=false;await saveConfig(config,{configPath:f.configPath});}
   const created=await f.service.call('create',{workflow},{human:true});
   await f.service.call('read',{workflow_id:workflow.id});await f.service.call('role_templates');assert.equal(f.discoveries(),0);assert.deepEqual(f.calls,[]);
   const started=await f.service.call('run_main',{workflow_id:workflow.id,revision_hash:created.revision_hash,workspace:f.workspace,access:'read_only',main_actor:'root',inputs:{},return_after_start:true});
-  assert.equal(started.status,'starting');assert.equal(f.discoveries(),1);
+  assert.equal(started.status,'starting');
+  const settled=await f.service.hostMainManager.wait(started.run_id);assert.equal(settled.error.code,'FIXTURE_QUALIFIED_STOP');
+  assert.equal(f.discoveries(),1);assert.equal(f.sessionStarts(),1);
   const saved=await f.service.config();assert.equal(saved.strict_executor.enabled,strictEnabled);assert.equal(saved.strict_executor.codex_binary,f.binary);assert.equal(saved.strict_executor.binary_sha256,f.hash);
   assert.deepEqual(saved.providers,f.defaults.providers);assert.equal((await f.service.call('runs')).length,1);
   assert(f.calls.every(method=>!['thread/start','turn/start'].includes(method)));
 });
 
-test('fresh cooperative startup missing receiving Codex fails before a Run or model session',async t=>{
+test('fresh cooperative Main missing receiving Codex journals failure before any model session',async t=>{
   const failure=Object.assign(new Error('Receiving Codex is missing'),{code:'LOCAL_CODEX_MISSING'}),f=await freshExecutorStartupFixture(t,{registrationError:failure});
   const workflow=readyWorkflow('fresh-missing-codex');workflow.skill_policy.mode='cooperative';
   const created=await f.service.call('create',{workflow},{human:true});
-  await assert.rejects(f.service.call('run_main',{workflow_id:workflow.id,revision_hash:created.revision_hash,workspace:f.workspace,access:'read_only',main_actor:'root',inputs:{},return_after_start:true}),error=>error===failure);
-  assert.deepEqual(await f.service.call('runs'),[]);assert.deepEqual(f.calls,[]);
+  const started=await f.service.call('run_main',{workflow_id:workflow.id,revision_hash:created.revision_hash,workspace:f.workspace,access:'read_only',main_actor:'root',inputs:{},return_after_start:true});
+  const settled=await f.service.hostMainManager.wait(started.run_id);assert.equal(settled.error.code,'LOCAL_CODEX_MISSING');assert.equal(f.sessionStarts(),0);
+  const state=await f.service.call('get',{run_id:started.run_id});assert.equal(state.status,'failed');assert.equal(state.nodes.final.attempts[0].error.code,'LOCAL_CODEX_MISSING');
+  assert.deepEqual(f.calls,[]);
   assert.equal((await f.service.config()).strict_executor.codex_binary,'');
+});
+
+test('native-first cooperative handoff defers receiving SDK registration until its later Main worker executes',async t=>{
+  const f=await freshExecutorStartupFixture(t),workflow=readyWorkflow('native-before-sdk');workflow.skill_policy.mode='cooperative';
+  const config=await f.service.config();config.strict_executor.enabled=false;await saveConfig(config,{configPath:f.configPath});
+  workflow.nodes.splice(1,0,{id:'native',type:'agent',executor:{kind:'provider',provider_id:'native-luna'},access:'read_only',
+    prompt_template:'Return the bounded fixture result.',approval:{required:false},retry:{max_attempts:1},input_bindings:{},
+    outputs_schema:{type:'object',properties:{completed:{type:'boolean'}},required:['completed'],additionalProperties:false}});
+  workflow.requirements.providers=['native-luna'];workflow.edges=[edge('start','native'),edge('native','final'),edge('final','end')];
+  f.service.nativeAgentObserver=async ids=>({status:'completed',agent_id:ids[0],turn_id:'fixture-native-finished',result:{completed:true}});
+  const created=await f.service.call('create',{workflow},{human:true});
+  const run=await f.service.call('start',{workflow_id:workflow.id,revision_hash:created.revision_hash,workspace:f.workspace,access:'read_only',main_actor:'root',native_parent_thread_id:'01a0db81-70bf-7233-9021-4b4e3849bec7',inputs:{}});
+  await f.service.call('prepare_environment',{workflow_id:workflow.id,revision_hash:created.revision_hash});
+  const handoff=await f.service.call('native_next',control(run));assert.equal(handoff.status,'native_handoff');
+  assert.equal(f.discoveries(),0);assert.deepEqual(f.calls,[]);assert.equal(f.sessionStarts(),0);
+  await recordNativeSpawn(f,{...control(run),attempt_id:handoff.attempt_id,index:0,agent_id:'fixture-native-child'});
+  await f.service.call('native_next',control(run));
+  const beforeMain=await f.service.call('get',{run_id:run.run_id});assert.equal(beforeMain.nodes.native.status,'succeeded');assert.equal(beforeMain.nodes.final.status,'ready');
+  assert.equal(f.discoveries(),0);assert.deepEqual(f.calls,[]);
+  await f.service.call('continue_main',{...control(run),owner:'root'});
+  const settled=await f.service.hostMainManager.wait(run.run_id);assert.equal(settled.error.code,'FIXTURE_QUALIFIED_STOP');
+  assert.equal(f.discoveries(),1);assert.equal(f.sessionStarts(),1);
+  const saved=await f.service.config();assert.equal(saved.strict_executor.enabled,false);assert.equal(saved.strict_executor.codex_binary,f.binary);assert.equal(saved.strict_executor.binary_sha256,f.hash);
+  assert(f.calls.every(method=>!['thread/start','turn/start'].includes(method)));
 });
 
 test('fresh pure native model handoff and orchestration start avoid SDK registration and qualification',async t=>{
@@ -973,11 +999,11 @@ test('run_main rereads root resource bytes after its environment callback before
   assert.deepEqual(observed.legacy,{snapshot:0,resources:0});
 });
 
-test('run_main refreshes removed Codex registration before built-in Main qualification and Run creation',async t=>{
+test('Strict run_main refreshes removed Codex registration before capability qualification and Run creation',async t=>{
   const f=await mainStartupRegistrationFixture(t);
   const started=await f.service.call('run_main',f.request);
   assert.equal(started.status,'starting');assert.equal(f.modelCalls(),0);assert.equal(f.launches.length,1);
-  assert.deepEqual(f.order,['registration','discover','registration_qualify','main_qualify','registration','launch']);
+  assert.deepEqual(f.order,['registration','discover','registration_qualify','main_qualify','launch']);
   assert.equal(f.qualifications.length,1);
   assert.equal(f.qualifications[0].strict_executor.codex_binary,f.binary);
   assert.equal(f.qualifications[0].strict_executor.binary_sha256,f.hash);
@@ -991,7 +1017,7 @@ test('run_main refreshes removed Codex registration before built-in Main qualifi
   await f.service.historyMaintenance.task;
 });
 
-test('run_main registration and Main qualification failures propagate before Run creation or model launch',async t=>{
+test('Strict run_main registration and capability qualification failures propagate before Run creation or model launch',async t=>{
   for(const stage of ['registration','Main qualification'])await t.test(stage,async t=>{
     const error=Object.assign(new Error(`${stage} failed`),{code:stage==='registration'?'CODEX_CAPABILITY_UNSUPPORTED':'CODEX_CREDENTIAL_MISSING'});
     const f=await mainStartupRegistrationFixture(t,stage==='registration'?{registrationError:error}:{qualificationError:error});
@@ -2200,8 +2226,12 @@ test('service migration is human-owned; MCP executes a native handoff and main f
   assert.doesNotMatch(JSON.stringify(historical), /CONSTRAINTS AND OWNERSHIP/);
   const mainPack=await f.service.call('read',{workflow_id:'brainstorm'});
   const noBridge=await handleRpc({jsonrpc:'2.0',id:3,method:'tools/call',params:{name:'workflow_start',_meta:{threadId:'01a0db81-70bf-7233-9021-4b4e3849bec7'},arguments:{workflow_id:'brainstorm',workspace:f.workspace,access:'read_only'}}},{configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{},serviceCapabilities:{nativeParentVerifier:async()=>{}}});
-  assert.equal(noBridge.result.isError,true);assert.match(JSON.stringify(noBridge),/STRICT_DISABLED/);
-  assert.equal((await f.service.call('runs')).length,0,'disabled Main execution must fail before persisting a Run');
+  assert.notEqual(noBridge.result.isError,true,JSON.stringify(noBridge));
+  const bridgedRuns=await f.service.call('runs');assert.equal(bridgedRuns.length,1,'ordinary native-first execution does not require Strict enablement');
+  assert.equal((await f.service.config()).strict_executor.enabled,false);
+  const bridgedRecord=await (await f.service.open()).runtime.runs.read(bridgedRuns[0].run_id);
+  const bridgedAuthority=await readOwnedAuthority((await f.service.open()).runtime,bridgedRecord.state.run_id);
+  await f.service.call('cancel',{run_id:bridgedRecord.state.run_id,control_token:bridgedAuthority.control_token});
   const run = await f.start();
   await assert.rejects(f.service.call('drive',control(run),{model:true}),{code:'HOST_MAIN_BRIDGE_REQUIRED'});
   assert.equal(Object.values((await f.service.call('get',control(run))).nodes).flatMap(node=>node.attempts).length,0);

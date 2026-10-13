@@ -3,12 +3,13 @@ import { WorkflowStore } from '../lib/workflow-store.mjs';
 import { acceptDisplayedAuthoring, discoverSavedAuthoring } from '../web-src/skill-generation-recovery.mjs';
 import { REVIEW_IDS } from '../lib/skill-import/review-checklist.mjs';
 import test from 'node:test';
+import { fork } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { lstat, mkdtemp, mkdir, rm, readFile, writeFile, symlink, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join, resolve, dirname } from 'node:path';
 import { WorkflowService } from '../lib/workflow-service.mjs';
-import { loadConfig, saveConfig } from '../lib/config.mjs';
+import { configRevision, loadConfig, saveConfig } from '../lib/config.mjs';
 import { createDraft } from '../lib/workflow-schema.mjs';
 import { StrictSessionManager, strictOutputByteBudget } from '../lib/execution/strict-session-manager.mjs';
 import { refreshCodexRegistration } from '../lib/execution/codex-runtime-registration.mjs';
@@ -1209,6 +1210,90 @@ test('fresh enabled Strict defers identity to qualified receiving-host registrat
   assert.equal(audit.status,'registered');assert.equal(audit.reason,'initial_registration');
   assert.equal(audit.qualification.model_calls,0);
   assert(f.calls.every(method=>!['thread/start','turn/start'].includes(method)));
+});
+
+test('concurrent first-use Main and managed SDK registration share one identity commit and preserve its successful audit',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const config=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  let qualified=0,saves=0,release,ready;
+  const bothQualified=new Promise(resolve=>{ready=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  const qualify=async(candidate,env,options)=>{
+    const settings=await qualifiedCooperativeSettings(candidate,env,{...f.options,...options});
+    if(++qualified===2)ready();await gate;return settings;
+  };
+  const jobs=['main','managed_native'].map(scope=>refreshCodexRegistration({configPath,config,strict:false,scope,env:f.options.env,
+    discover:async()=>({binary:f.binary}),qualify,persist:async(...args)=>{saves++;return saveConfig(...args);}}));
+  const result=Promise.all(jobs);result.catch(()=>{});
+  await bothQualified;release();
+  const saved=await result;assert.equal(saves,1);
+  assert.deepEqual(saved[0],saved[1]);assert.equal(saved[0].strict_executor.binary_sha256,f.settings.binary_sha256);
+  const audit=JSON.parse(await readFile(join(f.root,'codex-runtime-registration.json'),'utf8'));
+  assert.equal(audit.status,'registered');assert.equal(audit.executable_sha256,f.settings.binary_sha256);
+  assert(f.calls.every(method=>!['thread/start','turn/start'].includes(method)));
+});
+
+test('two receiving processes share first registration without a second commit or failed peer audit',{timeout:10000},async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json'),script=join(f.root,'registration-contender.mjs');
+  const config=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  await writeFile(script,`import {loadConfig,saveConfig,configRevision} from ${JSON.stringify(new URL('../lib/config.mjs',import.meta.url).href)};
+import {refreshCodexRegistration} from ${JSON.stringify(new URL('../lib/execution/codex-runtime-registration.mjs',import.meta.url).href)};
+import {verifyCodexDistribution} from ${JSON.stringify(new URL('../lib/execution/strict-config.mjs',import.meta.url).href)};
+const [configPath,binary,defaultConfigPath,scope]=process.argv.slice(2),config=await loadConfig({configPath,defaultConfigPath});let saves=0;
+const saved=await refreshCodexRegistration({configPath,config,strict:false,scope,env:{},discover:async()=>({binary}),
+ qualify:async candidate=>{await verifyCodexDistribution(candidate.strict_executor.codex_binary,{sha256:candidate.strict_executor.binary_sha256});
+  await new Promise((resolve,reject)=>{process.once('message',message=>message==='release'?resolve():reject(new Error('Unexpected fixture release')));process.send({kind:'qualified',revision:configRevision(config)},error=>{if(error)reject(error);});});return candidate.strict_executor;},
+ persist:async(...args)=>{saves++;return saveConfig(...args);}});
+await new Promise((resolve,reject)=>process.send({kind:'saved',saves,path:saved.strict_executor.codex_binary,sha256:saved.strict_executor.binary_sha256},error=>error?reject(error):resolve()));process.disconnect();`);
+  const contenders=['main','managed_native'].map(scope=>{
+    const child=fork(script,[configPath,f.binary,DEFAULT_CONFIG_PATH,scope],{windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});
+    let ready,failReady,saved,diagnostic='';
+    const qualified=new Promise((resolve,reject)=>{ready=resolve;failReady=reject;});
+    child.stdout.on('data',bytes=>{diagnostic+=bytes.toString();});child.stderr.on('data',bytes=>{diagnostic+=bytes.toString();});
+    child.on('message',message=>{if(message.kind==='qualified')ready(message);else if(message.kind==='saved')saved=message;});
+    const done=new Promise((resolve,reject)=>{
+      child.once('error',error=>{failReady(error);reject(error);});
+      child.once('exit',code=>{if(code===0&&saved)resolve(saved);else{const error=new Error('Registration contender failed: '+diagnostic);failReady(error);reject(error);}});
+    });qualified.catch(()=>{});done.catch(()=>{});
+    t.after(()=>{if(child.exitCode===null)child.kill('SIGTERM');});return {child,qualified,done};
+  });
+  const ready=await Promise.all(contenders.map(item=>item.qualified));assert(ready.every(item=>item.revision===configRevision(config)));
+  for(const item of contenders)item.child.send('release');
+  const saved=await Promise.all(contenders.map(item=>item.done));assert.equal(saved.reduce((sum,item)=>sum+item.saves,0),1);
+  assert(saved.every(item=>item.path===f.binary&&item.sha256===f.settings.binary_sha256));
+  const current=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  assert.deepEqual(current.providers,config.providers);assert.deepEqual(current.strict_executor.authentication,config.strict_executor.authentication);
+  const audit=JSON.parse(await readFile(join(f.root,'codex-runtime-registration.json'),'utf8'));
+  assert.equal(audit.status,'registered');assert.equal(audit.previous_config_revision,configRevision(config));assert.equal(audit.config_revision,configRevision(current));
+});
+
+test('a waiting registrar never overwrites a user edit or the successful peer receipt',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const config=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  let release,committed;
+  const hold=new Promise(resolve=>{release=resolve;}),firstCommitted=new Promise(resolve=>{committed=resolve;});
+  const options={configPath,config,strict:false,env:f.options.env,discover:async()=>({binary:f.binary}),
+    qualify:(candidate,env,scope)=>qualifiedCooperativeSettings(candidate,env,{...f.options,...scope})};
+  const first=refreshCodexRegistration({...options,persist:async(...args)=>{const saved=await saveConfig(...args);committed(saved.config);await hold;return saved;}});
+  first.catch(()=>{});
+  const registered=await firstCommitted;
+  const peer=refreshCodexRegistration({...options,scope:'managed_native'});peer.catch(()=>{});
+  const edited=structuredClone(registered);edited.global.max_prompt_chars++;await saveConfig(edited,{configPath});
+  release();await first;
+  const receipt=await readFile(join(f.root,'codex-runtime-registration.json'),'utf8');
+  await assert.rejects(peer,{code:'CODEX_REGISTRATION_CONFLICT'});
+  assert.equal(await readFile(join(f.root,'codex-runtime-registration.json'),'utf8'),receipt);
+  assert.equal(JSON.parse(receipt).status,'registered');
+  assert.deepEqual(await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH}),edited);
+});
+
+test('an identical user binary edit without a successful peer registration receipt remains a CAS conflict',async t=>{
+  const f=await qualificationFixture(t),configPath=join(f.root,'control-plane.json');
+  const config=await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH});
+  await assert.rejects(refreshCodexRegistration({configPath,config,strict:false,env:f.options.env,discover:async()=>({binary:f.binary}),
+    qualify:async(candidate,env,scope)=>{await saveConfig(candidate,{configPath});return qualifiedCooperativeSettings(candidate,env,{...f.options,...scope});},
+    persist:()=>assert.fail('A user edit cannot authorize another config write')}),{code:'CODEX_REGISTRATION_CONFLICT'});
+  assert.equal((await loadConfig({configPath,defaultConfigPath:DEFAULT_CONFIG_PATH})).strict_executor.codex_binary,f.binary);
+  await assert.rejects(readFile(join(f.root,'codex-runtime-registration.json')),{code:'ENOENT'});
 });
 
 test('cooperative qualification retains explicit authentication and missing/unsupported binary errors',async t=>{

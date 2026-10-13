@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from './physical-tempdir.mjs';
 import { loadConfig } from '../lib/config.mjs';
@@ -60,10 +60,8 @@ test('Host-owned provider journals valid items, repairs one in the same session,
         async close() { settings.toolBroker.revoke(); }, async interrupt() {} };
     } });
   t.after(() => manager.close());
-  const binary=join(root,'fixture-codex');await writeFile(binary,'owned native integration executor');
   const service = new WorkflowService({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH, env: {},
-    capabilities: { managedNativeManager: manager, nativeAgentObserver: null, nativeParentVerifier: async () => {},
-      codexRegistrationDiscovery:async()=>({binary}),codexRegistrationQualifier:async config=>config.strict_executor } });
+    capabilities: { managedNativeManager: manager, nativeAgentObserver: null, nativeParentVerifier: async () => {} } });
   await service.call('migrate_v6', {}, { human: true });
   const workflow = { ...createDraft('owned-native-items', 'Owned native items'), status: 'ready', context_projection_version: 2,
     skill_policy: { mode: 'cooperative', implicit: 'deny', ambient_allow: [], shadowed_skill_paths: [] },

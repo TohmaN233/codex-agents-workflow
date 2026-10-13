@@ -509,7 +509,7 @@ for (const change of ['none', 'authority', 'lease', 'committed pins', 'authority
   const marker = new Error('stop after projection');
   const strict = { enabled: true, codex_binary: process.execPath, binary_sha256: 'b'.repeat(64), authentication: { mode: 'managed_chatgpt', api_key_env: '' },
     main_model: 'fixture', main_reasoning_effort: 'high', inactivity_timeout_ms: 0 };
-  const manager = new HostMainManager({ configPath: join(f.root, 'control-plane.json'), env: {},
+  const manager = new HostMainManager({register:async({config})=>config, configPath: join(f.root, 'control-plane.json'), env: {},
     getConfig: async () => {
       configurations++; assert.equal(reads, 1, 'The initial node metadata and execution envelope share one complete read');
       if (change !== 'authority after projection') throw marker;

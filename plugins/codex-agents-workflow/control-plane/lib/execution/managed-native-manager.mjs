@@ -170,9 +170,10 @@ export class ManagedNativeManager {
     requireValue(envelope.skill_policy.mode === 'cooperative' && envelope.provider?.kind === 'native_agent', 'MANAGED_NATIVE_NODE', 'Managed native execution requires a cooperative native Provider node');
     // This authenticated execution route owns an SDK session. Native model-side
     // handoffs never enter this manager and must not acquire this prerequisite.
+    const qualify = this.qualify;
     const config = await this.register({configPath:this.configPath,config:await this.getConfig(),env:this.env,
-      strict:false,scope:'managed_native',qualify:this.qualify});
-    const settings = await this.qualify(config, this.env, { scope: 'managed_native' });
+      strict:false,scope:'managed_native',qualify:(candidate,env,options)=>Reflect.apply(qualify,this,[candidate,env,options])});
+    const settings = await Reflect.apply(qualify,this,[config,this.env,{scope:'managed_native'}]);
     requireValue(this.accepting && executionAdmissionOpen(this.configPath), 'MANAGED_NATIVE_STOPPED', 'Managed native manager is closed to new work');
     return { execution: 'managed_native_codex', model: envelope.provider.config.model, effort: envelope.provider.config.reasoning_effort,
       executable_sha256: settings.binary_sha256, settings, qualification: codexQualification(settings), final_acceptance_required: false };

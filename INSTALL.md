@@ -52,7 +52,9 @@ Successful CLI installation or an independent server handshake does not prove th
 
 A fresh installation creates current **v7** configuration and its Workflow store directly, with **Build Workflow**, **Skill to Workflow**, and the current built-in Roles. Native Providers are enabled by default; external Providers are optional. Preserve existing Providers, Workflows, credentials and Runs when updating. Existing legacy configurations use the supported upgrade/restore flow in the [user guide](docs/guides/usage.md); fresh installations need no legacy migration.
 
-Strict is enabled in new defaults. When a selected route needs a local Codex executor, the Host discovers the receiving installation, computes its executable digest and checks the required capabilities before execution. Users and LLMs do not fill a path/hash pair for first use. Existing explicit disable and authentication settings are preserved. A missing executable, unavailable login or incompatible host remains a concrete setup error; enabling Strict does not bypass those requirements. Ordinary cooperative execution has its own qualification and is not gated by the optional Strict switch.
+The Strict executor capability is enabled in new defaults. When a selected route needs a local Codex executor, the Host discovers the receiving installation, computes its executable digest and checks the required capabilities before execution. Users and LLMs do not fill a path/hash pair for first use. Existing explicit disable and authentication settings are preserved. A missing executable, unavailable login or incompatible host remains a concrete setup error; enabling the executor does not bypass those requirements. Ordinary cooperative execution has its own qualification and is not gated by the optional Strict switch.
+
+The executor switch does not select a Workflow's policy. Skill to Workflow and Build Workflow generate cooperative Workflows by default; enabling the executor does not convert them to Strict.
 
 ## 4. Optionally install reusable Workflows
 

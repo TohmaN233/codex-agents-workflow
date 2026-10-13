@@ -52,7 +52,9 @@ CLI 安装成功或独立服务握手成功，不等于当前对话已经接入�
 
 全新安装直接创建当前 **v7** 配置和 Workflow store，提供 **Build Workflow**、**Skill to Workflow** 及当前内置 Role。原生 Provider 默认启用，外部 Provider 按需配置。更新时保留已有 Provider、Workflow、凭据和 Run。旧配置沿用[使用指南](docs/guides/usage.zh-CN.md)中的升级/恢复流程；新安装无需旧配置迁移。
 
-新配置默认启用 Strict。所选路线需要本地 Codex 执行器时，Host 自动发现接收端安装、计算可执行文件摘要并检查必要能力。首次使用无需用户或 LLM 手填路径/hash。已有的明确关闭及认证设置保留。缺少程序、登录不可用或宿主不兼容时，仍报告实际缺失；启用 Strict 不会跳过这些要求。普通 cooperative 执行使用自己的资格检查，不受可选 Strict 开关阻拦。
+新配置默认启用 Strict 执行器能力。所选路线需要本地 Codex 执行器时，Host 自动发现接收端安装、计算可执行文件摘要并检查必要能力。首次使用无需用户或 LLM 手填路径/hash。已有的明确关闭及认证设置保留。缺少程序、登录不可用或宿主不兼容时，仍报告实际缺失；启用执行器不会跳过这些要求。普通 cooperative 执行使用自己的资格检查，不受可选 Strict 开关阻拦。
+
+执行器开关不决定 Workflow 的策略。Skill to Workflow 与 Build Workflow 默认生成 cooperative 工作流；开启执行器不会把它们改成 Strict。
 
 ## 4. 按需安装可复用 Workflow
 
