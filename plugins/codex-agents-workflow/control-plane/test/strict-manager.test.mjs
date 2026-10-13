@@ -1,9 +1,12 @@
+import { sourceSectionInventory } from '../lib/skill-import/source-dispositions.mjs';
+import { WorkflowStore } from '../lib/workflow-store.mjs';
+import { acceptDisplayedAuthoring, discoverSavedAuthoring } from '../web-src/skill-generation-recovery.mjs';
 import { REVIEW_IDS } from '../lib/skill-import/review-checklist.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdtemp, mkdir, rm, readFile, writeFile, symlink } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, rm, readFile, writeFile, symlink, copyFile, chmod } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { WorkflowService } from '../lib/workflow-service.mjs';
 import { loadConfig, saveConfig } from '../lib/config.mjs';
 import { createDraft } from '../lib/workflow-schema.mjs';
@@ -11,7 +14,7 @@ import { StrictSessionManager, strictOutputByteBudget } from '../lib/execution/s
 import { refreshCodexRegistration } from '../lib/execution/codex-runtime-registration.mjs';
 import { EXECUTOR_RESULT_MAX_BYTES } from '../lib/workflow-run-store.mjs';
 import { codexStructuredSchema, restoreOptionalOmissions } from '../lib/execution/codex-structured-output.mjs';
-import { validateStrictConfig, qualifiedStrictSettings, qualifiedCodexBinary, verifyCodexDistribution, codexQualification } from '../lib/execution/strict-config.mjs';
+import { validateStrictConfig, qualifiedStrictSettings, qualifiedCodexBinary, verifyCodexDistribution, codexQualification, qualifyCodexRawObservation } from '../lib/execution/strict-config.mjs';
 import { DEFAULT_CONFIG_PATH } from '../server.mjs';
 import { randomUUID } from 'node:crypto';
 import { processIdentity } from '../lib/execution/codex-process-ownership.mjs';
@@ -24,6 +27,9 @@ import { GENERATED_PROPOSAL_ENVELOPE_SCHEMA, GENERATED_PROPOSAL_ENVELOPE_SCHEMA_
 import { AUTHORING_REPAIR_RESOURCE, AUTHORING_REVIEW_RESOURCE } from '../lib/authoring/authoring-workflows.mjs';
 import { codexEventMetadata } from '../lib/execution/codex-session.mjs';
 import { leaseToken } from '../lib/workflow-execution-envelope.mjs';
+import { HostMainManager } from '../lib/execution/host-main-manager.mjs';
+import { ManagedNativeManager } from '../lib/execution/managed-native-manager.mjs';
+import { WorkflowRuntime } from '../lib/workflow-runtime.mjs';
 
 test('Strict wait observes only the exact owned attempt and its settled result',async()=>{
   const manager=new StrictSessionManager({configPath:'C:\\fixture\\strict-wait.json',getConfig:async()=>({})});
@@ -53,6 +59,37 @@ const generatedRepair = proposal => {
   const plan=generatedProposal(proposal).proposal,empty={source_dispositions:[],requirement_assignments:[],records:[],lists:[],enums:[],activities:[],approvals:[],sequences:[],parallels:[],choices:[]};
   return {proposal:{contract:SEMANTIC_REPAIR_CONTRACT,purpose:'',upsert:{...structuredClone(empty),activities:plan.activities.map(item=>({...item,instructions:item.instructions+' Clarify the review deliverable and its evidence.'}))},remove:empty}};
 };
+async function readPinnedResource(settings,path,callId,limitReads=[]){
+  const directResult=await settings.toolBroker.call('read_workflow_resource',{path},callId);
+  const direct=JSON.parse(directResult.contentItems[0].text);
+  if(directResult.success)return direct;
+  assert.equal(direct.error?.code,'CODEX_RESOURCE_READ_LIMIT',direct.error?.message);
+  const sizeMatch=/^Resource is (\d+) UTF-8 bytes and exceeds the 12000-byte whole-file read limit\./.exec(direct.error.message);
+  assert(sizeMatch,direct.error.message);
+  const totalBytes=Number(sizeMatch[1]);
+  assert(Number.isSafeInteger(totalBytes)&&totalBytes>12000,direct.error.message);
+  limitReads.push({path,code:direct.error.code,bytes:totalBytes});
+  const pieces=[];let start=0,complete=false,sha256;
+  while(!complete){
+    const chunkResult=await settings.toolBroker.call('read_workflow_resource_chunk',
+      {path,start_byte:start,max_bytes:12000},`${callId}-chunk-${start}`);
+    const chunk=JSON.parse(chunkResult.contentItems[0].text);
+    assert.equal(chunkResult.success,true,chunk.error?.message);
+    assert.equal(chunk.path,path);
+    assert.equal(chunk.start_byte,start);
+    assert.equal(chunk.end_byte,chunk.next_byte);
+    assert.equal(chunk.total_bytes,totalBytes);
+    assert.equal(Buffer.byteLength(chunk.text),chunk.end_byte-start);
+    assert(chunk.end_byte-start<=12000);
+    assert.equal(chunk.complete,chunk.next_byte===totalBytes);
+    assert(chunk.next_byte>start);
+    if(sha256===undefined)sha256=chunk.sha256;else assert.equal(chunk.sha256,sha256);
+    pieces.push(chunk.text);start=chunk.next_byte;complete=chunk.complete;
+  }
+  assert.equal(start,totalBytes);
+  assert.equal(complete,true);
+  return {path,sha256,bytes:totalBytes,text:pieces.join('')};
+}
 
 test('authoring output schemas are statically compatible with strict Codex output',()=>{
   for(const source of [GENERATED_PROPOSAL_ENVELOPE_SCHEMA,GENERATED_PROPOSAL_ENVELOPE_SCHEMA_V21,GENERATED_REPAIR_ENVELOPE_SCHEMA]){
@@ -155,6 +192,48 @@ test('Strict token-usage metadata is journal-safe flat scalar evidence',()=>{
   assert(Object.values(metadata).every(value=>value===null||typeof value==='string'||typeof value==='boolean'||Number.isSafeInteger(value)));
 });
 
+test('official App Server tool items preserve safe identity and argument hashes through the actual journal',async t=>{
+  const items=[
+    {type:'dynamicToolCall',id:'dynamic-item',tool:'run_workspace_command',arguments:{cmd:'secret-command',password:'secret-token'},status:'completed',durationMs:12,success:true,contentItems:[{type:'inputText',text:'secret-result'}]},
+    {type:'mcpToolCall',id:'mcp-item',server:'web',tool:'search',arguments:{query:'secret-query'},status:'completed',durationMs:25,result:{content:[{text:'secret-body'}]}},
+    {type:'webSearch',id:'search-item',query:'secret-query',action:{type:'search',queries:['secret-query','secret-next']},results:[{text:'secret-result'}]},
+  ];
+  const f=await fixture(t);const {runtime}=await f.service.open();
+  for(const item of items){
+    const metadata=codexEventMetadata({method:'item/completed',params:{threadId:'owned-thread',turnId:'owned-turn',item}});
+    assert.equal(metadata.item_id,item.id);assert.equal(metadata.tool_name,item.tool);
+    assert.equal(metadata.tool_server,item.server);
+    assert.equal(metadata.duration_ms,item.durationMs);
+    assert.match(metadata.arguments_sha256,/^[a-f0-9]{64}$/);
+    assert.equal(metadata.call_id,undefined,'ThreadItem schema contains id, not callId');
+    assert.doesNotMatch(JSON.stringify(metadata),/secret|query|password|contentItems|results/);
+    await runtime.recordExecutorEvent(f.run.run_id,{...f.args,event:{kind:'codex_event',metadata}});
+  }
+  const request=codexEventMetadata({method:'item/tool/call',params:{threadId:'owned-thread',turnId:'owned-turn',callId:'actual-call',tool:'continue_workspace_command',arguments:{session_id:'command-process',chars:'secret-stdin'}}});
+  assert.equal(request.call_id,'actual-call');assert.equal(request.tool_name,'continue_workspace_command');assert.equal(request.item_id,undefined);
+  assert.doesNotMatch(JSON.stringify(request),/secret-stdin/);
+  await runtime.recordExecutorEvent(f.run.run_id,{...f.args,event:{kind:'codex_event',metadata:request}});
+  const record=await runtime.runs.read(f.run.run_id);
+  assert(record.state.nodes.work.attempts[0].executor_events.some(event=>event.metadata.call_id==='actual-call'));
+  const observed=record.state.nodes.work.attempts[0].executor_events.find(event=>event.metadata.item_id==='search-item').metadata;
+  assert.equal(observed.web_operation,'search');assert.equal(observed.web_terms_count,2);
+  for(const metadata of [{web_operation:'secret-action'},{web_terms_count:2},{web_operation:'openPage',web_terms_count:1},
+    {web_operation:'search',web_terms_count:-1}])await assert.rejects(runtime.recordExecutorEvent(f.run.run_id,
+      {...f.args,event:{kind:'codex_event',metadata}}),{code:'EXECUTOR_EVENT_SCHEMA'});
+});
+
+test('web metadata distinguishes actual search batches from page opens without recording terms or bodies',()=>{
+  const metadata=action=>codexEventMetadata({method:'item/completed',params:{threadId:'owned',turnId:'turn',
+    item:{type:'webSearch',id:'exact-item',action,results:[{text:'secret-body'}]}}});
+  assert.equal(metadata({type:'search',queries:['secret-one','secret-two']}).web_terms_count,2);
+  assert.equal(metadata({type:'search',query:'secret-single'}).web_terms_count,1);
+  assert.equal(metadata({type:'search'}).web_terms_count,undefined);
+  const opened=metadata({type:'openPage',url:'https://example.invalid/private'});
+  assert.equal(opened.web_operation,'openPage');assert.equal(opened.web_terms_count,undefined);
+  assert.doesNotMatch(JSON.stringify(opened),/private|secret-body|url/);
+  assert.equal(metadata({type:'secret-unknown'}).web_operation,undefined);
+});
+
 test('Codex context compaction does not interrupt ordinary event handling',()=>{
   const metadata=codexEventMetadata({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{
     last:{inputTokens:0,cachedInputTokens:0,outputTokens:0,reasoningOutputTokens:0,totalTokens:4200},
@@ -165,18 +244,110 @@ test('Codex context compaction does not interrupt ordinary event handling',()=>{
   assert.equal(metadata.turn_id,'turn');
 });
 
+test('token event metadata preserves single response usage beside cumulative thread totals',()=>{
+  const metadata=codexEventMetadata({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:'turn',tokenUsage:{
+    last:{inputTokens:100,cachedInputTokens:50,cacheWriteInputTokens:1,outputTokens:10,reasoningOutputTokens:5},
+    total:{inputTokens:300,cachedInputTokens:150,cacheWriteInputTokens:2,outputTokens:30,reasoningOutputTokens:15},
+  }}});
+  assert.equal(metadata.input_tokens,100);assert.equal(metadata.output_tokens,10);assert.equal(metadata.reasoning_output_tokens,5);
+  assert.equal(metadata.total_input_tokens,300);assert.equal(metadata.total_output_tokens,30);assert.equal(metadata.total_reasoning_output_tokens,15);
+  assert.equal(metadata.total_cached_input_tokens,150);assert.equal(metadata.total_cache_write_input_tokens,2);
+  assert(Object.values(metadata).every(value=>value===null||typeof value==='string'||typeof value==='boolean'||Number.isSafeInteger(value)));
+});
+
+for(const lane of ['strict','managed native'])test(`${lane} manager rejects incompatible scoped PATH before session creation`,async t=>{
+  const f=await fixture(t),{runtime}=await f.service.open(),tools=[];let starts=0;
+  for(const dir of ['first','second']){await mkdir(join(f.root,dir));for(const name of ['alpha','beta']){const path=join(f.root,dir,name+(process.platform==='win32'?'.exe':''));await copyFile(process.execPath,path);if(process.platform!=='win32')await chmod(path,0o755);if((dir==='first'&&name==='alpha')||(dir==='second'&&name==='beta'))tools.push({name,status:'found',path});}}
+  const original=runtime.execution.bind(runtime);runtime.execution=async(...args)=>{const envelope=await original(...args);envelope.constraints.runtime_environment={status:'ready',tools};return envelope;};
+  if(lane==='strict'){
+    const envelope=await runtime.execution(f.run.run_id,f.args),adapter=await f.manager.prepare(runtime,f.run.run_id,f.args,envelope);
+    await runtime.recordDispatchIntent(f.run.run_id,{...f.args,request_id:`dispatch-${f.args.attempt_id}`,envelope_hash:'a'.repeat(64)});
+    await assert.rejects(f.manager.launch(runtime,f.run.run_id,f.args,{envelope,adapter,prompt:'Neutral fixture'}),{code:'ENVIRONMENT_BINDING_STALE'});assert.equal(f.sessions.length,0);
+  }else{
+    const envelope=await runtime.execution(f.run.run_id,f.args),config=await f.service.config(),settings=validateStrictConfig(config.strict_executor);
+    const manager=new ManagedNativeManager({configPath:f.configPath,env:{},getConfig:()=>f.service.config(),sessionFactory:async()=>{starts++;throw new Error('Session must not start');}});t.after(()=>manager.close());
+    await runtime.recordDispatchIntent(f.run.run_id,{...f.args,request_id:`dispatch-${f.args.attempt_id}`,envelope_hash:'a'.repeat(64)});
+    await manager.launch(runtime,f.run.run_id,f.args,{envelope,adapter:{model:envelope.provider.config.model,effort:envelope.provider.config.reasoning_effort,executable_sha256:settings.binary_sha256,settings},prompt:'Neutral fixture'});
+    await manager.wait(f.run.run_id,f.args.attempt_id);assert.equal(starts,0);assert.equal((await runtime.get(f.run.run_id)).nodes.work.attempts[0].error.code,'ENVIRONMENT_BINDING_STALE');
+  }
+});
+
+for (const lane of ['strict', 'normal Main', 'managed native']) test(`${lane} manager preserves whole-turn metering evidence through runtime and journal reopening`, async t => {
+  const diagnostics = [
+    { method: 'workflow/turnUsage', thread_id: 'meter-thread', turn_id: 'meter-turn', usage_available: true, usage_basis: 'thread_total_delta', usage_update_count: 3,
+      input_tokens: 100, cached_input_tokens: 50, cache_write_input_tokens: 1, output_tokens: 10, reasoning_output_tokens: 5,
+      usage_baseline_input_tokens: 100, usage_baseline_cached_input_tokens: 50, usage_baseline_cache_write_input_tokens: 1, usage_baseline_output_tokens: 10, usage_baseline_reasoning_output_tokens: 5,
+      usage_total_input_tokens: 200, usage_total_cached_input_tokens: 100, usage_total_cache_write_input_tokens: 2, usage_total_output_tokens: 20, usage_total_reasoning_output_tokens: 10 },
+    { method: 'workflow/turnUsage', thread_id: 'meter-thread', turn_id: 'meter-correction', usage_available: false, usage_basis: 'thread_total_delta', usage_update_count: 3, usage_unavailable_reason: 'total_missing',
+      usage_baseline_input_tokens: 200, usage_baseline_cached_input_tokens: 100, usage_baseline_cache_write_input_tokens: 2, usage_baseline_output_tokens: 20, usage_baseline_reasoning_output_tokens: 10,
+      usage_total_input_tokens: 300, usage_total_cached_input_tokens: 150, usage_total_cache_write_input_tokens: 3, usage_total_output_tokens: 30, usage_total_reasoning_output_tokens: 15 },
+  ];
+  const emit = async settings => { assert.equal(settings.env.PATH,dirname(process.execPath),'Manager must consume the selected scoped envelope paths');for (const metadata of diagnostics) await settings.onEvent(metadata); };
+  const f = await fixture(t, { scoped:true,schema: { type: 'object', properties: { checked: { type: 'boolean' } }, required: ['checked'], additionalProperties: false },
+    turn: async settings => { if (lane === 'strict') await emit(settings); return { output: '{"checked":true}', thread_id: 'work-thread', turn_id: 'work-turn', usage: { available: false }, audit: {} }; } });
+  const { runtime } = await f.service.open();
+  let nodeId = 'work', attemptId = f.args.attempt_id;
+  if (lane === 'strict') {
+    await f.service.call('dispatch', f.args); await f.entry(f.args).job;
+    await f.service.call('collect_strict', f.args);
+  } else if (lane === 'normal Main') {
+    await f.service.call('dispatch', f.args); await f.entry(f.args).job; await f.service.call('collect_strict', f.args);
+    const binding = await f.claim('final'); nodeId = 'final'; attemptId = binding.attempt_id;
+    const config = await f.service.config(), settings = validateStrictConfig(config.strict_executor);
+    const manager = new HostMainManager({ configPath: f.configPath, env: {}, getConfig: () => f.service.config(), qualify: async () => settings,
+      mainModelSelection: async () => ({ model: 'fixture-current-model', effort: 'high' }),
+      sessionFactory: async settings => {
+        await settings.resolveModelSelection({});
+        return {
+        async turn(prompt) { await emit(settings); return { output: '{}', thread_id: 'meter-thread', turn_id: 'meter-turn', usage: { available: false },
+          audit: { input_sha256: digest(canonicalJSON([{ type: 'text', text: prompt }])) }, item_types: ['agentMessage'] }; },
+        async close() { settings.toolBroker.revoke(); }, async interrupt() {},
+      };} });
+    t.after(() => manager.close());
+    await runtime.recordHostMainDispatchIntent(f.run.run_id, { ...binding, request_id: `dispatch-${attemptId}`, envelope_hash: 'a'.repeat(64) });
+    await manager.launch({ runtime, drive: { advanceToMain: () => ({ status: 'succeeded' }) },
+      handoff: { status: 'running', stop_reason: 'main_node', host_binding: binding, agent_packet: { prompt: 'Accept evidence.' } } });
+    const settled = await manager.wait(f.run.run_id); assert.equal(settled.status, 'succeeded', JSON.stringify(settled));
+  } else {
+    const envelope = await runtime.execution(f.run.run_id, f.args), config = await f.service.config(), settings = validateStrictConfig(config.strict_executor);
+    const manager = new ManagedNativeManager({ configPath: f.configPath, env: {}, getConfig: () => f.service.config(),
+      sessionFactory: async settings => ({
+        async turn() { await emit(settings); return { output: '{"outcome":"completed","result":{"checked":true},"block_reason":""}',
+          thread_id: 'meter-thread', turn_id: 'meter-turn', usage: { available: false }, audit: {}, item_types: ['agentMessage'] }; },
+        async close() { settings.toolBroker.revoke(); }, async interrupt() {},
+      }) });
+    t.after(() => manager.close());
+    await runtime.recordDispatchIntent(f.run.run_id, { ...f.args, request_id: `dispatch-${attemptId}`, envelope_hash: 'a'.repeat(64) });
+    await manager.launch(runtime, f.run.run_id, f.args, { envelope, adapter: { model: envelope.provider.config.model, effort: envelope.provider.config.reasoning_effort,
+      executable_sha256: settings.binary_sha256, settings }, prompt: 'Check the result.' });
+    await manager.wait(f.run.run_id, attemptId);
+    assert.equal((await runtime.get(f.run.run_id)).nodes.work.status, 'succeeded');
+  }
+  const reopened = await new WorkflowRuntime({ workflowStore: runtime.workflows, runRoot: runtime.runs.root, context: runtime.context,
+    environmentResolver: runtime.environmentResolver, strictCapability: runtime.strictCapability }).initialize();
+  const record = await reopened.runs.read(f.run.run_id);
+  const attempt = record.state.nodes[nodeId].attempts.find(item => item.id === attemptId);
+  assert.deepEqual(attempt.executor_events.filter(event => event.metadata.method === 'workflow/turnUsage').map(event => event.metadata), diagnostics);
+  const persisted = new Map();
+  for (const event of record.events) if (event.kind === 'executor_event') {
+    const current = event.payload.patch.nodes?.[nodeId]?.attempts.find(item => item.id === attemptId);
+    for (const entry of current?.executor_events ?? []) if (entry.metadata.method === 'workflow/turnUsage') persisted.set(entry.sequence, entry.metadata);
+  }
+  assert.deepEqual([...persisted.values()], diagnostics, 'Hash-verified immutable journal retains the evidence after manager filtering');
+});
+
 test('generation accepts a non-reviewer registered native model with read-only review and role-specific prompt contracts',async t=>{
-  let proposal;
-  const f=await fixture(t,{turn:async(settings,session)=>{const review=session.prompt.includes(AUTHORING_REVIEW_RESOURCE);if(review){const duplicate=await settings.toolBroker.call('read_workflow_resource',{path:'source/SKILL.md'},'duplicate-skill');assert.equal(JSON.parse(duplicate.contentItems[0].text).error.code,'CODEX_RESOURCE_DENIED');const packet=await settings.toolBroker.call('read_workflow_resource',{path:'analysis/review-request.txt'},'review-packet');assert.match(JSON.parse(packet.contentItems[0].text).text,/Review result\./);const canonical=await settings.toolBroker.call('read_workflow_resource',{path:AUTHORING_REVIEW_RESOURCE},'review-proposal');const exact=JSON.parse(JSON.parse(canonical.contentItems[0].text).text);assert(Array.isArray(exact.nodes));assert.equal(exact.source_revision,proposal.source_revision);}return {output:JSON.stringify(review?checklist(proposal):generatedProposal(proposal)),thread_id:'selectable-review',turn_id:'turn',audit:{}};}});
+  let proposal;const limitReads=[];
+  const f=await fixture(t,{turn:async(settings,session)=>{const review=session.prompt.includes(AUTHORING_REVIEW_RESOURCE);if(review){const duplicate=await settings.toolBroker.call('read_workflow_resource',{path:'source/SKILL.md'},'duplicate-skill');assert.equal(JSON.parse(duplicate.contentItems[0].text).error.code,'CODEX_RESOURCE_DENIED');const packet=await readPinnedResource(settings,'analysis/review-request.txt','review-packet',limitReads);assert.match(packet.text,/Review result\./);const canonical=await readPinnedResource(settings,AUTHORING_REVIEW_RESOURCE,'review-proposal',limitReads);const exact=JSON.parse(canonical.text);assert(Array.isArray(exact.nodes));assert.equal(exact.source_revision,proposal.source_revision);}return {output:JSON.stringify(review?checklist(proposal):generatedProposal(proposal)),thread_id:'selectable-review',turn_id:'turn',audit:{}};}});
   const source=join(f.root,'selectable-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: selectable\ndescription: test\n---\nReview result.');
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'selectable-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
   const rules=await f.service.call('routing_defaults');rules.generation={review_provider_id:'native-luna',planner_provider_id:'native-luna',max_rounds:2};rules.routes.planning.provider_id='native-luna';
-  const input={workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,routing_rules:rules};
+  const input={completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,routing_rules:rules};
   const preview=await f.service.call('authoring_prompt_preview',input,{human:true});
   assert.equal(preview.invoked,false);assert.equal(f.sessions.length,0);assert.match(preview.shared_request,/Planner semantic responsibility contract/);assert.doesNotMatch(preview.shared_request,/cross_resource_consistency/);assert.match(preview.review_request,/Independent review acceptance contract/);assert.match(preview.review_request,/cross_resource_consistency/);
-  const run=await f.service.call('start_authoring',{...input,run_id:'selectable-generation'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',...input,run_id:'selectable-generation'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   for(const phase of ['generating','reviewing']){const value=await f.service.call('advance_authoring',control,{human:true});assert.equal(value.phase,phase,JSON.stringify(value));assert.equal(value.progress.round,1);await Promise.all([...f.manager.entries.values()].map(e=>e.job));}
   const observed=await f.service.call('get',control);const denied=observed.nodes.final.attempts[0].executor_events.find(e=>e.kind==='tool_operation' && e.metadata.call_id==='duplicate-skill');assert.equal(denied.metadata.phase,'rejected');assert.equal(denied.metadata.code,'CODEX_RESOURCE_DENIED');
   assert.equal(f.sessions[0].settings.model,'gpt-6-luna');assert.equal(f.sessions[1].settings.model,'gpt-6-luna');assert.equal(f.sessions[1].settings.toolBroker.tools().some(t=>t.name==='write_workspace'),false);
@@ -185,6 +356,7 @@ test('generation accepts a non-reviewer registered native model with read-only r
   assert(!f.sessions[1].prompt.includes(canonicalJSON(observed.nodes.expand.output.proposal)),
     'the canonical proposal is read from its pinned resource, never duplicated in the prompt');
   assert(observed.nodes.final.attempts[0].executor_events.some(event=>event.kind==='review_context_prepared'&&event.metadata.path===AUTHORING_REVIEW_RESOURCE));
+  assert(limitReads.some(item=>item.path==='analysis/review-request.txt'&&item.code==='CODEX_RESOURCE_READ_LIMIT'&&item.bytes>12000));
   assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,'review_required');
   await f.service.call('cancel',control);
 });
@@ -197,7 +369,7 @@ test('manually driven authoring pins the configured reviewer without enabling au
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
   const rules=await f.service.call('routing_defaults');rules.generation={review_provider_id:'native-luna',planner_provider_id:'native-luna',max_rounds:2};
-  const run=await f.service.call('create_authoring_run',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'manual-authoring-reviewer',workspace:f.workspace,provider_id:'native-luna',routing_rules:rules,automatic_generation:false,main_actor:'human-console'});
+  const run=await f.service.call('create_authoring_run',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'manual-authoring-reviewer',workspace:f.workspace,provider_id:'native-luna',routing_rules:rules,automatic_generation:false,main_actor:'human-console'});
   const control={run_id:run.run_id,control_token:run.control_token},record=await runtime.runs.read(run.run_id);
   assert.equal(record.pins.generation,undefined);assert.equal(record.pins.authoring_reviewer.id,'native-luna');
   for(const phase of ['generating','reviewing']){const value=await f.service.call('drive',control,{model:true});assert.equal(value.phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
@@ -214,11 +386,11 @@ test('one-click generation prepares workspace and advances only to explicit huma
   const {store} = await f.service.open();
   const originalPack = await importCoarseSkill(store,join(source,'SKILL.md'),{id:'one-click-source'});
   const siblingWorkspace=join(f.root,'sibling-authoring-workspace');await mkdir(siblingWorkspace);
-  const sibling=await f.service.call('create_authoring_run',{workflow_id:originalPack.workflow.id,revision_hash:originalPack.revision_hash,run_id:'one-click-sibling',workspace:siblingWorkspace,main_actor:'human-console'});
+  const sibling=await f.service.call('create_authoring_run',{completion_policy:'manual',workflow_id:originalPack.workflow.id,revision_hash:originalPack.revision_hash,run_id:'one-click-sibling',workspace:siblingWorkspace,main_actor:'human-console'});
   const pack=await store.rename(originalPack.workflow.id,'Generate from renamed private source',originalPack.revision_hash);
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',prompt_template:'Review',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const start={workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'one-click'};
+  const start={completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'one-click'};
   await assert.rejects(f.service.call('start_authoring',start),{code:'HUMAN_GENERATION'});
   const run=await f.service.call('start_authoring',start,{human:true});
   const control={run_id:run.run_id,control_token:run.control_token};
@@ -232,6 +404,21 @@ test('one-click generation prepares workspace and advances only to explicit huma
   }
   const preview=await f.service.call('advance_authoring',control,{human:true});
   assert.equal(preview.phase,'review_required',JSON.stringify(preview));
+  const beforeDiscovery=await f.service.call('get',control);
+  const discoveryArgs={workflow_id:pack.workflow.id,revision_hash:pack.revision_hash};
+  await assert.rejects(f.service.call('authoring_preview',discoveryArgs),{code:'HUMAN_GENERATION'});
+  const discovered=await f.service.call('authoring_preview',discoveryArgs,{human:true});
+  assert.deepEqual(discovered.candidates.map(item=>item.run_id),[run.run_id]);
+  assert.equal(discovered.preview.phase,'review_required');
+  assert.equal(discovered.preview.workflow.nodes.length,preview.workflow.nodes.length);
+  assert.equal(discovered.preview.workflow.skill_policy.implicit,'deny');
+  assert.equal(discovered.preview.review.structured_output.approved,true);
+  assert.equal((await f.service.call('get',control)).sequence,beforeDiscovery.sequence);
+  assert.equal(calls,2,'discovery cannot submit another model turn');
+  assert.equal(discovered.preview.control_token,undefined);
+  await assert.rejects(f.service.call('authoring_preview',{...discoveryArgs,run_id:sibling.run_id},{human:true}),{code:'AUTHORING_PREVIEW_SOURCE'});
+  await assert.rejects(f.service.call('accept_authoring',{...control,accepted:true,preview_identity:{...discovered.preview.preview_identity,proposal_hash:'f'.repeat(64)}},{human:true}),{code:'AUTHORING_PREVIEW_CHANGED'});
+
   assert.equal(preview.validation.valid,true);
   const activeRules=await f.service.call('routing_defaults'),activeConfig=await f.service.config();
   const configuredReviewer=activeConfig.providers.find(item=>item.id===activeRules.generation.review_provider_id);assert(configuredReviewer);
@@ -245,6 +432,7 @@ test('one-click generation prepares workspace and advances only to explicit huma
   const originalOutput=structuredClone(pending.state.nodes.expand.output),originalProjection=structuredClone(pending.state.generation_projection);
   await runtime.transition(run.run_id,'generation_projection',state=>{state.nodes.expand.output.proposal.nodes[0].prompt_template+=' Semantically changed after review.';state.nodes.expand.output.host_pipeline.proposal_hash=digest(canonicalJSON(state.nodes.expand.output.proposal));state.generation_projection.projected_output_hash=digest(canonicalJSON(state.nodes.expand.output));state.updated_at=new Date().toISOString();});
   await assert.rejects(runtime.acceptAuthoringFinal(run.run_id,finalLease),{code:'AUTHORING_REVIEW_IDENTITY'});
+  await assert.rejects(f.service.call('authoring_preview',discoveryArgs,{human:true}),{code:'AUTHORING_REVIEW_IDENTITY'});
   await runtime.transition(run.run_id,'generation_projection',state=>{state.nodes.expand.output=originalOutput;state.generation_projection=originalProjection;state.updated_at=new Date().toISOString();});
   await assert.rejects(f.service.call('collect_strict',{...finalLease,accepted:true},{human:true}),{code:'AUTHORING_HUMAN_ACCEPTANCE_REQUIRED'});
   const rawCompletion=await runtime.runs.readExecutorResult(run.run_id,finalAttempt.id,finalAttempt.result_proposal.sha256);
@@ -284,20 +472,30 @@ test('current generation succeeds in one planner round when the planner omits ho
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'host-projection-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'host-projection'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'host-projection'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   for(const phase of ['generating','reviewing','review_required']){assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
   const projected=await f.service.call('get',control);const projectedProposal=projected.nodes.expand.output.proposal;
+  const {runtime}=await f.service.open();const projection=(await runtime.runs.read(run.run_id)).state.generation_projection;
   assert.equal(projected.generation_projection.contract_version,CONVERSION_CONTRACT.version);
-  assert.deepEqual(projected.generation_projection.review_inputs_schema.properties.task,{type:'string'});
-  assert(projected.generation_projection.repair_actions.some(item=>item.kind==='host_contract_projection'));
-  assert.equal(projected.generation_projection.pipeline_trace.contract,'codex-authoring-pipeline/v1');
-  assert.equal(projected.generation_projection.pipeline_trace.stages.find(stage=>stage.id==='deterministic_validation').result.cycle_free,true);
+  assert.deepEqual(projected.generation_projection.review_inputs_schema,projection.review_inputs_schema);
+  assert(projection.repair_actions.some(item=>item.kind==='host_contract_projection'));
+  assert.equal(projection.pipeline_trace.contract,'codex-authoring-pipeline/v1');
+  assert.equal(projection.pipeline_trace.stages.find(stage=>stage.id==='deterministic_validation').result.cycle_free,true);
   assert.deepEqual(projectedProposal.nodes[0].input_bindings,{});
   assert.deepEqual(projectedProposal.nodes[0].resource_refs,['source/SKILL.md']);
   assert.deepEqual(projectedProposal.nodes[0].requirement_ids,[]);
-  const saved=await f.service.call('accept_authoring',{...control,accepted:true},{human:true});const node=saved.workflow.nodes.find(item=>item.id==='activity_001');
+  const clientApi=(operation,args)=>f.service.call(operation,args,{human:true});
+  const discovered=await discoverSavedAuthoring(clientApi,pack);
+  assert.deepEqual(projection.review_inputs_schema,discovered.preview.workflow.inputs_schema,'Review must receive the actual compiled future-Run schema, not the coarse task scaffold');
+  const uiCalls=[];
+  const saved=await acceptDisplayedAuthoring(async(operation,args)=>{uiCalls.push(operation);return clientApi(operation,args);},pack,discovered.preview,new Map(),()=>{});
+  assert(uiCalls.includes('adopt_run'));assert(uiCalls.includes('recover_strict_result'));assert(uiCalls.includes('resume'));
+  assert(!uiCalls.some(operation=>['start_authoring','advance_authoring','dispatch'].includes(operation)));
+  assert.deepEqual(saved.workflow.nodes,discovered.preview.workflow.nodes);
+  assert.deepEqual(saved.workflow.edges,discovered.preview.workflow.edges);
+  const node=saved.workflow.nodes.find(item=>item.id==='activity_001');
   assert.deepEqual(node.input_bindings,{});assert.deepEqual(node.resources,[]);assert.equal(f.sessions.length,2);
-  assert.equal(saved.workflow.nodes.find(item=>item.id==='final').input_bindings.task,'/inputs/task');
+  assert.equal(Object.hasOwn(saved.workflow.nodes.find(item=>item.id==='final').input_bindings,'task'),false,'Do not invent a production binding to the authoring scaffold task');
 });
 
 test('host/compiler upgrades recheck an exact persisted proposal without another planner call', async t => {
@@ -307,7 +505,7 @@ test('host/compiler upgrades recheck an exact persisted proposal without another
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'recheck-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const original=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'recheck-original'},{human:true});
+  const original=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'recheck-original'},{human:true});
   const originalControl={run_id:original.run_id,control_token:original.control_token};
   assert.equal((await f.service.call('advance_authoring',originalControl,{human:true})).phase,'generating');await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));
   await f.service.call('cancel',originalControl);assert.equal(f.sessions.length,1);
@@ -343,7 +541,7 @@ test('review protocol defects stop without consuming a planner or reviewer retry
   const {store,runtime}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'review-recheck-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'review-recheck'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'review-recheck'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   for(const phase of ['generating','reviewing']){assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
   const record=await runtime.runs.read(run.run_id);const repair=await repairGeneration(runtime,control,record,{code:'GENERATION_CHECKLIST_INVALID',message:'Invalid source evidence in portable_artifact'},{reviewOnly:true});
   assert.equal(repair.phase,'attention');assert.equal(repair.error.code,'GENERATION_REVIEW_PROTOCOL');assert.equal(f.sessions.length,2);
@@ -361,7 +559,7 @@ test('model-authored Provider choices are structurally absent and Host routing p
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'routing-repair'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   for(const phase of ['generating','reviewing','review_required']){
     assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);
     await Promise.all([...f.manager.entries.values()].map(e=>e.job));
@@ -379,7 +577,7 @@ test('an invalid review checklist stops without retrying either model',async t=>
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'routing-repair'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   for(const phase of ['generating','reviewing','attention']){
     assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);
     await Promise.all([...f.manager.entries.values()].map(e=>e.job));
@@ -397,7 +595,7 @@ test('a schema-invalid review stops after the failed session closes',async t=>{
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'routing-repair'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'One task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Independent review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'routing-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   for(const phase of ['generating','reviewing','attention']){
     assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);
     await Promise.all([...f.manager.entries.values()].map(e=>e.job));
@@ -410,7 +608,7 @@ test('one-click generation exposes managed login without silently starting a mod
   await writeFile(join(source,'SKILL.md'),'---\nname: login\ndescription: Review\n---\nReview a result.');
   const {store}=await f.service.open();
   const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'login-source'});
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'login-generation'},{human:true});
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'login-generation'},{human:true});
   const control={run_id:run.run_id,control_token:run.control_token};
   await f.service.call('advance_authoring',control,{human:true});
   const progress=await f.service.call('advance_authoring',control,{human:true});
@@ -440,7 +638,7 @@ test('generation repairs review findings with pinned providers and preserves rej
   const {store,runtime}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'repair-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-sol',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'repair-generation'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'repair-generation'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   async function step(){const result=await f.service.call('advance_authoring',control,{human:true});await Promise.all([...f.manager.entries.values()].map(e=>e.job));return result;}
   assert.equal((await step()).phase,'generating');const approval=await step();assert.equal(approval.phase,'approval');await f.service.call('approve',{...control,approval_id:approval.approvals[0].id,decision:true});assert.equal((await step()).phase,'reviewing');
   await assert.rejects(f.service.call('accept_authoring',{...control,accepted:true},{human:true}),{code:'GENERATION_REVIEW_BLOCKED'});
@@ -480,7 +678,7 @@ test('targeted repairs accumulate from the newest planner artifact while the las
   const {store}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'cumulative-repair-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'cumulative-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'cumulative-repair'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   async function step(){const result=await f.service.call('advance_authoring',control,{human:true});await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));return result;}
   assert.equal((await step()).phase,'generating');assert.equal((await step()).phase,'reviewing');
   const canonical=await f.service.call('get',control);assert.doesNotMatch(canonical.generation_projection.authoring_plan.activities[0].instructions,/PATCH_ONE/);
@@ -510,7 +708,7 @@ test('authoring pre-review gate preserves semantic source identity across claim,
   const {store,runtime}=await f.service.open();const pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'idempotent-review-source'});
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single task.',main_responsibilities:'Main accepts.',human_intervention:'Final confirmation.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[{id:'a',source:'start',target:'check',...origin},{id:'b',source:'check',target:'final',...origin}]};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'idempotent-review'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'idempotent-review'},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,'generating');await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));
   const planned=await runtime.runs.read(run.run_id),expandAttempt=planned.state.nodes.expand.active_attempt_id;
   assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,'reviewing');
@@ -546,7 +744,7 @@ test('generation stops on identical semantic feedback before spending another au
   const origin={confidence:1,source_span:{resource:'source/SKILL.md',start_line:5,end_line:5}};
   proposal={source_revision:pack.revision_hash,source_requirements:[],requirement_mappings:[],planning_analysis:{parallelism:'Single bounded task; no independent work.',main_responsibilities:'Main accepts; subagent checks.',human_intervention:'Final human confirmation only.'},nodes:[{id:'check',type:'agent',execution_target:'subagent',provider_choice:'native-reviewer',task_type:'review',routing_reason:'Review',prompt_template:'Review',...origin}],edges:[]};
   const routing=await f.service.call('routing_defaults');routing.generation={review_provider_id:'native-reviewer',max_rounds:4};
-  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'invalid-generation',routing_rules:routing},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
+  const run=await f.service.call('start_authoring',{completion_policy:'manual',workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'invalid-generation',routing_rules:routing},{human:true});const control={run_id:run.run_id,control_token:run.control_token};
   async function step(){const result=await f.service.call('advance_authoring',control,{human:true});await Promise.all([...f.manager.entries.values()].map(e=>e.job));return result;}
   await step();
   assert.equal((await step()).phase,'repairing');await step();
@@ -566,6 +764,150 @@ test('imported provenance cannot select a reviewer model or automatic repair aut
   assert.equal(adapter.model,'fixture-current-model');assert.equal(adapter.effort,'high');
   assert.equal((await runtime.runs.read(f.run.run_id)).pins.generation,undefined);
 });
+test('approved semantic review preserves private authoring evidence when actual import readiness is blocked',async t=>{
+  let plan;
+  const f=await fixture(t,{turn:async(_settings,session)=>({output:JSON.stringify(session.prompt.includes(AUTHORING_REVIEW_RESOURCE)?checklist(plan):{proposal:plan}),thread_id:'readiness-blocked',turn_id:'turn',audit:{}})});
+  const {store,runtime}=await f.service.open();
+  const source=await f.service.call('build_workflow',{workflow_id:'readiness-blocked-source',name:'Readiness blocked',brief:'Review the supplied result.'});
+  const pack=await store.save(source.workflow.id,{...source.workflow,import_status:{...source.workflow.import_status,unresolved:[...source.workflow.import_status.unresolved,{code:'CREDENTIAL_REDACTED',origin:'observed',path:'source/WORKFLOW.md',replacement:'REDACTED_REQUIRED_CREDENTIAL'}]}},{expected_revision:source.revision_hash});
+  const sections=sourceSectionInventory(await store.resources(pack.workflow.id,pack.revision_hash));
+  plan={contract:SEMANTIC_BLUEPRINT_CONTRACT,purpose:'Review the supplied result.',source_dispositions:sections.map(item=>({section_id:item.section_id,disposition:'workflow',activity_keys:['review'],note:'Required.'})),requirement_assignments:[],runtime_dependencies:[],records:[],lists:[],enums:[],activities:[{key:'review',instructions:'Review the supplied result and report the evidence.',profile:'main_read',source_sections:sections.map(item=>item.section_id),inputs:[],outputs:[],tool:''}],approvals:[],sequences:[],parallels:[],choices:[]};
+  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'readiness-blocked-run'},{human:true}),control={run_id:run.run_id,control_token:run.control_token};
+  for(const phase of ['generating','reviewing']){assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
+  const blocked=error=>error.code==='WORKFLOW_NOT_READY'&&error.validation.valid===true&&error.validation.launch_ready===false
+    &&error.validation.blockers.some(item=>item.code==='IMPORT_UNRESOLVED')&&error.stage==='automatic_completion_preflight';
+  await assert.rejects(f.service.call('advance_authoring',control,{human:true}),blocked);
+  const retained=await runtime.runs.read(run.run_id);
+  assert.equal(retained.state.nodes.final.attempts.at(-1).automatic_completion.actor,'host','independent review completed through real Host authority');
+  assert((await lstat(retained.state.permissions.workspace)).isDirectory());
+  assert((await store.resources(pack.workflow.id,pack.revision_hash))['source/WORKFLOW.md']);
+  assert.equal((await store.snapshot(pack.workflow.id)).workflow.status,'draft');
+  assert.equal(await store.readAuthoringCleanup(pack.workflow.id,run.run_id),null,'readiness blocks cleanup before its first deletion');
+  await assert.rejects(f.service.call('advance_authoring',control,{human:true}),blocked);
+  assert.equal(f.sessions.length,2,'a readiness failure never resubmits planner or reviewer work');
+});
+
+test('a deployment crash before the authoring ledger cannot publish through a later Draft rename',async t=>{
+  let plan;
+  const f=await fixture(t,{turn:async(_settings,session)=>({output:JSON.stringify(session.prompt.includes(AUTHORING_REVIEW_RESOURCE)?checklist(plan):{proposal:plan}),thread_id:'before-ledger',turn_id:'turn',audit:{}})});
+  const {store}=await f.service.open();
+  const pack=await f.service.call('build_workflow',{workflow_id:'before-ledger-source',name:'Before ledger',brief:'Review the supplied result.'});
+  const sections=sourceSectionInventory(await store.resources(pack.workflow.id,pack.revision_hash));
+  plan={contract:SEMANTIC_BLUEPRINT_CONTRACT,purpose:'Review the supplied result.',source_dispositions:sections.map(item=>({section_id:item.section_id,disposition:'workflow',activity_keys:['review'],note:'Required.'})),requirement_assignments:[],runtime_dependencies:[],records:[],lists:[],enums:[],activities:[{key:'review',instructions:'Review the supplied result and report the evidence.',profile:'main_read',source_sections:sections.map(item=>item.section_id),inputs:[],outputs:[],tool:''}],approvals:[],sequences:[],parallels:[],choices:[]};
+  const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'before-ledger-run'},{human:true}),control={run_id:run.run_id,control_token:run.control_token};
+  for(const phase of ['generating','reviewing']){assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
+  const begin=WorkflowStore.prototype.beginAuthoringCleanup;
+  WorkflowStore.prototype.beginAuthoringCleanup=async()=>{throw Object.assign(new Error('Crash before authoring cleanup ledger'),{code:'FIXTURE_BEFORE_LEDGER'});};
+  t.after(()=>{WorkflowStore.prototype.beginAuthoringCleanup=begin;});
+  await assert.rejects(f.service.call('advance_authoring',control,{human:true}),{code:'FIXTURE_BEFORE_LEDGER'});
+  WorkflowStore.prototype.beginAuthoringCleanup=begin;
+  const deployed=await store.snapshot(pack.workflow.id);
+  assert.equal(deployed.workflow.status,'draft');assert.equal(await store.readAuthoringCleanup(pack.workflow.id,run.run_id),null);
+  const renamed=await store.rename(pack.workflow.id,'User renamed Draft',deployed.revision_hash);
+  assert.notEqual(renamed.revision_hash,deployed.revision_hash);
+  const blocked=error=>error.code==='AUTHORING_CLEANUP_PENDING'&&error.deployed_revision===deployed.revision_hash&&error.cleanup_state==='source_history_pending';
+  await assert.rejects(f.service.call('publish',{workflow_id:pack.workflow.id,expected_revision:renamed.revision_hash},{human:true}),blocked);
+  await assert.rejects(f.service.call('save',{workflow_id:pack.workflow.id,workflow:{...renamed.workflow,status:'ready',enabled:true},expected_revision:renamed.revision_hash},{human:true}),blocked);
+  assert.equal((await store.snapshot(pack.workflow.id)).revision_hash,renamed.revision_hash);
+  assert.equal(f.sessions.length,2,'cleanup and Ready denial never invoke another model');
+});
+
+test('automatic Skill2Workflow and Build Workflow finish Ready with exact Host receipts and purge-safe retry',async t=>{
+  for(const sourceKind of ['skill','brief'])await t.test(sourceKind,async t=>{
+    let plan,failPlanner=false;
+    const f=await fixture(t,{turn:async(_settings,session)=>{
+      if(failPlanner)throw Object.assign(new Error('Prior authoring attempt failed'),{code:'FIXTURE_PRIOR_FAILURE'});
+      return {output:JSON.stringify(session.prompt.includes(AUTHORING_REVIEW_RESOURCE)?checklist(plan):{proposal:plan}),thread_id:'automatic-authoring',turn_id:'turn',audit:{}};
+    }});
+    const {store,runtime,context}=await f.service.open();
+    let pack;
+    if(sourceKind==='skill'){
+      const source=join(f.root,'automatic-source');await mkdir(source);await writeFile(join(source,'SKILL.md'),'---\nname: automatic\ndescription: Review\n---\nReview the supplied result.');
+      pack=await importCoarseSkill(store,join(source,'SKILL.md'),{id:'automatic-source'});
+    }else pack=await f.service.call('build_workflow',{workflow_id:'automatic-source',name:'Automatic brief',brief:'Review the supplied result.'});
+    const sections=sourceSectionInventory(await store.resources(pack.workflow.id,pack.revision_hash));
+    plan={contract:SEMANTIC_BLUEPRINT_CONTRACT,purpose:'Review the supplied result.',source_dispositions:sections.map(item=>({section_id:item.section_id,disposition:'workflow',activity_keys:['review'],note:'Required.'})),requirement_assignments:[],runtime_dependencies:[],records:[],lists:[],enums:[],activities:[{key:'review',instructions:'Review the supplied result and report the evidence.',profile:'worker_read',source_sections:sections.map(item=>item.section_id),inputs:[],outputs:[],tool:''}],approvals:[],sequences:[],parallels:[],choices:[]};
+    // A failed task-owned authoring Run remains private until final completion.
+    failPlanner=true;
+    const prior=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'automatic-prior'},{human:true});
+    await f.service.call('advance_authoring',{run_id:prior.run_id,control_token:prior.control_token},{human:true});await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));
+    assert.equal((await runtime.get(prior.run_id)).status,'failed');failPlanner=false;
+    const priorWorkspace=(await runtime.get(prior.run_id)).permissions.workspace;
+    const run=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'automatic-final'},{human:true});
+    const control={run_id:run.run_id,control_token:run.control_token};
+    assert.deepEqual((await runtime.runs.read(run.run_id)).pins.root.provenance.completion_policy,{mode:'automatic',target:'launch_ready'});
+    for(const phase of ['generating','reviewing']){assert.equal((await f.service.call('advance_authoring',control,{human:true})).phase,phase);await Promise.all([...f.manager.entries.values()].map(entry=>entry.job));}
+    const reviewed=await runtime.runs.read(run.run_id),attempt=reviewed.state.nodes.final.attempts.at(-1),originalResult=structuredClone(attempt.result_proposal);
+    await runtime.transition(run.run_id,'generation_projection',state=>{state.nodes.final.attempts.at(-1).result_proposal.proposal_hash='f'.repeat(64);});
+    await assert.rejects(f.service.completeAuthoringResult(control,{store,runtime,context}),{code:'AUTHORING_REVIEW_IDENTITY'});
+    await runtime.transition(run.run_id,'generation_projection',state=>{state.nodes.final.attempts.at(-1).result_proposal=originalResult;});
+    let receipt;
+    const apply=f.service.applyAcceptedAuthoringResult.bind(f.service);
+    f.service.applyAcceptedAuthoringResult=async(args,options)=>{
+      if(options.automatic){
+        const exact=await options.runtime.runs.read(args.run_id);receipt=exact.state.nodes.final.attempts.at(-1);
+        await assert.rejects(apply(args,{...options,automatic:false}),{code:'AUTHORING_AUTOMATIC_COMPLETION_REQUIRED'});
+      }
+      return apply(args,options);
+    };
+    let completed;
+    if(sourceKind==='skill'){
+      const sibling=await f.service.call('start_authoring',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:'automatic-pending-sibling'},{human:true});
+      await assert.rejects(f.service.call('advance_authoring',control,{human:true}),error=>error.code==='AUTHORING_PURGE_INCOMPLETE'&&error.cause_code==='AUTHORING_CLEANUP_CONFLICT');
+      const activePending=await store.readAuthoringCleanup(pack.workflow.id,run.run_id);
+      assert.equal(activePending.status,'pending');assert(activePending.targets.siblings.some(item=>item.run_id===sibling.run_id));
+      const deployedProvider=(await store.snapshot(pack.workflow.id)).workflow.nodes.find(item=>item.executor?.kind==='provider').executor.provider_id;
+      const unavailable=await f.service.config(),disabled=unavailable.providers.find(item=>item.id===deployedProvider);disabled.enabled=false;
+      await saveConfig(unavailable,{configPath:f.configPath});
+      const bindingBlocked=error=>error.code==='WORKFLOW_NOT_READY'&&error.stage==='automatic_completion_preflight'&&error.validation.launch_ready===false;
+      await assert.rejects(f.service.call('advance_authoring',control,{human:true}),bindingBlocked);
+      await assert.rejects(f.service.call('purge_authoring_artifacts',{...control,workflow_id:pack.workflow.id},{human:true}),bindingBlocked);
+      assert((await lstat((await runtime.runs.read(run.run_id)).state.permissions.workspace)).isDirectory());
+      assert((await store.resources(pack.workflow.id,pack.revision_hash))['source/SKILL.md']);
+      assert.deepEqual((await store.readAuthoringCleanup(pack.workflow.id,run.run_id)).steps,activePending.steps,'unavailable binding must stop before further cleanup');
+      disabled.enabled=true;await saveConfig(unavailable,{configPath:f.configPath});
+      await f.service.call('cancel',{run_id:sibling.run_id,control_token:sibling.control_token});
+      const mark=WorkflowStore.prototype.markAuthoringCleanup;let failOnce=true;
+      WorkflowStore.prototype.markAuthoringCleanup=async function(id,runId,identity,step){if(step==='run'&&failOnce){failOnce=false;throw Object.assign(new Error('Journal persistence failed after exact Run purge'),{code:'FIXTURE_JOURNAL_WRITE'});}return mark.call(this,id,runId,identity,step);};
+      t.after(()=>{WorkflowStore.prototype.markAuthoringCleanup=mark;});
+      await assert.rejects(f.service.call('advance_authoring',control,{human:true}),{code:'AUTHORING_PURGE_INCOMPLETE'});
+      const pendingDraft=await store.snapshot(pack.workflow.id);
+      assert.equal(pendingDraft.workflow.status,'draft');
+      const pendingDiagnostic=error=>error.code==='AUTHORING_CLEANUP_PENDING'&&error.run_id===run.run_id&&error.deployed_revision===pendingDraft.revision_hash;
+      await assert.rejects(f.service.call('publish',{workflow_id:pack.workflow.id,expected_revision:pendingDraft.revision_hash},{human:true}),pendingDiagnostic);
+      await assert.rejects(f.service.call('save',{workflow_id:pack.workflow.id,workflow:{...pendingDraft.workflow,status:'ready',enabled:true},expected_revision:pendingDraft.revision_hash},{human:true}),pendingDiagnostic);
+      assert.equal((await store.snapshot(pack.workflow.id)).revision_hash,pendingDraft.revision_hash,'pending cleanup must block Ready without changing the exact deployment');
+      await assert.rejects(runtime.runs.read(run.run_id),{code:'ENOENT'});
+      // The Run no longer exists. Retry derives its authority from the exact journal.
+      completed=await f.service.call('drive',control);
+      WorkflowStore.prototype.markAuthoringCleanup=mark;
+    }else{
+      const discovered=await f.service.call('authoring_preview',{workflow_id:pack.workflow.id,revision_hash:pack.revision_hash,run_id:run.run_id},{human:true});
+      assert.equal(discovered.preview.read_only,true);assert.equal(discovered.preview.completion_policy.mode,'automatic');
+      const lease={...control,node_id:'final',attempt_id:attempt.id,lease_token:leaseToken(control.control_token,run.run_id,'final',attempt.id,attempt.lease_generation??0)};
+      await assert.rejects(runtime.acceptAuthoringFinal(run.run_id,lease),{code:'AUTHORING_AUTOMATIC_COMPLETION_REQUIRED'});
+      await assert.rejects(f.service.call('accept_authoring',{...control,accepted:true,preview_identity:{...discovered.preview.preview_identity,review_result_sha256:'f'.repeat(64)}},{human:true}),{code:'AUTHORING_PREVIEW_CHANGED'});
+      completed=await f.service.call('accept_authoring',{...control,accepted:true,preview_identity:discovered.preview.preview_identity},{human:true});
+    }
+    assert.equal(receipt.human_acceptance,undefined);assert.equal(receipt.automatic_completion.actor,'host');assert.equal(receipt.automatic_completion.review_result_sha256,originalResult.sha256);
+    assert.equal(completed.import_report.expansion.inference_confirmation.actor,'host');
+    assert.equal(completed.phase,'completed');assert.equal(completed.status,'succeeded');assert.equal(completed.validation.launch_ready,true);
+    assert.equal(completed.workflow.status,'ready');assert.equal(completed.workflow.enabled,true);assert.equal(completed.authoring_cleanup.private_authoring_artifacts_purged,true);
+    assert.equal(f.sessions.length,3,'one failed planner plus one final planner and independent reviewer');
+    for(const id of [prior.run_id,run.run_id])await assert.rejects(runtime.runs.read(id),{code:'ENOENT'});
+    await assert.rejects(lstat(priorWorkspace),{code:'ENOENT'});
+    assert.equal((await store.readAuthoringCleanup(pack.workflow.id,run.run_id)).ready_revision,completed.revision_hash);
+    assert.equal((await f.service.call('drive',control)).revision_hash,completed.revision_hash,'completed journal replay is idempotent');
+    assert.equal((await f.service.call('accept_authoring',{...control,accepted:true},{human:true})).revision_hash,completed.revision_hash,'saved-preview acceptance retry does not require a purged Run');
+    if(sourceKind==='skill'){
+      const editable=await f.service.call('save',{workflow_id:pack.workflow.id,workflow:completed.workflow,expected_revision:completed.revision_hash},{human:true});
+      assert.equal(editable.workflow.status,'ready','ordinary Ready save is allowed after exact cleanup completes');
+      const published=await f.service.call('publish',{workflow_id:pack.workflow.id,expected_revision:editable.revision_hash},{human:true});
+      assert.equal(published.workflow.status,'ready','ordinary publication is allowed after exact cleanup completes');
+    }
+  });
+});
+
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'strict-manager-')); const workspace = join(root, 'workspace'); await mkdir(workspace);
   const configPath = join(root, 'control-plane.json'); let service; const sessions = [];
@@ -617,8 +959,9 @@ async function fixture(t, options = {}) {
   const config = await service.config(); config.strict_executor = validateStrictConfig({ enabled: true, codex_binary: join(root, 'never-executed'), binary_sha256: 'a'.repeat(64), authentication: { mode: options.authMode ?? 'managed_chatgpt' } });
   await saveConfig(config, { configPath });
   const provider = config.providers.find(item => item.enabled && item.kind === 'native_agent');
+  if(options.scoped)await service.call('register_runtime_dependency',{requirement:'node',path:process.execPath},{human:true});
   const workflow = { ...createDraft('strict-test', 'Strict manager test'), status: 'ready', finalization: { required: true, node_id: 'final' } };
-  const common = { type: 'agent', access: options.write ? 'bounded_write' : 'read_only', ...(options.write ? { path_scope: ['out.txt'] } : {}), approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: {}, prompt_template: '{{task}}', resources: ['pinned.txt'] };
+  const common = { type: 'agent', ...(options.scoped?{runtime_requirements:{executables:['node']}}:{}),access: options.write ? 'bounded_write' : 'read_only', ...(options.write ? { path_scope: ['out.txt'] } : {}), approval: { required: false }, retry: { max_attempts: 1 }, input_bindings: {}, prompt_template: '{{task}}', resources: ['pinned.txt'] };
   const workId=options.workId ?? 'work';
   workflow.nodes = [{ id: 'start', type: 'start' }, { ...common, id: workId, role: provider.config.role, executor: { kind: 'provider', provider_id: provider.id }, ...(options.schema ? { outputs_schema: options.schema } : {}) },
     { ...common, id: 'final', role: 'finalizer', access: 'read_only', executor: { kind: 'main' } }, { id: 'end', type: 'end' }];
@@ -711,6 +1054,56 @@ async function qualificationFixture(t, name = 'codex') {
   const settings = validateStrictConfig({ enabled: true, codex_binary: binary, binary_sha256: digest(bytes) });
   return { root, binary, settings, schemas, calls, options: { env, schemaReader: async () => schemas, clientFactory, cache: new Map() } };
 }
+
+test('optional raw qualification requires the declared opt-in and standalone structures independently of the notification union', async t => {
+  const f = await qualificationFixture(t);
+  await qualifiedCodexBinary(f.settings, f.options);
+  assert.equal(codexQualification(f.settings).raw_observation.supported, false);
+  const schemas = f.schemas;
+  const thread = schemas.ClientRequest.oneOf.find(value => value.properties.method.enum.includes('thread/start')).properties.params;
+  thread.properties.experimentalRawEvents = { type: 'boolean' };
+  assert.equal(qualifyCodexRawObservation(schemas).supported, false, 'A flag alone does not qualify observation');
+  const string = { type: 'string' }, nullableString = { type: ['string', 'null'] };
+  const search = { type: 'object', required: ['type', 'execution', 'arguments'], properties: {
+    type: { enum: ['tool_search_call'] }, execution: string, arguments: true, id: nullableString, call_id: nullableString, status: nullableString } };
+  schemas.RawResponseItemCompletedNotification = { type: 'object', required: ['threadId', 'turnId', 'item'], properties: {
+    threadId: string, turnId: string, item: { $ref: '#/definitions/ResponseItem' } }, definitions: { ResponseItem: { oneOf: [search] } } };
+  const fields = ['inputTokens', 'cachedInputTokens', 'outputTokens', 'reasoningOutputTokens', 'totalTokens'];
+  schemas.RawResponseCompletedNotification = { type: 'object', required: ['threadId', 'turnId', 'responseId'], properties: {
+    threadId: string, turnId: string, responseId: string, usage: { anyOf: [{ $ref: '#/definitions/TokenUsageBreakdown' }, { type: 'null' }] } },
+    definitions: { TokenUsageBreakdown: { type: 'object', required: fields,
+      properties: Object.fromEntries([...fields, 'cacheWriteInputTokens'].map(field => [field, { type: 'integer' }])) } } };
+  await qualifiedCodexBinary(f.settings, { ...f.options, cache: new Map() });
+  assert.equal(codexQualification(f.settings).raw_observation.supported, true);
+  assert(schemas.ServerNotification.oneOf.every(value => !value.properties.method.enum[0].startsWith('raw')));
+  assert(f.calls.every(method => !['thread/start', 'turn/start'].includes(method)), 'Qualification remains read-only');
+  const itemDocument = schemas.RawResponseItemCompletedNotification;
+  const responseDocument = schemas.RawResponseCompletedNotification;
+  const supportedItem = structuredClone(itemDocument), supportedResponse = structuredClone(responseDocument);
+  for (const reference of ['ResponseItem.json', '#/definitions/MissingResponseItem', '#/definitions/CyclicResponseItem']) {
+    itemDocument.properties.item = { $ref: reference };
+    itemDocument.definitions.CyclicResponseItem = { $ref: '#/definitions/CyclicResponseItem' };
+    assert.deepEqual(qualifyCodexRawObservation(schemas), { supported: false, diagnostic: 'standalone tool_search_call metadata unavailable' });
+    await qualifiedCodexBinary(f.settings, { ...f.options, cache: new Map() });
+    assert.equal(codexQualification(f.settings).raw_observation.supported, false, 'Optional representation must not break ordinary qualification');
+  }
+  schemas.RawResponseItemCompletedNotification = supportedItem;
+  for (const reference of ['TokenUsageBreakdown.json', '#/definitions/MissingUsage', '#/definitions/CyclicUsage']) {
+    responseDocument.properties.usage.anyOf[0] = { $ref: reference };
+    responseDocument.definitions.CyclicUsage = { $ref: '#/definitions/CyclicUsage' };
+    assert.deepEqual(qualifyCodexRawObservation(schemas), { supported: false, diagnostic: 'standalone raw response numeric usage unavailable' });
+  }
+  schemas.RawResponseCompletedNotification = supportedResponse;
+  const requiredThread = structuredClone(thread);
+  const threadEntry = schemas.ClientRequest.oneOf.find(value => value.properties.method.enum.includes('thread/start'));
+  threadEntry.properties.params = { $ref: 'RequiredThreadParams.json' };
+  await assert.rejects(qualifiedCodexBinary(f.settings, { ...f.options, cache: new Map() }),
+    error => error.code === 'CODEX_CAPABILITY_UNSUPPORTED' && error.capability === 'local protocol references');
+  threadEntry.properties.params = requiredThread;
+  assert.equal(qualifyCodexRawObservation(schemas).supported, true);
+  delete schemas.RawResponseItemCompletedNotification.definitions.ResponseItem.oneOf[0].properties.id;
+  assert.equal(qualifyCodexRawObservation(schemas).supported, false);
+});
 
 test('selected Codex distributions qualify by actual protocol without a shipped release or platform hash', async t => {
   for (const name of ['codex', 'codex.exe']) {
@@ -1103,11 +1496,11 @@ test('orphan cleanup selects exact Run/node/attempt ownership and refuses a live
 });
 
 test('selected-Provider expansion uses durable read-only execution and applies only an accepted exact-revision Draft', async t => {
-  let proposal,calls=0;
+  let proposal,calls=0;const limitReads=[];
   const f = await fixture(t, { turn: async settings => {
     assert.equal(settings.toolBroker.tools().some(tool => tool.name === 'write_workspace'), false);
-    const packet = await settings.toolBroker.call('read_workflow_resource', { path: calls===0?'analysis/request.txt':'analysis/review-request.txt' }, 'read-plan');
-    assert(JSON.parse(packet.contentItems[0].text).text.includes(proposal.source_revision));
+    const packet = await readPinnedResource(settings,calls===0?'analysis/request.txt':'analysis/review-request.txt','read-plan',limitReads);
+    assert(packet.text.includes(proposal.source_revision));
     const reference = await settings.toolBroker.call('read_workflow_resource', { path: 'source/reference.md' }, 'read-pinned-reference');
     assert.equal(JSON.parse(reference.contentItems[0].text).text, 'The marker is PINNED_BLUE, not this entire document.');
     return { output: JSON.stringify(calls++===0?generatedProposal(proposal):checklist(proposal)), thread_id: 'planning-thread', turn_id: 'planning-turn', audit: {} };
@@ -1124,7 +1517,7 @@ test('selected-Provider expansion uses durable read-only execution and applies o
   const originalRules = await f.service.call('routing_defaults');
   const plannerProvider=config.providers.find(item=>item.id===originalRules.generation.planner_provider_id);assert(plannerProvider);
   const planningWorkspace=join(f.root,'skill-generation-workspaces','job-planning-job');await mkdir(planningWorkspace,{recursive:true});
-  const planning = await f.service.call('create_authoring_run', { workflow_id: pack.workflow.id, revision_hash: pack.revision_hash, provider_id: plannerProvider.id,
+  const planning = await f.service.call('create_authoring_run', {completion_policy:'manual', workflow_id: pack.workflow.id, revision_hash: pack.revision_hash, provider_id: plannerProvider.id,
     run_id: 'planning-job', workspace: planningWorkspace, main_actor: 'root' });
   const pinnedAuthoring=await runtime.runs.read(planning.run_id);assert.equal(pinnedAuthoring.pins.root.provenance.review_contract_version,CONVERSION_CONTRACT.version);
   const editedRules = structuredClone(originalRules); editedRules.routes.implementation.provider_id = providers[1].id;
@@ -1149,6 +1542,7 @@ test('selected-Provider expansion uses durable read-only execution and applies o
       expanded=await f.service.call('accept_authoring',{...apply,accepted:true},{human:true});
     }
   }
+  assert(limitReads.some(item=>item.path==='analysis/request.txt'&&item.code==='CODEX_RESOURCE_READ_LIMIT'&&item.bytes>12000));
   assert.equal(f.sessions.length, 2); assert.notEqual((await store.snapshot(pack.workflow.id)).revision_hash, pack.revision_hash);
   assert.equal(expanded.workflow.status, 'draft'); assert.equal(expanded.workflow.nodes.find(node => node.id === 'activity_001').executor.provider_id, originalRules.routes.implementation.provider_id);
   assert.equal(expanded.workflow.import_status.unresolved.some(item => item.code === 'AI_INFERENCES_REQUIRE_REVIEW'),false);

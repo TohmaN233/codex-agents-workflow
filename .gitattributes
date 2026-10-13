@@ -9,3 +9,5 @@ plugins/codex-agents-workflow/control-plane/web/*-app.html text eol=lf whitespac
 plugins/codex-agents-workflow/scripts/mcp-bootstrap.cjs text eol=lf
 plugins/codex-agents-workflow/scripts/build-mcp-entry.mjs text eol=lf
 plugins/codex-agents-workflow/.mcp.json text eol=lf
+# Dated experiment records are preserved byte-for-byte, including line endings.
+docs/experiments/evidence/*.md -text whitespace=-blank-at-eol,-blank-at-eof,-cr-at-eol

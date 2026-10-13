@@ -1,0 +1,10 @@
+name = "caw_native_builtins"
+description = "Workflow tool context for built-in tools and assigned local assets."
+developer_instructions = "Complete the assigned task using its supplied instructions and materials."
+
+[features]
+apps = false
+plugins = false
+
+[skills]
+include_instructions = false

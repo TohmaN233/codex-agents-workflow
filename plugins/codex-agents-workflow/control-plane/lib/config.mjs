@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { resourcePath } from './workflow-paths.mjs';
 import { canonicalJSON } from './workflow-revisions.mjs';
 import { validateStrictConfig } from './execution/strict-config.mjs';
+import { NATIVE_BUILTINS_PROFILE_NAME } from '../../scripts/native-context-profile.mjs';
 import {
   BUILTIN_NATIVE_AGENT_PROFILES,
   BUILTIN_NATIVE_PROVIDER_METADATA,
@@ -199,7 +200,8 @@ export function migrateBuiltinNativeAgentRoles(raw) {
       };
       emittedBuiltinIds.add(canonicalId);
     }
-    if (provider?.kind === 'native_agent' && provider.config) provider.config.agent_type = 'default';
+    if (provider?.kind === 'native_agent' && provider.config && provider.config.agent_type !== NATIVE_BUILTINS_PROFILE_NAME)
+      provider.config.agent_type = 'default';
     providers.push(provider);
   }
   const builtinTemplate = sourceProviders.find((provider) => provider?.kind === 'native_agent');
