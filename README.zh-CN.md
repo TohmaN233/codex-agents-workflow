@@ -47,12 +47,17 @@ Use $codex-agents-workflow:workflow-control-plane and open the workbench inside 
 
 ## 文档
 
-- [文档索引](docs/README.zh-CN.md) — 用户指南、当前架构、Workflow 格式、历史实验结果和主题覆盖图。
-- [操作教程](docs/guides/usage.zh-CN.md) · [English guide](docs/guides/usage.md)
-- [当前架构](docs/architecture/overview.zh-CN.md) · [Workflow Schema 参考](docs/reference/workflow-schema.zh-CN.md)
-- [历史实验结果](docs/experiments/results.zh-CN.md) · [English report](docs/experiments/results.md)
-- [可选 Workflow 安装包](plugins/codex-agents-workflow/examples/workflows/README.md) · [安全策略](SECURITY.md)
-- [Workflow Package 独立仓库](https://github.com/TohmaN233/workflow-package) — 自选安装的 HTML／视频与 README 包，含原 Skill 来源和对照说明，与插件默认配置分开维护。
+- [文档索引](docs/README.zh-CN.md) — 使用指南、架构与 Workflow 格式。
+- [安全策略](SECURITY.md)
+
+## 通用 Workflow 包
+
+面向一般用途、没有针对我个人任务特化的 Workflow 包，我会上传到 [Workflow Package 仓库](https://github.com/TohmaN233/workflow-package)。目前有：
+
+- [Answer me with HTML](https://github.com/TohmaN233/workflow-package/blob/main/workflow_explanations/answer-me-with-html.zh-CN.md)：HTML 图解、批量网页、视频与资产复用。
+- [GitHub README generator](https://github.com/TohmaN233/workflow-package/blob/main/workflow_explanations/github-readme-generator.zh-CN.md)：README 与可选的多语言仓库文档。
+
+安装包、使用说明、最终对照结果和产物样例在那边分开整理。也欢迎大家上传自己的通用 Workflow 包（虽然感觉除了我本人以外，没人用我的 Workflow 插件 QAQ）。
 
 ## 贡献者检查
 

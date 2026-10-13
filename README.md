@@ -47,9 +47,17 @@ Automatic authoring reviews the result and publishes an enabled, launch-ready Wo
 
 ## Documentation
 
-- [Documentation index](docs/README.md) — user guide, current architecture, Workflow format, historical experiment results, and the topic coverage map.
-- [Optional Workflow packages](plugins/codex-agents-workflow/examples/workflows/README.md) · [Security policy](SECURITY.md)
-- [Workflow Package collection](https://github.com/TohmaN233/workflow-package) — opt-in HTML/video and README packages, original Skill credits and comparison notes; maintained separately from plugin defaults.
+- [Documentation index](docs/README.md) — usage, architecture and Workflow format.
+- [Security policy](SECURITY.md)
+
+## Reusable Workflow packages
+
+I publish generally useful Workflows that are not tailored to my personal tasks in [Workflow Package](https://github.com/TohmaN233/workflow-package). Currently available:
+
+- [Answer me with HTML](https://github.com/TohmaN233/workflow-package/blob/main/workflow_explanations/answer-me-with-html.md) — HTML explainers, batch pages, video and asset reuse.
+- [GitHub README generator](https://github.com/TohmaN233/workflow-package/blob/main/workflow_explanations/github-readme-generator.md) — README and optional multilingual repository documentation.
+
+The collection keeps package files separate from usage notes, final comparisons and output examples. Contributions of your own reusable packages are welcome—though I sometimes feel I am the only person using my Workflow plugin QAQ.
 
 ## Contributor check
 

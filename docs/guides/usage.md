@@ -119,7 +119,7 @@ Import does not modify the source Skill or execute its business task. Publishing
 
 ## 6. Install an optional Workflow
 
-The [optional package index](../../plugins/codex-agents-workflow/examples/workflows/README.md) lists the Math, Zenonzard, and video-use examples. In the workbench, choose **Install Workflow** and select a `*.workflow-package.json` file. Installation checks format, content hashes, compatibility, and dependency declarations; it does not install missing software.
+The [Workflow Package collection](https://github.com/TohmaN233/workflow-package) provides generally useful packages, currently Answer me with HTML and GitHub README generator. All explanations and examples are grouped under its `workflow_explanations/` directory. In the workbench, choose **Install Workflow** and select a `*.workflow-package.json` file. Installation checks format, content hashes, compatibility, and dependency declarations; it does not install missing software.
 
 If an installed Workflow cannot start, check its declared local tools, node Providers, any required Role and Provider, and the inputs for this Run. Some example packages reference Cross-review. They can be installed while that Role is disabled, but require both the Role and a usable Provider before launch.
 

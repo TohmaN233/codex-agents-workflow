@@ -48,7 +48,7 @@ Build Workflow 会把 brief 转换为可复用的图；Skill to Workflow 会把�
 
 ## 边界与证据
 
-按任务声明输入是一种上下文选择边界；它不代表操作系统级文件系统隔离。并行执行和上下文选择可能有助于聚焦工作，但不保证总成本更低、耗时更短或一定命中缓存。[实验报告](../experiments/README.zh-CN.md)记录特定历史样本及其限制，不代表普遍的性能承诺，也没有测量当前 1.2 的每一种执行路径。
+按任务声明输入是一种上下文选择边界；它不代表操作系统级文件系统隔离。并行执行和上下文选择可能有助于聚焦工作，但不保证总成本更低、耗时更短或一定命中缓存。[安装包对照结果](https://github.com/TohmaN233/workflow-package/blob/main/workflow_explanations/experiments/results.zh-CN.md)记录具体任务，不代表普遍的性能承诺。
 
 操作细节见[Provider、Role、恢复与配置指南](../guides/usage.zh-CN.md)。支持的 Workflow 字段见[Schema 参考](../reference/workflow-schema.zh-CN.md)。
 

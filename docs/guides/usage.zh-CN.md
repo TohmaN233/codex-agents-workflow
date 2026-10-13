@@ -119,7 +119,7 @@ authoring 会返回语义步骤；Host 负责组装任务图并检查绑定、�
 
 ## 6. 安装可选 Workflow
 
-[可选安装包索引](../../plugins/codex-agents-workflow/examples/workflows/README.md)列出 Math、Zenonzard 与 video-use 示例。在工作台中选择 **安装 Workflow**，然后选择 `*.workflow-package.json` 文件。安装会检查格式、内容哈希、兼容性和依赖声明，但不会安装缺失的软件。
+[Workflow Package 仓库](https://github.com/TohmaN233/workflow-package)提供通用安装包，目前有 Answer me with HTML 和 GitHub README generator；说明和样例统一放在其 `workflow_explanations/` 目录。在工作台中选择 **安装 Workflow**，然后选择 `*.workflow-package.json` 文件。安装会检查格式、内容哈希、兼容性和依赖声明，但不会安装缺失的软件。
 
 安装后不能启动时，检查所声明的本机工具、节点 Provider、所需的 Role 与 Provider，以及本次 Run 的输入。部分示例包引用 Cross-review：Role 关闭时仍可安装，但启动前需要同时启用 Role 和可用 Provider。
 
