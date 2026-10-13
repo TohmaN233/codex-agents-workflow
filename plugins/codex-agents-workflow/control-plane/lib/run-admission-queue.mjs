@@ -26,7 +26,12 @@ async function ticketReadObservation(path){
 }
 async function ticketAt(path,{initializationMs=250,allowUnsettled=false}={}){
  await noSymlinks(path);const info=await lstat(path);
- requireValue(info.isFile()&&info.nlink===1&&info.size<=4096,'RUN_ADMISSION_QUEUE_FILE','Admission ticket must be one bounded regular file');
+ // A POSIX lookup can finish on an inode that its owner has just retired.
+ // Only a confirmed missing original path is a gone peer; a replacement or
+ // other lookup failure must remain visible, without rereading its body.
+ if(info.isFile()&&info.nlink===0)await lstat(path);
+ requireValue(info.isFile()&&info.nlink===1&&info.size<=4096,'RUN_ADMISSION_QUEUE_FILE','Admission ticket must be one bounded regular file',
+  {ticket_path:path,ticket_bytes:info.size,ticket_links:info.nlink});
  let bytes;
  try{bytes=await readFile(path);}
  catch(error){

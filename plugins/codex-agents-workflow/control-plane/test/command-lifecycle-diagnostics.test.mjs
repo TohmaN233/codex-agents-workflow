@@ -159,10 +159,21 @@ test('delayed original completed observer retains running semantics and final se
 });
 
 for(const mode of ['missing','identity','clock','oversize','schema','future','receipt','read-error'])test(`successful original receipt retains explicit unknown ${mode} lifecycle without replay`,async t=>{
-  let calls=0;
+  let calls=0,readFaults=0;
   const f=await fixture(t,{mutateLifecycle:async spec=>{
     calls++;if(mode==='missing')return rm(spec.lifecycle_path);
-    if(mode==='read-error'){await rm(spec.lifecycle_path);const {mkdir}=await import('node:fs/promises');return mkdir(spec.lifecycle_path);}
+    if(mode==='read-error'){
+      // Windows can retain the deleted name while the captured handle is open.
+      // Fail the exact descriptor read instead of replacing it with a directory.
+      const probe=await open(spec.lifecycle_path,'r'),prototype=Object.getPrototypeOf(probe),expected=await probe.stat({bigint:true});
+      const originalRead=prototype.read;await probe.close();
+      t.mock.method(prototype,'read',async function(...args){
+        const info=await this.stat({bigint:true});
+        if(info.dev===expected.dev&&info.ino===expected.ino){readFaults++;throw Object.assign(new Error('Exact lifecycle read failed'),{code:'EIO'});}
+        return originalRead.apply(this,args);
+      });
+      return;
+    }
     const lines=(await readFile(spec.lifecycle_path,'utf8')).trim().split('\n').map(JSON.parse);
     if(mode==='identity')lines[0].process_id='another-attempt';
     if(mode==='clock')lines.at(-1).at='2000-01-01T00:00:00.000Z';
@@ -176,6 +187,10 @@ for(const mode of ['missing','identity','clock','oversize','schema','future','re
   const diagnostic=f.broker.audit()[0].diagnostics;
   assert.equal(diagnostic.runner.status,'unknown');assert.match(diagnostic.runner.error_code,/^CODEX_COMMAND_LIFECYCLE_/);
   assert.equal(diagnostic.parent.settlement,'fulfilled');
+  if(mode==='read-error'){
+    assert.equal(readFaults,1);assert.equal(diagnostic.runner.error_code,'CODEX_COMMAND_LIFECYCLE_READ_FAILED');
+    assert.equal(diagnostic.runner.filesystem_code,'EIO');
+  }
 });
 
 test('original cancelled control receipt retains real lifecycle and cancellation outcome',async t=>{

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { join, resolve } from 'node:path';
 import { compileWorkflowBrief } from '../lib/skill-import/workflow-authoring.mjs';
 import { compileCoarseSkill } from '../lib/skill-import/coarse-compiler.mjs';
 import { WorkflowForge } from '../lib/authoring/workflow-forge.mjs';
@@ -13,12 +14,15 @@ import { validateGenerationProposal } from '../lib/skill-import/proposal-validat
 import { callableBindingIssues } from '../lib/skill-import/callable-runtime-interface.mjs';
 import { resolveBindings } from '../lib/workflow-bindings.mjs';
 
+const skillFixtureRoot = resolve('skill-fixture');
+const skillFixturePath = join(skillFixtureRoot, 'SKILL.md');
+
 for(const kind of ['skill','brief'])test(`${kind} current Main receives only needed behavioral guides while executable and worker references remain`,()=>{
   const content='# Workflow\n\n## Mandatory procedure\n\nUse `refs/production.md`, `refs/decision.md` and `tools/helper.mjs` for their applicable work. Gather evidence, then let the initiating conversation choose the requested route.\nMethod: preserve verified claims.';
   const supporting={'source/refs/production.md':Buffer.from('# Production\nPreserve verified claims.'),
     'source/refs/decision.md':Buffer.from('# Decision\nUse the requested mode.'),'source/tools/helper.mjs':Buffer.from('export const marker = 1;\n')};
   const build=kind==='brief'?compileWorkflowBrief({workflow_id:`main-resource-${kind}`,name:'Main resource fixture',brief:content,provider_id:'worker'})
-    :compileCoarseSkill({source_path:'C:/fixture/SKILL.md',root:'C:/fixture',source_hash:'a'.repeat(64),instructions_start_line:1,metadata:{name:'Main resource fixture',description:'Gather evidence then choose the user route.'},files:{'source/SKILL.md':Buffer.from(content),...supporting},inventory:[],problems:[],metadata_files:{}},{id:`main-resource-${kind}`,providerId:'worker'});
+    :compileCoarseSkill({source_path:skillFixturePath,root:skillFixtureRoot,source_hash:'a'.repeat(64),instructions_start_line:1,metadata:{name:'Main resource fixture',description:'Gather evidence then choose the user route.'},files:{'source/SKILL.md':Buffer.from(content),...supporting},inventory:[],problems:[],metadata_files:{}},{id:`main-resource-${kind}`,providerId:'worker'});
   const resources={...build.resources,...supporting},snapshot={workflow:build.workflow,resources:prepareResources(resources).manifest,provenance:build.provenance,import_report:build.import_report},pack={...snapshot,revision_hash:revisionHash(snapshot)};
   const ids=sourceSectionInventory(resources).map(item=>item.section_id);
   const plan={contract:SEMANTIC_BLUEPRINT_CONTRACT,purpose:'Gather evidence then choose the user route.',source_dispositions:ids.map(section_id=>({section_id,disposition:'workflow',activity_keys:['work','choose'],note:'Required.'})),
@@ -61,7 +65,7 @@ const routing={version:1,instructions:'Use existing configured providers.',selec
 const context={providers,routing_rules:routing};
 for(const kind of ['skill','brief'])test(`${kind} generated final binds its producer without guessing semantic inputs or requiring the private source`,()=>{
   const source='# Workflow\n\n## Procedure\n\nWrite a README using the repository and request.\n';
-  const build=kind==='brief'?compileWorkflowBrief({workflow_id:'final-input-brief',name:'Final input',brief:source,provider_id:'worker'}):compileCoarseSkill({metadata:{name:'final-input',description:'Final input'},source_path:'C:/fixture/SKILL.md',root:'C:/fixture',source_hash:'a'.repeat(64),instructions_start_line:1,files:{'source/SKILL.md':Buffer.from(source)},inventory:[],problems:[],metadata_files:{}},{id:'final-input-skill',providerId:'worker'});
+  const build=kind==='brief'?compileWorkflowBrief({workflow_id:'final-input-brief',name:'Final input',brief:source,provider_id:'worker'}):compileCoarseSkill({metadata:{name:'final-input',description:'Final input'},source_path:skillFixturePath,root:skillFixtureRoot,source_hash:'a'.repeat(64),instructions_start_line:1,files:{'source/SKILL.md':Buffer.from(source)},inventory:[],problems:[],metadata_files:{}},{id:'final-input-skill',providerId:'worker'});
   build.workflow.inputs_schema={type:'object',properties:{task:{type:'string'},mechanical_rows:{type:'array',items:{type:'object'}}},required:[],additionalProperties:true};
   const resources=build.resources,snapshot={workflow:build.workflow,resources:prepareResources(resources).manifest,provenance:build.provenance,import_report:build.import_report},pack={...snapshot,revision_hash:revisionHash(snapshot)},sections=sourceSectionInventory(resources);
   const blueprint={contract:SEMANTIC_BLUEPRINT_CONTRACT,purpose:'Produce requested documentation.',source_dispositions:sections.map(s=>({section_id:s.section_id,disposition:'workflow',activity_keys:['produce'],note:'Required work.'})),requirement_assignments:observedSourceRequirements(resources).map(r=>({requirement_id:r.requirement_id,activity_keys:['produce']})),runtime_dependencies:[],records:[],lists:[],enums:[],activities:[{key:'produce',instructions:'Write the requested documentation using established repository evidence.',profile:'worker_write',source_sections:sections.map(s=>s.section_id),inputs:[{name:'repository',from:'input:repository'},{name:'request',from:'input:request'},{name:'mechanical_rows',from:'input:mechanical_rows'}],outputs:[{name:'handover',kind:'text',values:[],type_ref:''}],tool:''}],approvals:[],sequences:[],parallels:[],choices:[]};
@@ -100,7 +104,7 @@ test('Host evidence union rejects malformed nested ranges before normalization',
 });
 for(const kind of ['skill','brief'])for(const ending of ['LF','CRLF'])test(`${kind} generation preserves source-authorized output filename selection with ${ending}`,()=>{
   const source='# Workflow\n\n## Procedure\n\nProduce a root `README.md`.\n\nModify only the root `README.md`, or another file\nthat the user explicitly names. Never edit production code.\n\nCreate `summary.json`.\n'.replaceAll('\n',ending==='CRLF'?'\r\n':'\n');
-  const build=kind==='brief'?compileWorkflowBrief({workflow_id:'selected-output-brief',name:'Selected output',brief:source,provider_id:'worker'}):compileCoarseSkill({metadata:{name:'selected-output',description:'Selected output'},source_path:'C:/fixture/SKILL.md',root:'C:/fixture',source_hash:'a'.repeat(64),instructions_start_line:1,files:{'source/SKILL.md':Buffer.from(source)},inventory:[],problems:[],metadata_files:{}},{id:'selected-output-skill',providerId:'worker'});
+  const build=kind==='brief'?compileWorkflowBrief({workflow_id:'selected-output-brief',name:'Selected output',brief:source,provider_id:'worker'}):compileCoarseSkill({metadata:{name:'selected-output',description:'Selected output'},source_path:skillFixturePath,root:skillFixtureRoot,source_hash:'a'.repeat(64),instructions_start_line:1,files:{'source/SKILL.md':Buffer.from(source)},inventory:[],problems:[],metadata_files:{}},{id:'selected-output-skill',providerId:'worker'});
   const resources=build.resources,snapshot={workflow:build.workflow,resources:prepareResources(resources).manifest,provenance:build.provenance,import_report:build.import_report},pack={...snapshot,revision_hash:revisionHash(snapshot)},sections=sourceSectionInventory(resources),requirements=observedSourceRequirements(resources);
   const target=requirements.find(item=>item.requirement_kind==='artifact_path'&&item.details.artifact_path==='README.md');
   assert.equal(target.trigger,'runtime_resolved_artifact');
@@ -115,7 +119,7 @@ for(const kind of ['skill','brief'])for(const ending of ['LF','CRLF'])test(`${ki
   assert(worker.required_artifacts?.some(item=>item.path==='summary.json'));
 });
 function fixture(kind,brief='# Workflow\n\n## Procedure\n\nUse `node scripts/produce.mjs --file draft.txt`.\nWhen export is requested, use `node scripts/produce.mjs --stdin --export` with text on stdin.\n'){
-  const build=kind==='brief'?compileWorkflowBrief({workflow_id:'fidelity-brief',name:'Fidelity',brief,provider_id:'worker'}):compileCoarseSkill({metadata:{name:'fidelity',description:'Fidelity'},source_path:'C:/fixture/SKILL.md',root:'C:/fixture',source_hash:'a'.repeat(64),instructions_start_line:1,files:{'source/SKILL.md':Buffer.from(brief)},inventory:[],problems:[],metadata_files:{}},{id:'fidelity-skill',providerId:'worker'});
+  const build=kind==='brief'?compileWorkflowBrief({workflow_id:'fidelity-brief',name:'Fidelity',brief,provider_id:'worker'}):compileCoarseSkill({metadata:{name:'fidelity',description:'Fidelity'},source_path:skillFixturePath,root:skillFixtureRoot,source_hash:'a'.repeat(64),instructions_start_line:1,files:{'source/SKILL.md':Buffer.from(brief)},inventory:[],problems:[],metadata_files:{}},{id:'fidelity-skill',providerId:'worker'});
   const resources={...build.resources,'source/scripts/produce.mjs':Buffer.from("import {produce} from '../runtime/produce.mjs'; produce();"),'source/runtime/produce.mjs':Buffer.from("import {basename} from 'node:path'; export const produce=()=>basename('draft.txt');"),'source/benchmarks/answer.txt':Buffer.from('A benchmark answer must never be deployed.')};
   const snapshot={workflow:build.workflow,resources:prepareResources(resources).manifest,provenance:build.provenance,import_report:build.import_report};
   const pack={...snapshot,revision_hash:revisionHash(snapshot)},sections=sourceSectionInventory(resources);

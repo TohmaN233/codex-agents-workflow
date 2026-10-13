@@ -450,12 +450,12 @@ test('real child abort after cleanup commit preserves successful terminal instea
  const committed=join(root,'committed'),cancelObserved=join(root,'cancel-observed'),release=join(root,'release'),worker=join(root,'committed-worker.mjs');
  await writeFile(worker,`import {WorkflowRunStore} from ${JSON.stringify(new URL('../lib/workflow-run-store.mjs',import.meta.url).href)};
   import {writeFile,readFile} from 'node:fs/promises';
-  process.on('message',message=>{if(message.type==='cancel')writeFile(${JSON.stringify(cancelObserved)},'cancel observed').catch(error=>{throw error;});});
   const cleanup=WorkflowRunStore.prototype.cleanupHistory;
   WorkflowRunStore.prototype.cleanupHistory=async function(...args){const result=await Reflect.apply(cleanup,this,args);
    await writeFile(${JSON.stringify(committed)},'commit succeeded');
    for(;;){try{await readFile(${JSON.stringify(release)});break;}catch(error){if(error.code!=='ENOENT')throw error;await new Promise(r=>setTimeout(r,10));}}
-   return result;};await import(${JSON.stringify(new URL('../lib/run-history-maintenance-worker.mjs',import.meta.url).href)});`);
+   return result;};await import(${JSON.stringify(new URL('../lib/run-history-maintenance-worker.mjs',import.meta.url).href)});
+  process.on('message',message=>{if(message.type==='cancel')writeFile(${JSON.stringify(cancelObserved)},'cancel observed').catch(error=>{throw error;});});`);
  const manager=new RunHistoryMaintenance({runRoot:store.root,launchWorker:options=>launchHistoryWorker({...options,workerURL:pathToFileURL(worker)})});manager.schedule(store);
  const waitFile=async path=>{for(let count=0;;count++){try{await readFile(path);return;}catch(error){if(error.code!=='ENOENT')throw error;assert(count<500);await new Promise(r=>setTimeout(r,10));}}};
  try{
@@ -467,12 +467,12 @@ test('real child abort after cleanup commit preserves successful terminal instea
  await assert.rejects(lstat(join(store.root,'.run-locks','.history-maintenance','diagnostic.json')),{code:'ENOENT'});
 });
 
-async function contendedChild(t,{onAdmission=admissionTrace,workerPrelude=''}={}){
+async function contendedChild(t,{onAdmission=admissionTrace,workerPrelude='',workerPostlude=''}={}){
  const {root,store}=await fixture(t),{launchHistoryWorker}=await maintenance();
  const acquired=latch(),release=latch(),observed=latch(),admission=new WorkflowStore(join(store.root,'.run-locks','.store-operation'));
  const held=admission.withRunAdmission(async()=>{acquired.release();await release.promise;},{onWait:()=>{}});await acquired.promise;
  let workerURL;
- if(workerPrelude){const worker=join(root,'diagnostic-worker.mjs');await writeFile(worker,`${workerPrelude}\nawait import(${JSON.stringify(new URL('../lib/run-history-maintenance-worker.mjs',import.meta.url).href)});`);workerURL=pathToFileURL(worker);}
+ if(workerPrelude||workerPostlude){const worker=join(root,'diagnostic-worker.mjs');await writeFile(worker,`${workerPrelude}\nawait import(${JSON.stringify(new URL('../lib/run-history-maintenance-worker.mjs',import.meta.url).href)});\n${workerPostlude}`);workerURL=pathToFileURL(worker);}
  const controller=new AbortController(),owner={job_id:randomUUID(),owner_token:randomUUID(),owner_pid:process.pid,created_at:Date.now()};
  const phases=[];let childPid;
  const task=launchHistoryWorker({runRoot:store.root,owner,signal:controller.signal,onReady:pid=>{childPid=pid;},workerURL,
@@ -516,13 +516,13 @@ test('real child diagnostic send failure and ACK channel loss cannot become succ
     if(message.type==='admission'){delivery=callback;return originalSend(message,error=>{if(error){delivery=null;callback(error);}});}
     return originalSend(message,callback);
    };
-   process.on('message',message=>{if(message.type==='admission_ack'&&delivery){const callback=delivery;delivery=null;process.disconnect();callback();}});
   `:`const originalSend=process.send.bind(process);process.send=(message,callback)=>{
    if(message.type==='admission'){
     ${mode==='send_failure'?"callback(Object.assign(new Error('neutral send failure'),{code:'NEUTRAL_SEND'}));return false;":"return originalSend(message,error=>{process.disconnect();callback(error);});"}
    }return originalSend(message,callback);
   };`;
-  const f=await contendedChild(t,{workerPrelude,onAdmission:()=>{}});
+  const workerPostlude=mode==='disconnect_after_ack'?`process.on('message',message=>{if(message.type==='admission_ack'&&delivery){const callback=delivery;delivery=null;process.disconnect();callback();}});`:'';
+  const f=await contendedChild(t,{workerPrelude,workerPostlude,onAdmission:()=>{}});
   await assert.rejects(f.task,error=>error.code==='RUN_HISTORY_WORKER_IPC'&&error.worker_quiescent===true&&error.worker_cancelled===false);
   assert.throws(()=>process.kill(f.childPid,0),{code:'ESRCH'});
  }
@@ -682,11 +682,35 @@ test('nested real retirement provenance retains every receipt while spoofed deta
 test('retirement metadata validation rejects authority fields, escaped or mismatched identities and genuine outside-root provenance',async t=>{
  const {store}=await fixture(t),other=await fixture(t),{diagnostic,requireHistoryRetirementReceipts}=await maintenance();
  const genuine=await genuineRetirementFault(store),valid=diagnostic(genuine,0,store.root).retirements[0];assert.equal(requireHistoryRetirementReceipts([valid],store.root)[0],valid);
+ const observed={...valid,cleanup_waited_ms:1000,cleanup_checks:40};assert.equal(requireHistoryRetirementReceipts([observed],store.root)[0],observed);
+ for(const key of ['cleanup_waited_ms','cleanup_checks'])for(const value of [-1,1.5,2147483648,'1000',null])
+  assert.throws(()=>requireHistoryRetirementReceipts([{...valid,[key]:value}],store.root),{code:'RUN_HISTORY_WORKER_RETIREMENT'});
  for(const value of [{...valid,owner_token:'secret'},{...valid,body:'secret'},{...valid,canonical_path:'../.writer.lock'},{...valid,canonical_path:join(store.root,'.writer.lock')},
   {...valid,retired_path:valid.retired_path.replace('retired-owner-','wrong-')},{...valid,retired_path:valid.retired_path.replace('.store-operation/','.different/')},{...valid,owner_pid:0}]){
   assert.throws(()=>requireHistoryRetirementReceipts([value],store.root),{code:'RUN_HISTORY_WORKER_RETIREMENT'});
  }
  const foreign=await genuineRetirementFault(other.store);assert.throws(()=>diagnostic(foreign,0,store.root),{code:'RUN_HISTORY_WORKER_RETIREMENT'});
+});
+
+test('real history child settlement timeout retains original fault and typed cleanup observations',
+ {skip:process.platform!=='win32'},async t=>{
+ const {root,store}=await fixture(t),{launchHistoryWorker}=await maintenance(),worker=join(root,'settlement-timeout-worker.mjs');
+ await writeFile(worker,`import {writeFile,open} from 'node:fs/promises';import {join} from 'node:path';
+  import {retireOwnedFile} from ${JSON.stringify(new URL('../lib/owned-file-retirement.mjs',import.meta.url).href)};
+  import {WorkflowRunStore} from ${JSON.stringify(new URL('../lib/workflow-run-store.mjs',import.meta.url).href)};
+  WorkflowRunStore.prototype.cleanupHistory=async function(){
+   const path=join(this.root,'.writer.lock');await writeFile(path,'exact owner',{flag:'wx'});const reader=await open(path,'r');
+   try{await retireOwnedFile(path,{stagingRoot:join(this.root,'.pending'),validate:()=>process.pid});}finally{await reader.close();}
+  };await import(${JSON.stringify(new URL('../lib/run-history-maintenance-worker.mjs',import.meta.url).href)});`);
+ let childPid;
+ await assert.rejects(launchHistoryWorker({runRoot:store.root,owner:{job_id:randomUUID(),owner_token:randomUUID(),owner_pid:process.pid,created_at:Date.now()},
+  signal:new AbortController().signal,onReady:pid=>{childPid=pid;},workerURL:pathToFileURL(worker)}),error=>{
+  assert.equal(error.code,'ENOTEMPTY');assert.equal(error.worker_quiescent,true);
+  assert.equal(error.retirements.length,1);const receipt=error.retirements[0];
+  assert.equal(receipt.phase,'retirement_directory_cleanup');assert.equal(receipt.canonical_path,'.writer.lock');
+  assert.equal(receipt.retired,true);assert.equal(receipt.deleted,true);assert(receipt.cleanup_waited_ms>=1000);assert(receipt.cleanup_checks>0);return true;
+ });
+ assert.throws(()=>process.kill(childPid,0),{code:'ESRCH'});
 });
 
 test('actual child rejects genuine outside-root retirement provenance with a failed terminal and hashed original fault',async t=>{

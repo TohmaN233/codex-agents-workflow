@@ -12,6 +12,45 @@ async function fixture(t){const root=await mkdtemp(join(tmpdir(),'owned-retireme
  t.after(()=>rm(root,{recursive:true,maxRetries:3,retryDelay:100}));return root;}
 const validate=expected=>bytes=>assert.deepEqual(bytes,Buffer.from(expected));
 
+for(const mode of ['released','held','extra-entry','replacement-file','replacement-directory','initial-directory-replacement','permission'])
+test(`Windows exact retired directory settlement preserves ownership for ${mode}`,
+ {skip:process.platform!=='win32',timeout:5000},async t=>{
+  const root=await fixture(t),path=join(root,'.writer.lock');await writeFile(path,'exact owner');
+  const script=`import fs from 'node:fs/promises';import {syncBuiltinESMExports} from 'node:module';import {join,dirname} from 'node:path';
+   const path=process.argv[1],stagingRoot=process.argv[2],mode=process.argv[3],reader=await fs.open(path,'r');
+   const remove=fs.rmdir,unlink=fs.unlink;let dirCalls=0,unlinks=0,retired=0,firstError,timer,released,foreign,foreignDirectory;
+   fs.unlink=async p=>{unlinks++;const result=await unlink(p);
+    if(mode==='initial-directory-replacement'){await reader.close();foreignDirectory=dirname(p);await fs.rename(foreignDirectory,foreignDirectory+'.original');await fs.mkdir(foreignDirectory);}
+    return result;};
+   fs.rmdir=async p=>{
+    dirCalls++;if(mode==='permission')throw Object.assign(new Error('Exact directory permission failure'),{code:'EPERM'});
+    try{return await remove(p);}catch(error){
+     if(!firstError){firstError=error;
+      if(mode==='released')timer=setTimeout(()=>{released=reader.close();},25);
+      if(mode==='extra-entry'){foreign=join(p,'foreign.txt');await fs.writeFile(foreign,'foreign');}
+      if(mode==='replacement-file'){await reader.close();foreign=join(p,'record.json');await fs.writeFile(foreign,'foreign');}
+      if(mode==='replacement-directory'){await reader.close();await fs.rename(p,p+'.original');await fs.mkdir(p);foreign=join(p,'foreign.txt');await fs.writeFile(foreign,'foreign');}
+     }throw error;
+    }
+   };syncBuiltinESMExports();const {retireOwnedFile}=await import(${JSON.stringify(helperModule)});
+   let error;try{await retireOwnedFile(path,{stagingRoot,validate:bytes=>{if(bytes.toString()!=='exact owner')throw new Error('Owner changed');},
+    onRetired:async()=>{retired++;await fs.writeFile(path,'successor',{flag:'wx'});}});}catch(cause){error=cause;}
+   finally{clearTimeout(timer);if(released)await released;else if(reader.fd!==-1)await reader.close();}
+   let foreignDirectoryPreserved;if(foreignDirectory)try{foreignDirectoryPreserved=(await fs.lstat(foreignDirectory)).isDirectory();}catch(error){if(error.code!=='ENOENT')throw error;foreignDirectoryPreserved=false;}
+   let historyRetirement;if(mode==='held'&&error){const {diagnostic,requireHistoryRetirementReceipts}=await import(${JSON.stringify(new URL('../lib/run-history-maintenance.mjs',import.meta.url).href)});
+    const detail=diagnostic(error,0,dirname(path));requireHistoryRetirementReceipts(detail.retirements,dirname(path));historyRetirement=detail.retirements[0];}
+   console.log(JSON.stringify({code:error?.code??null,original_error:error===firstError,dirCalls,unlinks,retired,foreignDirectoryPreserved,historyRetirement,
+    successor:await fs.readFile(path,'utf8'),foreign_preserved:foreign?await fs.readFile(foreign,'utf8'):null,retirement:error?.details?.retirement}));`;
+  const result=await promisify(execFile)(process.execPath,['--input-type=module','-e',script,path,join(root,'.pending'),mode],{windowsHide:true,timeout:4000});
+  const observed=JSON.parse(result.stdout);assert.equal(observed.unlinks,1);assert.equal(observed.retired,1);assert.equal(observed.successor,'successor');
+  if(mode==='released'){assert.equal(observed.code,null);assert(observed.dirCalls>=2);}
+  else if(mode==='held'){assert.equal(observed.code,'ENOTEMPTY');assert.equal(observed.original_error,true);assert(observed.retirement.cleanup_waited_ms>=1000);
+   assert.equal(observed.historyRetirement.cause_code,'ENOTEMPTY');assert(observed.historyRetirement.cleanup_waited_ms>=1000);assert(observed.historyRetirement.cleanup_checks>0);}
+  else if(mode==='permission'){assert.equal(observed.code,'EPERM');assert.equal(observed.dirCalls,1);}
+  else if(mode==='initial-directory-replacement'){assert.equal(observed.code,'OWNED_FILE_RETIREMENT_DIRECTORY');assert.equal(observed.foreignDirectoryPreserved,true);assert.equal(observed.dirCalls,0);}
+  else{assert.equal(observed.code,'OWNED_FILE_RETIREMENT_DIRECTORY');assert.equal(observed.foreign_preserved,'foreign');assert.equal(observed.dirCalls,1);}
+ });
+
 test('only genuine immutable retirement provenance is summarized and bounded omissions remain explicit',async t=>{
  const root=await fixture(t),errors=[];
  const forged=Object.assign(new Error('forged body'),{details:{retirement:{phase:'retirement_delete',original_path:'private-token',retired_path:'private-token'}}});
@@ -34,13 +73,25 @@ test('only genuine immutable retirement provenance is summarized and bounded omi
  assert.equal(bounded.retirement_failures.length,0);
 });
 
-test('retirement releases the name while an open peer retains the exact original inode and bytes',async t=>{
+for(const holdThroughDelete of [false,true])test(holdThroughDelete
+ ?'POSIX retirement deletion preserves an open peer original inode and bytes'
+ :'retirement releases the canonical name while an open peer verifies the original inode and bytes',
+ {skip:holdThroughDelete&&process.platform==='win32'},async t=>{
  const root=await fixture(t),path=join(root,'owner.json'),pending=join(root,'.pending');await writeFile(path,'exact owner');
  const reader=await open(path,'r'),identity=await reader.stat({bigint:true});let retired=0;
  try{await retireOwnedFile(path,{stagingRoot:pending,validate:validate('exact owner'),onRetired:async()=>{
   retired++;await assert.rejects(readFile(path),{code:'ENOENT'});await writeFile(path,'successor',{flag:'wx'});
   assert.equal((await reader.stat({bigint:true})).ino,identity.ino);assert.equal((await reader.readFile()).toString(),'exact owner');
- }});}finally{await reader.close();}
+  // Windows can retain the retired directory entry until this peer closes.
+  // The portable case checks rename ownership before allowing deletion.
+  if(!holdThroughDelete)await reader.close();
+ }});
+ if(holdThroughDelete){
+  assert.equal((await reader.stat({bigint:true})).ino,identity.ino);
+  const bytes=Buffer.alloc(11),read=await reader.read(bytes,0,bytes.length,0);
+  assert.equal(read.bytesRead,11);assert.equal(bytes.toString(),'exact owner');
+ }
+ }finally{if(reader.fd!==-1)await reader.close();}
  assert.equal(retired,1);assert.equal(await readFile(path,'utf8'),'successor');
 });
 

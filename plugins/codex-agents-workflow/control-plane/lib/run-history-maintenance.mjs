@@ -183,7 +183,7 @@ export function requireHistoryRetirementReceipts(values,runRoot){
  const prefix='.run-locks/.store-operation/',phases=['retirement_allocate','retirement_rename','retirement_verify','retirement_delete','retirement_directory_cleanup'];
  for(const value of values){
   requireValue(value&&typeof value==='object'&&!Array.isArray(value)
-   &&Object.keys(value).every(key=>['phase','canonical_path','retired_path','retired','deleted','cause_code','cause_errno','owner_pid'].includes(key))
+   &&Object.keys(value).every(key=>['phase','canonical_path','retired_path','retired','deleted','cause_code','cause_errno','owner_pid','cleanup_waited_ms','cleanup_checks'].includes(key))
    &&phases.includes(value.phase)&&typeof value.retired==='boolean'&&typeof value.deleted==='boolean'&&(!value.deleted||value.retired),
    'RUN_HISTORY_WORKER_RETIREMENT','Worker retirement receipt is not typed metadata');
   const canonical=value.canonical_path;
@@ -200,6 +200,9 @@ export function requireHistoryRetirementReceipts(values,runRoot){
    'RUN_HISTORY_WORKER_RETIREMENT','Worker retirement error code is invalid');
   if(Object.hasOwn(value,'cause_errno'))requireValue(Number.isSafeInteger(value.cause_errno),'RUN_HISTORY_WORKER_RETIREMENT','Worker retirement errno is invalid');
   if(Object.hasOwn(value,'owner_pid'))requireValue(Number.isSafeInteger(value.owner_pid)&&value.owner_pid>0,'RUN_HISTORY_WORKER_RETIREMENT','Worker verified owner PID is invalid');
+  for(const key of ['cleanup_waited_ms','cleanup_checks'])if(Object.hasOwn(value,key))
+   requireValue(Number.isSafeInteger(value[key])&&value[key]>=0&&value[key]<=2147483647,
+    'RUN_HISTORY_WORKER_RETIREMENT','Worker retirement cleanup observation is invalid');
  }
  return values;
 }

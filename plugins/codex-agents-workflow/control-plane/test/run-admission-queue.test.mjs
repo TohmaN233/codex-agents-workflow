@@ -9,6 +9,31 @@ import {WorkflowStore} from '../lib/workflow-store.mjs';
 import {inspectRunAdmissionQueue,recoverRunAdmissionTicket,commitAdmissionChoice} from '../lib/run-admission-queue.mjs';
 import {randomUUID} from 'node:crypto';
 const storeModule=new URL('../lib/workflow-store.mjs',import.meta.url).href;
+test('POSIX ticket lookup racing exact retirement treats only a confirmed missing path as gone',{skip:process.platform==='win32'},async t=>{
+ const f=await fixture(t),directory=join(f.path,'.admission-queue');await mkdir(directory);
+ const ticket={id:randomUUID(),pid:process.pid,token:randomUUID(),created_at:new Date().toISOString(),number:1};
+ const path=join(directory,`ticket-${ticket.id}.json`),retired=join(f.path,'retired-ticket.json');
+ const queueModule=new URL('../lib/run-admission-queue.mjs',import.meta.url).href;
+ for(const replace of [false,true]){
+  await writeFile(path,JSON.stringify(ticket));
+  const script=`import fs from 'node:fs/promises';import {syncBuiltinESMExports} from 'node:module';
+   const path=process.argv[2],retired=process.argv[3],original=fs.lstat;let reads=0;
+   fs.lstat=async(p,...args)=>{
+    if(p===path&&++reads===2){
+     const file=await fs.open(path,'r');try{
+      await fs.rename(path,retired);await fs.unlink(retired);const info=await file.stat();
+      if(info.nlink!==0)throw new Error('Retired POSIX inode must have zero names');
+      ${replace?'await fs.writeFile(path,process.argv[4]);':''}return info;
+     }finally{await file.close();}
+    }return original(p,...args);
+   };
+   syncBuiltinESMExports();const {inspectRunAdmissionQueue}=await import(${JSON.stringify(queueModule)});
+   ${replace?`try{await inspectRunAdmissionQueue(process.argv[1]);throw new Error('Replacement must not conceal the retired inode');}catch(error){if(error.code!=='RUN_ADMISSION_QUEUE_FILE')throw error;console.log('REPLACEMENT_REJECTED');}`:`const entries=await inspectRunAdmissionQueue(process.argv[1]);if(entries.length)throw new Error('Retired ticket survived');console.log('RETIRED_PATH_CONFIRMED');`}`;
+  const result=await promisify(execFile)(process.execPath,['--input-type=module','-e',script,f.path,path,retired,JSON.stringify(ticket)],{windowsHide:true});
+  assert.equal(result.stdout.trim(),replace?'REPLACEMENT_REJECTED':'RETIRED_PATH_CONFIRMED');
+ }
+});
+
 test('a denied ticket read preserves its original error with bounded presence evidence and no retry',async t=>{
  const f=await fixture(t),directory=join(f.path,'.admission-queue');await mkdir(directory);
  const ticket={id:randomUUID(),pid:process.pid,token:randomUUID(),created_at:new Date().toISOString(),number:1};

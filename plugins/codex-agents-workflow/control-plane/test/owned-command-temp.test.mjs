@@ -53,9 +53,19 @@ test('isolated capability RPC failure is explicit before any business command',a
 
 test('default shell temp capability is qualified before model admission and selected custom shell stays exact',async t=>{
  const f=await fixture(t),commands=f.make();t.after(()=>commands.close());
+ const defaultLogin=process.platform!=='win32';
  await commands.qualifyIsolation();assert.equal(f.calls.length,1);assert.equal(f.calls[0].command[1],'-e');assert.equal(commands.audit().length,0);
- await commands.call('run_workspace_command',{cmd:'neutral',login:false},'default');assert.equal(f.calls.filter(item=>item.command[1]==='-e').length,1,'same effective default login does not duplicate preflight');
- if(process.platform==='win32'){await commands.call('run_workspace_command',{cmd:'neutral',shell:'cmd.exe',login:false},'custom');assert.equal(f.calls.filter(item=>item.command[1]==='-e').length,2);}
+ const probeSource=f.calls[0].command[2].match(/const argv=(.*?);const child=/s);assert.ok(probeSource,'the broker must expose the selected shell invocation to its capability probe');
+ const probeArgv=JSON.parse(probeSource[1]);
+ if(process.platform==='win32')assert.deepEqual(probeArgv.slice(0,3),['powershell.exe','-NoLogo','-NoProfile'],'Windows default shell policy disables profile loading');
+ else assert.deepEqual(probeArgv.slice(0,2),['/bin/bash','-lc'],'POSIX default shell policy uses a login shell');
+ await commands.call('run_workspace_command',{cmd:'neutral'},'default');assert.equal(f.calls.filter(item=>item.command[1]==='-e').length,1,'the omitted login setting reuses the actual platform default preflight');
+ if(process.platform==='win32'){
+  await commands.call('run_workspace_command',{cmd:'neutral',shell:'cmd.exe',login:false},'custom');assert.equal(f.calls.filter(item=>item.command[1]==='-e').length,2);
+ }else{
+  const changedLogin=!defaultLogin;
+  await commands.call('run_workspace_command',{cmd:'neutral',login:changedLogin},'changed-login');assert.equal(f.calls.filter(item=>item.command[1]==='-e').length,2,'a changed effective login setting receives its own preflight');
+ }
 });
 
 const latch=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};

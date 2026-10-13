@@ -4,6 +4,12 @@
 
 This page documents the user-facing Workflow fields that affect graph structure and bounded repair. The Host remains authoritative: it validates the pinned Workflow before a Run can start.
 
+## Task index and document size
+
+The native task index is currently capped at 16 KiB of serialized UTF-8, including instructions, output schema and JSON escaping. This is a handoff budget, not a limit on a writer's document or generated files. The Host moves large bound inputs intact into verified files and passes their references; it does not truncate the source content. Native input delivery permits up to 8 MiB per input file and 32 MiB per bundle.
+
+Fixed instructions, schemas and reference metadata must still fit the index budget. If they cannot fit after bound inputs move to files, preparation fails visibly. Output content follows its declared schema and artifact contract; there is no universal 16 KiB writing limit.
+
 ## Automatic Main completion checks
 
 A writable Main orchestration node may attach a mechanical check to its existing completion contract:

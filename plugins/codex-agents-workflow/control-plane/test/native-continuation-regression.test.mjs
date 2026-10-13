@@ -654,6 +654,13 @@ async function fixture(t, nativeAgentObserver, extraCapabilities={},taskEnv={}) 
   await service.call('migrate_v6', {}, { human: true });
   t.after(async () => {
     await Promise.allSettled([...service.attemptAdmission.drainJobs.values()]);
+    // History is an independent real owner, even with a mocked native agent.
+    // Stop it before deleting its root; preserve both settlement/close faults.
+    let historyError;
+    try{await service.historyMaintenance.settle();}catch(error){historyError=error;}
+    try{await service.historyMaintenance.close();}catch(error){historyError=historyError
+      ?new AggregateError([historyError,error],'Native fixture history cleanup failed'):error;}
+    if(historyError)throw historyError;
     assert(resolve(root).startsWith(resolve(tmpdir())));
     await rm(root, { recursive: true, maxRetries: 3, retryDelay: 100 });
   });
@@ -2376,6 +2383,8 @@ test('native text amendment one-per-item batch repairs only its rejected child',
 });
 
 test('native text amendment repair ACK accepts a ready sibling before the repairing child terminates',{timeout:30_000},async t=>{
+  const phase=value=>console.log('NATIVE_REPAIR_SIBLING_PHASE '+value);
+  phase('fixture');
   const draft='draft a\r\npreserved second line',fixed='accepted a\r\npreserved second line';
   const siblingChecked=deferred(),repairWaitArmed=deferred(),repairReleased=deferred();
   const f=await nativeCheckFixture(t,{itemCount:2,maxConcurrency:2,textAmendment:true,orchestration:true,max_attempts:3,transport:'direct_mcp',
@@ -2390,6 +2399,7 @@ test('native text amendment repair ACK accepts a ready sibling before the repair
   const home=await mkdtemp(join(tmpdir(),'native-repair-sibling-'));await mkdir(join(home,'sessions'));
   t.after(()=>rm(home,{recursive:true,maxRetries:3,retryDelay:100}));
   const start=await f.service.call('native_next',{},MODEL_REQUEST),packets=publicPackets(start);
+  phase('prepared');
   assert.deepEqual(packets.map(packet=>packet.index),[0,1]);
   for(const packet of packets)assert.deepEqual((await publicNativeTask(packet.prompt)).result_schema.properties.items.items.properties.result,nativeSemanticSchema);
   const agents=packets.map(packet=>'/root/'+packet.spawn_config.task_name),threads=new Map(),rpc={},observations=[];
@@ -2416,19 +2426,25 @@ test('native text amendment repair ACK accepts a ready sibling before the repair
   }};
   f.service.nativeAgentObserver=async(ids,options)=>{
     const entry={agent_ids:[...ids],repairing,waits_before:waits,text_amendments:structuredClone(options.textAmendments)};observations.push(entry);
-    const observed=await inspectNativeAgents(client,ids,{...options,lifecycleHome:home,waitForTerminal:true,waitTimeoutMs:10_000,
-      waitForChange:async({signal})=>{
+    const observed=await inspectNativeAgents(client,ids,{...options,
+      signal:options.signal?AbortSignal.any([options.signal,t.signal]):t.signal,
+      lifecycleHome:home,waitForTerminal:true,waitTimeoutMs:10_000,
+      waitForChange:async({signal,timeoutMs})=>{
         waits++;repairWaitArmed.resolve();
-        let abort;const cancelled=new Promise((_resolve,reject)=>{
+        let abort,timer;const cancelled=new Promise((_resolve,reject)=>{
           abort=()=>reject(signal.reason);if(signal.aborted)abort();else signal.addEventListener('abort',abort,{once:true});
         });
-        try{await Promise.race([repairReleased.promise,cancelled]);return {event_scope:'child',event_type:'change',filename:'exact-first-child-repair'};}
-        finally{signal.removeEventListener('abort',abort);}
+        const expired=new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Object.assign(
+          new Error('Fixture child event wait reached its supplied deadline'),{code:'NATIVE_AGENT_WAIT_TIMEOUT'})),timeoutMs);});
+        try{await Promise.race([repairReleased.promise,cancelled,expired]);return {event_scope:'child',event_type:'change',filename:'exact-first-child-repair'};}
+        finally{clearTimeout(timer);signal.removeEventListener('abort',abort);}
       }});
     Object.assign(entry,{status:observed.status,agent_id:observed.agent_id,turn_id:observed.turn_id,waits_after:waits});return observed;
   };
   assert.equal(start.invocation_adapter.kind,'direct_mcp');
+  phase('initial-collection');
   const repair=await f.service.call('native_spawned_batch',start.invocation_adapter.arguments,MODEL_REQUEST);
+  phase('repair-issued');
   assert.equal(repair.next_action,'repair_recorded_agent');assert.equal(repair.followup_config.target,agents[0]);
   assert.match(repair.followup_config.message,/Amendment schema:/);assert(!repair.followup_config.message.includes(draft));
   assert.equal(repair.invocation_adapter.kind,'direct_mcp');assert.deepEqual(repair.invocation_adapter.arguments,{});
@@ -2442,6 +2458,7 @@ test('native text amendment repair ACK accepts a ready sibling before the repair
   repairing=true;await fsPromises.appendFile(threads.get(agents[0]).thread.path,row('event_msg',{type:'task_started',turn_id:threads.get(agents[0]).repairTurn}));
   let ackSettled=false;
   const ack=f.service.call('native_followed_up',repair.invocation_adapter.arguments,MODEL_REQUEST).finally(()=>{ackSettled=true;});
+  phase('repair-ack');
   const boundary=async(promise,label)=>{
     let timer;try{return await Promise.race([promise,ack.then(()=>{throw new Error('Repair ACK settled before '+label);}),
       new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error('Timed out waiting for '+label)),10_000);})]);}
@@ -2455,7 +2472,9 @@ test('native text amendment repair ACK accepts a ready sibling before the repair
   let failure,midpoint,next;
   try{
     await boundary(siblingChecked.promise,'ready sibling checker');
+    phase('sibling-checked');
     await boundary(repairWaitArmed.promise,'remaining child event wait');
+    phase('child-wait-armed');
     const middle=await runtime.runs.read(f.binding.run_id),attempt=middle.state.nodes.worker.attempts[0];
     assert.equal(ackSettled,false);assert.equal(repairTerminal,false);
     assert.equal(attempt.native_item_results?.[0],undefined);
@@ -2468,6 +2487,7 @@ test('native text amendment repair ACK accepts a ready sibling before the repair
     assert.deepEqual(readySibling.text_amendments,{[agents[0]]:true});
     midpoint={first_child_has_result:false,repair_terminal:false,sibling_result:attempt.native_item_results[1],ready_sibling_observation:readySibling};
     await releaseRepair();next=await ack;
+    phase('repair-complete');
     assert.equal(next.status,'orchestration_handoff');
   }catch(error){failure=error;}
   finally{await releaseRepair();const [settled]=await Promise.allSettled([ack]);if(!failure&&settled.status==='rejected')failure=settled.reason;}
