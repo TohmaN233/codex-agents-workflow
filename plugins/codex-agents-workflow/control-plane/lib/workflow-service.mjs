@@ -2096,6 +2096,12 @@ export class WorkflowService {
         const closure=await resolveWorkflowPins(store,pack);
         const environment=await runtime.environmentResolver({executables:[...closure.packs.flatMap(item=>item.workflow.requirements.executables??[]), ...closure.skills.flatMap(skill=>skill.requirements.executables??[])]},{extraDirectories:args.environment_directories??[]});
         if(environment.status==='ready')await this.prepareCodexRegistration(closure);
+        if(model)return {status:environment.status,requirements:environment.requirements,
+          tools:environment.tools.map(tool=>({name:tool.name,status:tool.status,path:tool.path,
+            ...(tool.status==='missing'&&tool.rejections?{rejections:tool.rejections}:{})})),
+          missing:environment.missing,installation_performed:environment.installation_performed,
+          searched_directory_count:environment.searched_directories.length,
+          next_action:environment.status==='ready'?'Start the Workflow directly; startup owns dependency verification and registration.':environment.next_action};
         return environment;
       }
       case 'runtime_dependencies': return readHostRuntimeRegistry(registryPathForConfig(this.configPath));

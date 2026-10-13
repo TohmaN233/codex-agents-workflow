@@ -951,6 +951,43 @@ test('prepare_environment keeps missing ordinary dependencies ahead of Codex reg
   assert.deepEqual(await f.service.call('runs'),[]);
 });
 
+test('model environment diagnosis keeps readiness while omitting mechanical search history',async t=>{
+ const f=await mainStartupRegistrationFixture(t);
+ const args={workflow_id:f.request.workflow_id,revision_hash:f.request.revision_hash};
+ const human=await f.service.call('prepare_environment',args,{human:true});
+ assert(Array.isArray(human.searched_directories));
+ const model=await f.service.call('prepare_environment',args,{model:true});
+ assert.equal(model.status,'ready');assert.deepEqual(model.missing,[]);
+ assert.equal(model.searched_directories,undefined);
+ assert.equal(model.searched_directory_count,human.searched_directories.length);
+ assert.equal(model.installation_performed,false);
+ assert.match(model.next_action,/Start the Workflow directly/);
+ assert.equal(f.modelCalls(),0);assert.equal(f.launches.length,0);
+});
+
+test('direct Main startup resolves dependencies once without a separate model preparation call',async t=>{
+ const f=await mainStartupRegistrationFixture(t),open=f.service.open.bind(f.service);
+ let resolutions=0;
+ f.service.open=async()=>{const result=await open();const resolver=result.runtime.environmentResolver;
+  result.runtime.environmentResolver=async(...args)=>{resolutions++;return resolver(...args);};return result;};
+ const result=await f.service.call('run_main',f.request);
+ assert(result.run_id);assert.equal(resolutions,1);assert.equal(f.launches.length,1);
+ assert.equal(f.modelCalls(),0);
+});
+
+test('model environment diagnosis retains missing dependency and approval instructions',async t=>{
+ const f=await mainStartupRegistrationFixture(t),{store}=await f.service.open();
+ const pack=await store.snapshot(f.request.workflow_id,f.request.revision_hash),workflow=structuredClone(pack.workflow);
+ workflow.requirements.executables=['caw-missing-model-diagnostic-fixture'];
+ const saved=await store.save(workflow.id,workflow,{expected_revision:pack.revision_hash});
+ const result=await f.service.call('prepare_environment',{workflow_id:workflow.id,revision_hash:saved.revision_hash},{model:true});
+ assert.equal(result.status,'installation_approval_required');
+ assert.deepEqual(result.missing,workflow.requirements.executables);
+ assert.equal(result.tools[0].status,'missing');assert.equal(result.tools[0].path,null);
+ assert.match(result.next_action,/approve installation/);assert.equal(result.searched_directories,undefined);
+ assert.equal(f.launches.length,0);assert.equal(f.modelCalls(),0);
+});
+
 test('model-facing Main start returns its persisted Run while prior Provider work is still pending', async t => {
   const gate = deferred(); const entered = deferred(); let progress;
   const hostMainManager = {

@@ -19,6 +19,20 @@ const controlDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const pluginDir = dirname(controlDir);
 const serverPath = join(controlDir, 'server.mjs');
 
+test('startup entrypoints advertise direct invocation and optional environment diagnosis',()=>{
+ for(const transport of ['code_mode','direct_mcp']){
+  const tools=workflowToolDefinitions(transport);
+  const start=tools.find(tool=>tool.name==='workflow_start').description;
+  assert.match(start,/call this tool directly/i);
+  assert.match(start,/Host reads inputs_path/);
+  assert.match(start,/do not reread/);
+  assert.match(start,/or call prepare_environment first/);
+  const environment=tools.find(tool=>tool.name==='workflow_prepare_environment').description;
+  assert.match(environment,/Optional/);
+  assert.doesNotMatch(environment,/Mandatory before task execution/);
+ }
+});
+
 test('stdio MCP rejects an unknown launcher transport before serving a request',{timeout:5000},async t=>{
  const child=spawn(process.execPath,[serverPath],{env:{...process.env,WORKFLOW_MCP_TRANSPORT:'unknown'},stdio:['ignore','pipe','pipe'],windowsHide:true});
  t.after(()=>{if(child.exitCode===null)child.kill();});
