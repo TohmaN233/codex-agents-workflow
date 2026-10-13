@@ -27,7 +27,7 @@ import { qualifiedExecutionBinding } from '../lib/execution/codex-tool-broker.mj
 import { refreshCodexRegistration } from '../lib/execution/codex-runtime-registration.mjs';
 import { verifyCodexDistribution } from '../lib/execution/strict-config.mjs';
 import { readyWorkflow, edge } from './fixtures/workflow-fixtures.mjs';
-import { retainOwnedAuthority, replaceOwnedAuthority } from '../lib/execution/owned-workflow-authority.mjs';
+import { retainOwnedAuthority, replaceOwnedAuthority, readOwnedAuthority } from '../lib/execution/owned-workflow-authority.mjs';
 import {packDirectory} from '../lib/workflow-paths.mjs';
 
 test('service opening and Role discovery audit only Role candidates while ordinary reads still audit selected resources',async t=>{
@@ -1413,6 +1413,75 @@ test('compact main-session service starts, projects one node and completes to th
   assert.deepEqual(second.agent_packet.response_form.schema.required, ['value', 'accepted']);
   const terminal = await completeHostHandoff(f.service,second,{ value: 'accepted' },{ accepted: true });
   assert.equal(terminal.stop_reason, 'terminal'); assert.equal(terminal.status, 'succeeded');
+});
+
+test('ordinary recovered controller returns executable Host resume and cancellation adapters',async t=>{
+ const f=await fixture(t);await f.migrate();
+ const started=await f.start();
+ const rpc=async(name,args)=>handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args,_meta:{threadId:'01a0db81-70bf-7233-9021-4b4e3849bec7'}}},
+  {configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{},serviceCapabilities:{nativeParentVerifier:async()=>{}}});
+ const parse=response=>{assert.notEqual(response.result.isError,true,JSON.stringify(response.result));return JSON.parse(response.result.content[0].text);};
+ const invoke=async adapter=>{
+  let response;
+  const tools={[`mcp__codex_agents_workflow__${adapter.tool_name}`]:async args=>{response=await rpc(adapter.tool_name,JSON.parse(JSON.stringify(args)));return response.result;}};
+  await new (await import('node:vm')).Script(`(async()=>{\n${adapter.code}\n})()`).runInNewContext({tools,text:()=>{}});
+  return response;
+ };
+ const before=await f.service.call('get',{run_id:started.run_id});
+ const request={run_id:started.run_id,expected_sequence:before.sequence,main_actor:'codex',reason:'Continue the existing authorized task after losing controller state.'};
+ const recovered=parse(await rpc('workflow_recover_control',request));
+ assert.equal(recovered.status,'paused');assert.equal(recovered.control_token,undefined);
+ assert.deepEqual(recovered.recovery_errors,[]);
+ assert.equal(recovered.invocation_adapter?.tool_name,'workflow_resume');
+ assert.equal(recovered.invocation_adapter.slot,'none');
+ assert.equal(recovered.cancellation_invocation_adapter?.tool_name,'workflow_cancel');
+ assert.equal(recovered.cancellation_invocation_adapter.slot,'none');
+ assert.equal(recovered.cancellation_invocation_adapter.scope,'workflow_controller_only');
+ const repeated=await rpc('workflow_recover_control',request);
+ assert.equal(repeated.result.isError,true);assert.match(JSON.stringify(repeated.result),/RUN_SEQUENCE_CONFLICT/);
+ await assert.rejects(f.service.call('resume',control(started)),{code:'RUN_AUTHORITY'});
+ const resumed=parse(await invoke(recovered.invocation_adapter));
+ assert.equal(resumed.status,'running');assert.equal(resumed.control_token,undefined);
+ assert.equal(Object.values(resumed.nodes).flatMap(node=>node.attempts).length,0);
+ const recoveredAgain=parse(await rpc('workflow_recover_control',{...request,expected_sequence:resumed.sequence}));
+ const stale=await invoke(recovered.cancellation_invocation_adapter);
+ assert.equal(stale.result.isError,true);assert.match(JSON.stringify(stale.result),/RUN_AUTHORITY/);
+ const cancelled=parse(await invoke(recoveredAgain.cancellation_invocation_adapter));
+ assert.equal(cancelled.status,'cancelled');assert.equal(cancelled.control_token,undefined);
+ assert.equal(Object.values(cancelled.nodes).flatMap(node=>node.attempts).length,0);
+ assert.deepEqual(cancelled.cost_ledger.calls,[]);
+});
+
+test('ordinary recovery adapters retain cleanup failure fences and can retry exact cancellation',async t=>{
+ const strictManager={entries:new Map(),fenceRun:()=>{},fenceAttempt:()=>{},stopRun:async()=>{},
+  stopRecovered:async()=>{throw Object.assign(new Error('Offline unconfirmed recovery stop'),{code:'FIXTURE_RECOVERY_STOP'});}};
+ const capabilities={strictManager,nativeParentVerifier:async()=>{}};
+ const f=await fixture(t,{capabilities});await f.migrate();const started=await f.start();
+ const rpc=async(name,args)=>handleRpc({jsonrpc:'2.0',id:1,method:'tools/call',params:{name,arguments:args,_meta:{threadId:'01a0db81-70bf-7233-9021-4b4e3849bec7'}}},
+  {configPath:f.configPath,defaultConfigPath:DEFAULT_CONFIG_PATH,env:{},serviceCapabilities:capabilities});
+ const before=await f.service.call('get',{run_id:started.run_id});
+ const response=await rpc('workflow_recover_control',{run_id:started.run_id,expected_sequence:before.sequence,main_actor:'codex',reason:'Continue the existing authorized task.'});
+ assert.notEqual(response.result.isError,true,JSON.stringify(response));
+ const recovered=JSON.parse(response.result.content[0].text);
+ assert.equal(recovered.status,'paused');assert.equal(recovered.control_token,undefined);
+ assert(recovered.recovery_errors.some(error=>error.code==='FIXTURE_RECOVERY_STOP'));
+ assert.equal(recovered.next_action,'workflow_cancel');
+ assert.equal(recovered.invocation_adapter?.tool_name,'workflow_cancel');
+ assert.equal(recovered.cancellation_invocation_adapter?.tool_name,'workflow_cancel');
+ assert.equal(JSON.stringify(recovered).includes('workflow_resume'),false,'Incomplete cleanup must not suggest resuming execution');
+ const invoke=async adapter=>{
+  let result;
+  const tools={[`mcp__codex_agents_workflow__${adapter.tool_name}`]:async args=>{result=await rpc(adapter.tool_name,JSON.parse(JSON.stringify(args)));return result.result;}};
+  await new (await import('node:vm')).Script(`(async()=>{\n${adapter.code}\n})()`).runInNewContext({tools,text:()=>{}});
+  return result;
+ };
+ const {runtime}=await f.service.open();
+ const authority=await readOwnedAuthority(runtime,started.run_id);
+ await assert.rejects(f.service.call('resume',{run_id:started.run_id,control_token:authority.control_token}),{code:'CONTROL_RECOVERY_INCOMPLETE'});
+ assert.equal((await f.service.call('get',{run_id:started.run_id})).status,'paused');
+ const cancelled=await invoke(recovered.cancellation_invocation_adapter);
+ assert.notEqual(cancelled.result.isError,true,JSON.stringify(cancelled));
+ assert.equal(JSON.parse(cancelled.result.content[0].text).status,'cancelled');
 });
 
 test('actual model MCP authoring starts carry executable Host continuations for Skill and brief',async t=>{

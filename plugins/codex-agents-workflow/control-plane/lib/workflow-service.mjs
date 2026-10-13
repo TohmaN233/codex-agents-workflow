@@ -247,7 +247,7 @@ const nativeDriveOwners=new Map();
 import { isWorkerMain, hasOrchestrationMain } from './execution/main-execution-mode.mjs';
 import { prepareMainOrchestration, completeMainOrchestration } from './execution/main-orchestration.mjs';
 import {startupSemanticContract,startupSemanticNode} from './execution/workflow-startup-semantic.mjs';
-import { WORKFLOW_CALL_DEFAULTS, WORKFLOW_LONG_CALL_TOOLS, workflowCallArguments, workflowInvocationAdapters, workflowAuthoringControllerAdapterDescriptor } from './execution/workflow-call-adapter.mjs';
+import { WORKFLOW_CALL_DEFAULTS, WORKFLOW_LONG_CALL_TOOLS, workflowCallArguments, workflowInvocationAdapters, workflowAuthoringControllerAdapterDescriptor, workflowControllerAdapterDescriptor } from './execution/workflow-call-adapter.mjs';
 import { workflowMcpTransport } from './workflow-call-policy.mjs';
 import { createPreparedStartup } from './execution/prepared-startup-record.mjs';
 const MODEL_NATIVE_CONTINUATIONS=new Set(['native_next','native_spawned_batch','native_followed_up']);
@@ -2263,8 +2263,17 @@ export class WorkflowService {
       case 'recover_control': {
         const record=await runtime.runs.read(args.run_id);
         const result=await recoverControllerTree(coordinator,this.strictManager,runtime,conversationalRecovery,{configPath:this.configPath});
-        return model&&isAuthoringRunProvenance(record.pins.root.provenance)&&!result.recovery_errors.length
-          ?authoringControllerContinuation(result,{run_id:args.run_id,control_token:result.control_token},'resume'):result;
+        if (!model) return result;
+        const authority={run_id:args.run_id,control_token:result.control_token};
+        if (isAuthoringRunProvenance(record.pins.root.provenance)) return result.recovery_errors.length
+          ?result:authoringControllerContinuation(result,authority,'resume');
+        const cancellation=workflowControllerAdapterDescriptor('cancel',authority);
+        // Incomplete cleanup offers only shutdown. Runtime resume retains its
+        // independent cleanup fence if an earlier adapter is invoked.
+        if (result.recovery_errors.length) return {...result,next_action:'workflow_cancel',invocation_adapter:cancellation,
+          cancellation_invocation_adapter:cancellation};
+        return {...result,next_action:'workflow_resume',invocation_adapter:workflowControllerAdapterDescriptor('resume',authority),
+          cancellation_invocation_adapter:cancellation};
       }
       case 'recover_claim': {
         const record = await executor.recoveryPreparation(args.run_id, args);

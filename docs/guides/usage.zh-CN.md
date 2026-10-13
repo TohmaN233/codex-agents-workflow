@@ -47,7 +47,7 @@ Windows 启动器根据 Codex 已安装插件记录启动；macOS/Linux 脚本�
 - 原生 Codex Provider 已启用；外部 Provider 已关闭。
 - Cross-review 与 GPT reviewer Role 会显示但默认关闭；使用时还要分别启用对应 Provider。
 - Build Workflow 与 Skill to Workflow 是仅有的内置 Workflow。
-- Math、Zenonzard 与 video-use 是可选安装包，不会自动安装。
+- 可选安装包统一从独立的 [Workflow Package 仓库](https://github.com/TohmaN233/workflow-package)安装。
 
 关闭的 Provider 不会被静默替换。依赖该 Provider 的 Workflow 可以安装或编辑，但在 Provider 可用前不能启动。
 
@@ -177,9 +177,8 @@ max_concurrent_threads_per_session = 8
 
 ```text
 使用 $codex-agents-workflow:workflow-control-plane。
-运行我已安装的 video-use Workflow。
-本次素材目录是 D:/demo/recordings。
-方案或预览需要确认时停下来。
+运行我从 Workflow Package 安装、用于当前任务的 Workflow。
+使用我在本次对话中提供的目标与材料。
 ```
 
 如果没有匹配的已发布 Workflow，Main 应明确说明，不会虚构或静默改用另一条定义。

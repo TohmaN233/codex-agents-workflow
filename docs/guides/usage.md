@@ -47,7 +47,7 @@ Release defaults:
 - Native Codex Providers are enabled; external Providers are disabled.
 - Cross-review and GPT reviewer Roles are visible but disabled. Each also needs its Provider enabled before use.
 - Build Workflow and Skill to Workflow are the only built-in Workflows.
-- Math, Zenonzard, and video-use are optional packages, not automatic installs.
+- Optional packages are installed from the separate [Workflow Package collection](https://github.com/TohmaN233/workflow-package).
 
 A disabled Provider is not silently replaced. A Workflow that depends on one may be installed or edited, but cannot start until its Provider is available.
 
@@ -177,9 +177,8 @@ To run an installed, published Workflow from Codex:
 
 ```text
 Use $codex-agents-workflow:workflow-control-plane.
-Run my installed video-use Workflow.
-The source folder for this Run is D:/demo/recordings.
-Stop at the plan and preview approval gates.
+Run the Workflow I installed from Workflow Package for this task.
+Use the source material and goal I provided in this conversation.
 ```
 
 If no matching published Workflow exists, Main should say so instead of inventing one or silently choosing another.
