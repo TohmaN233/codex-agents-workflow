@@ -24,6 +24,13 @@ do not add nodes, reports or startup gates to ordinary business Workflows.
    Share only common input; do not infer cache or speed savings from graph shape.
 4. Give each source phase one complete mechanical observation owner. Reuse its
    established evidence rather than repeating full resource or product audits.
+   Reject Host-added completion conditions without a source/user requirement:
+   whole-workspace immutability, unchanged runtime state, repeated directory
+   snapshots and stricter replacement quality gates are not justified by a read
+   grant or by the presence of a checker. SDK automatic checks retain their exact
+   verdict and closed execution; downstream observation checks selected products.
+   Report an imposed Host scope as a Host projection defect, block acceptance and
+   repair that boundary instead of asking the planner to add compensating nodes.
 5. Check source coverage in both directions, including instructions, required
    output fields and the experimental caller. Remove source-absent research,
    delivery records and verification work before measuring the business task.

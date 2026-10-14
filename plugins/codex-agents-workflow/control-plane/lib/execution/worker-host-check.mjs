@@ -12,7 +12,7 @@ import {hostToolContracts,requireHostToolExecutionScope,validateHostToolReceipt,
 import {hostCompletionInputs} from './main-host-check.mjs';
 import {semanticResultSchema} from './host-main-automation.mjs';
 import {hostCompletionResourcePaths} from './host-completion-resources.mjs';
-import {saveMainHostCheckSnapshot,readMainHostCheckSnapshot,requireMainHostCheckFreshness} from './main-host-check-snapshot.mjs';
+import {saveWorkerArtifactSnapshot,readWorkerArtifactSnapshot,requireWorkerArtifactFreshness} from './worker-artifact-snapshot.mjs';
 import {pathBoundaryContains} from '../workflow-bindings.mjs';
 import {validateTextRepairScope} from './native-text-amendment.mjs';
 import {runtimeEnvironmentForWorker} from '../runtime-environment-state.mjs';
@@ -93,7 +93,9 @@ export function workerHostCheckContext(record,binding,{item_index=null,output,mo
   const slot_id=native?nativeHostCheckSlot(native_observation,item_index):`${item_index===null?'main':`item-${item_index}`}-turn-${selectedTurn}`;
   const identity={run_id:state.run_id,node_id:definition.id,attempt_id:attempt.id,slot_id,item_index,...(native?{native_observation:structuredClone(native_observation)}:{model_turn:selectedTurn}),tool:contract.id,
     contract_sha256:digest(canonicalJSON(contract)),input_sha256:digest(canonicalJSON(input)),workspace,permissions_sha256:digest(canonicalJSON(permissions))};
-  return {identity,input,contract,workspace,permissions,check,envelope,attempt,definition};
+  const product_paths=[...new Set((definition.required_artifacts??[]).map(item=>relative(workspace,resolve(envelope.workspace,item.path)).replaceAll('\\','/'))
+    .filter(path=>path&&path!=='..'&&!path.startsWith('../')&&!isAbsolute(path)))].sort();
+  return {identity,input,contract,workspace,permissions,check,envelope,attempt,definition,product_paths};
 }
 
 export async function validateWorkerHostCheckReceipt(runtime,runId,slot,context){
@@ -113,7 +115,8 @@ export async function validateWorkerHostCheckReceipt(runtime,runId,slot,context)
     'HOST_TOOL_OUTPUT_CORRUPT','Worker check durable output differs from its exact receipt');
   validateData(stored.output,context.contract.output_schema);
   requireValue(!receipt.effects.outside_paths.length,'HOST_TOOL_SCOPE','Worker check wrote outside its grant');
-  await readMainHostCheckSnapshot(runtime,runId,context.workspace,stored.completion_snapshot);return stored;
+  if(context.product_paths.length&&stored.output[context.check.success_field]===true)await readWorkerArtifactSnapshot(runtime,runId,context.workspace,context.product_paths,stored.completion_snapshot);
+  return stored;
 }
 
 // The amendment baseline is the exact semantic proposal already rendered by
@@ -152,7 +155,10 @@ export async function requireWorkerHostCheckAccepted(runtime,runId,record,bindin
   const context=workerHostCheckContext(record,{...binding,attempt_id:reference.attempt_id},{output,item_index:slot.identity.item_index,model_turn:slot.identity.model_turn,native_observation:slot.identity.native_observation});
   const stored=await validateWorkerHostCheckReceipt(runtime,runId,slot,context);
   requireValue(stored.output[context.check.success_field]===true,'MAIN_WORKER_HOST_CHECK_FALSE','Worker completion check rejected the semantic result');
-  await requireMainHostCheckFreshness(runtime,runId,context.workspace,stored.completion_snapshot);return slot;
+  // Both SDK and native replay retain exact receipt identity. Freshness applies
+  // to explicit products; downstream consumers own any other artifact checks.
+  if(context.product_paths.length)await requireWorkerArtifactFreshness(runtime,runId,context.workspace,context.product_paths,stored.completion_snapshot);
+  return slot;
 }
 
 export function workerHostCheckEffectPaths(record,node_id,reference,workspace){
@@ -191,7 +197,7 @@ export async function executeWorkerHostCheck(manager,entry,binding,output,{item_
     requireValue(prior.receipt,'HOST_TOOL_RECONCILIATION_REQUIRED','Worker check has an uncertain durable intent and cannot automatically replay');
     const stored=await validateWorkerHostCheckReceipt(entry.runtime,entry.runId,prior,context);
     requireValue(stored,'HOST_TOOL_FAILED','Worker check replay requires a successful receipt');
-    await requireMainHostCheckFreshness(entry.runtime,entry.runId,workspace,stored.completion_snapshot);
+    if(context.product_paths.length&&stored.output[context.check.success_field]===true)await requireWorkerArtifactFreshness(entry.runtime,entry.runId,workspace,context.product_paths,stored.completion_snapshot);
     if(context.check.text_amendment&&stored.output[context.check.success_field]===false)validateTextRepairScope(context.input.output,stored.output[context.check.text_amendment.repair_scope_field],context.check.text_amendment);
     return {accepted:stored.output[context.check.success_field],diagnostic:stored.output[context.check.correction_field],reference:{attempt_id:binding.attempt_id,slot_id:identity.slot_id},
       ...(context.check.text_amendment?{repair_scope:structuredClone(stored.output[context.check.text_amendment.repair_scope_field])}:{})};
@@ -215,9 +221,8 @@ export async function executeWorkerHostCheck(manager,entry,binding,output,{item_
     quiescent=true;markQuiescent();
     let receipt=executed.receipt,stored=null;
     if(receipt.status==='succeeded'){
-      // Capture workspace evidence before taking a publication transaction.
-      // External execution, cancellation and snapshot IO keep their boundaries.
-      stored={kind:'worker_host_check_output',identity,output:executed.output,completion_snapshot:await saveMainHostCheckSnapshot(entry.runtime,entry.runId,digest(canonicalJSON(identity)).slice(0,32),workspace)};
+      stored={kind:'worker_host_check_output',identity,output:executed.output,
+        ...(context.product_paths.length&&executed.output[context.check.success_field]===true?{completion_snapshot:await saveWorkerArtifactSnapshot(entry.runtime,entry.runId,digest(canonicalJSON(identity)).slice(0,32),workspace,context.product_paths)}:{})};
     }
     const publish=async()=>{
       if(stored){const saved=await entry.runtime.runs.saveExecutorResult(entry.runId,binding.attempt_id,stored);
