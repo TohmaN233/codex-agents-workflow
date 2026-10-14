@@ -193,7 +193,7 @@ export class HostMainManager {
       }
       const state = await entry.runtime.get(entry.runId);
       if (terminal.has(state.status)) {
-        entry.status = state.status; entry.outcome = { status: state.status, stop_reason: 'terminal',...committedTerminalOutput(state) }; this.compact(entry); return publicView(entry);
+        entry.status = state.status; entry.outcome = { status: state.status, stop_reason: 'terminal',...committedTerminalCompletion(state) }; this.compact(entry); return publicView(entry);
       }
       assertActive();
       handoff = await entry.drive.advanceToMain(entry.runId, {
@@ -627,4 +627,4 @@ export class HostMainManager {
     this.hostAuth?.clear();
   }
 }
-import {committedTerminalOutput} from './terminal-output.mjs';
+import {committedTerminalCompletion} from './terminal-output.mjs';
