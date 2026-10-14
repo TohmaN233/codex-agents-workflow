@@ -3022,8 +3022,8 @@ test('native Host checker atomically admits concurrent exact child-turn collecto
   assert.equal(results.find(result=>result.status==='rejected').reason.code,'HOST_TOOL_RECONCILIATION_REQUIRED');
 });
 
-test('native Host checker receipt replay rejects semantic, artifact and workspace tampering',async t=>{
-  const f=await nativeCheckFixture(t),c=await nativeCheckContext(f),manager={hostToolRunner:new HostToolRunner({registry:{'native-check':f.broker},env:{}})};
+test('native Host checker receipt replay rejects semantic, receipt and declared product tampering',async t=>{
+  const f=await nativeCheckFixture(t,{requiredArtifacts:[{path:'pages/a/rendered.txt',requirement_id:'a-render'}]}),c=await nativeCheckContext(f),manager={hostToolRunner:new HostToolRunner({registry:{'native-check':f.broker},env:{}})};
   const entry={runtime:c.runtime,runId:f.run.run_id},options={item_index:0,native_observation:c.native_observation,authorize:()=>c.runtime.authorizedExecution(f.run.run_id,c.binding,()=>c.binding),assertActive:()=>{}};
   const first=await executeWorkerHostCheck(manager,entry,c.binding,c.output,options);assert(first.accepted);
   const replay=await executeWorkerHostCheck(manager,entry,c.binding,c.output,options);assert.deepEqual(replay.reference,first.reference);assert.equal(f.calls.length,1);
@@ -3034,6 +3034,40 @@ test('native Host checker receipt replay rejects semantic, artifact and workspac
   const record=await c.runtime.runs.read(f.run.run_id),slot=record.state.nodes.worker.attempts[0].worker_host_checks[first.reference.slot_id];
   await writeFile(join(c.runtime.runs.directory(f.run.run_id),slot.receipt.output_ref.artifact),'tampered artifact');
   await assert.rejects(executeWorkerHostCheck(manager,entry,c.binding,c.output,options));assert.equal(f.calls.length,1);
+});
+
+test('native Host checker replay ignores bookkeeping and snapshots only declared products',async t=>{
+  for(const declared of [false,true]){
+    const f=await nativeCheckFixture(t,{requiredArtifacts:declared?[{path:'pages/a/rendered.txt',requirement_id:'a-render'}]:[]}),c=await nativeCheckContext(f);
+    const manager={hostToolRunner:new HostToolRunner({registry:{'native-check':f.broker},env:{}})},entry={runtime:c.runtime,runId:f.run.run_id};
+    const options={item_index:0,native_observation:c.native_observation,authorize:()=>c.runtime.authorizedExecution(f.run.run_id,c.binding,()=>c.binding),assertActive:()=>{}};
+    const first=await executeWorkerHostCheck(manager,entry,c.binding,c.output,options);
+    await writeFile(join(f.workspace,'pages/a/runtime-state.json'),JSON.stringify({closed:true}));
+    const replay=await executeWorkerHostCheck(manager,entry,c.binding,c.output,options);
+    assert.deepEqual(replay.reference,first.reference);assert.equal(f.calls.length,1);
+    const record=await c.runtime.runs.read(f.run.run_id),slot=record.state.nodes.worker.attempts[0].worker_host_checks[first.reference.slot_id];
+    const stored=await c.runtime.runs.readExecutorResult(f.run.run_id,c.binding.attempt_id,slot.receipt.output_ref.sha256);
+    if(declared){
+      const snapshot=JSON.parse((await c.runtime.runs.readArtifact(f.run.run_id,stored.completion_snapshot)).toString('utf8'));
+      assert.equal(snapshot.coverage,'declared_products');assert.deepEqual(snapshot.entries.map(item=>item.path),['rendered.txt']);
+    }else assert.equal(stored.completion_snapshot,undefined);
+  }
+});
+
+test('native rejected render can repair before a declared product exists',async t=>{
+  const f=await nativeCheckFixture(t,{single:true,requiredArtifacts:[{path:'pages/rendered.txt',requirement_id:'render'}],execute:async(request,count)=>{
+    if(count===2)await writeFile(join(request.context.workspace,'pages/rendered.txt'),request.input.output.summary);
+    return {exit_code:0,output:{complete:count===2,diagnostic:count===1?'Correct this component.':''},diagnostic:'',
+      effects:{observed:true,changed_paths:count===2?['pages/rendered.txt']:[],outside_paths:[],artifacts:[]}};
+  }});
+  const initial=await f.service.call('native_next',{},MODEL_REQUEST);
+  const rejected=await f.service.call('native_spawned_batch',{batch_id:initial.batch_id},MODEL_REQUEST);
+  assert.equal(rejected.status,'native_agent_invalid_result');
+  const state=await f.service.call('get',f.binding),first=Object.values(state.nodes.worker.attempts[0].worker_host_checks)[0];
+  const {runtime}=await f.service.open(),stored=await runtime.runs.readExecutorResult(f.run.run_id,first.receipt.attempt_id,first.receipt.output_ref.sha256);
+  assert.equal(stored.completion_snapshot,undefined);
+  await f.service.call('native_followed_up',{},MODEL_REQUEST);
+  assert.equal((await f.service.call('get',f.binding)).nodes.worker.status,'succeeded');assert.equal(f.calls.length,2);
 });
 
 test('native Host checker exhausts false results visibly and preserves accepted siblings across correction',async t=>{
@@ -3070,7 +3104,7 @@ test('native Host checker narrowed item workspace grant fails before effects or 
 });
 
 test('native Host checker retained sibling freshness blocks the final join',async t=>{
-  const f=await nativeCheckFixture(t,{accept:request=>request.input.inputs.jobs[0].name==='a'||request.input.output.summary==='accepted 2'});
+  const f=await nativeCheckFixture(t,{requiredArtifacts:[{path:'pages/a/rendered.txt',requirement_id:'a-render'}],accept:request=>request.input.inputs.jobs[0].name==='a'||request.input.output.summary==='accepted 2'});
   const handoff=await f.service.call('native_next',{},MODEL_REQUEST),repair=await f.service.call('native_spawned_batch',{batch_id:handoff.batch_id},MODEL_REQUEST);
   assert.equal(repair.status,'native_agent_invalid_result');
   await writeFile(join(f.workspace,'pages/a/rendered.txt'),'tampered accepted sibling');

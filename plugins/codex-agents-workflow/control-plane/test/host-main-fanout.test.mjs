@@ -591,12 +591,20 @@ for(const single of [false,true])test(`command completion boundary precedes real
  assert.equal(commands.audit().length,1);assert.equal(commands.audit()[0].status,'completed');
 });
 
-for(const single of [false,true])test(`command completion boundary preserves late product freshness (${single?'single':'fanout'})`,async t=>{
+for(const single of [false,true])test(`SDK worker completion accepts settled renderer metadata without a second whole-workspace check (${single?'single':'three parallel items'})`,async t=>{
  const check=workerCheckFixture();let prepared=0;
- const f=await fixture(t,{single,hostCheck:check,jobs:[{name:'a',workspace:'pages/a',destinations:['pages/a']}],prepare:async()=>{prepared++;},close:async({options})=>writeFile(join(options.cwd,'rendered.txt'),'unexpected late effect')});
- const binding=await f.claim('late-product'),execution=await f.execute(binding);
- await assert.rejects(execution.job,error=>single?error.code==='MAIN_ORCHESTRATION_HOST_CHECK_STALE':error.errors?.some(item=>item.code==='MAIN_ORCHESTRATION_HOST_CHECK_STALE'));
- assert.equal(prepared,1);assert.notEqual((await f.runtime.runs.read(f.run.run_id)).state.nodes.pages.status,'succeeded');execution.entry.status='failed';
+ const jobs=single?[{name:'a',workspace:'pages/a',destinations:['pages/a']}]:undefined;
+ const f=await fixture(t,{single,hostCheck:check,...(jobs?{jobs}:{}),prepare:async()=>{prepared++;},close:async({options})=>writeFile(join(options.cwd,'runtime-state.json'),'renderer completed background bookkeeping')});
+ let snapshotCalls=0;const saveArtifact=f.runtime.runs.saveArtifact.bind(f.runtime.runs);
+ f.runtime.runs.saveArtifact=async(id,name,...args)=>{if(name.startsWith('completion-snapshot-'))snapshotCalls++;return saveArtifact(id,name,...args);};
+ const binding=await f.claim('settled-renderer-metadata'),execution=await f.execute(binding);await execution.job;
+ const record=await f.runtime.runs.read(f.run.run_id),count=single?1:3;
+ assert.equal(prepared,count);assert.equal(check.calls.length,count);assert.equal(record.state.nodes.pages.status,'succeeded');assert.equal(snapshotCalls,0);
+ for(const call of check.calls)assert.equal(await readFile(join(call.context.workspace,'rendered.txt'),'utf8'),call.input.output.conclusion);
+ for(const slot of Object.values(record.state.nodes.pages.attempts[0].worker_host_checks)){
+  const stored=await f.runtime.runs.readExecutorResult(f.run.run_id,binding.attempt_id,slot.receipt.output_ref.sha256);
+  assert.equal(stored.completion_snapshot,undefined);assert.equal(slot.receipt.status,'succeeded');
+ }
 });
 
 for(const single of [false,true])test(`command completion boundary failure prevents checker effects (${single?'single':'fanout'})`,async t=>{

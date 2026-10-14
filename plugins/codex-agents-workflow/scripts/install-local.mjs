@@ -23,6 +23,20 @@ export function selectObsoleteMcpEvents(lines,version,cacheRoot){
  }
  return [...events.values()];
 }
+async function observedObsoleteMcpVersions(currentVersion,cacheRoot,codexHome){
+ const home=resolve(codexHome??process.env.CODEX_HOME??join(homedir(),'.codex'));
+ let lines;
+ try{lines=(await readFile(join(home,'codex-agents-workflow/mcp-startup.jsonl'),'utf8')).split(/\r?\n/);}
+ catch(error){if(error.code==='ENOENT')return [];throw error;}
+ const versions=new Set();
+ for(const line of lines){
+  if(!line)continue;let event;try{event=JSON.parse(line);}catch{continue;}
+  const version=event?.version;
+  if(typeof version==='string'&&/^[0-9][A-Za-z0-9.+_-]*$/.test(version)&&version!==currentVersion
+   &&selectObsoleteMcpEvents([line],version,cacheRoot).length)versions.add(version);
+ }
+ return [...versions].sort();
+}
 async function releaseObsoleteMcpProcesses(version,cacheRoot){
  if(process.platform!=='win32')return [];
  const home=resolve(process.env.CODEX_HOME||join(homedir(),'.codex'));
@@ -58,7 +72,7 @@ foreach($event in @($events)){
  const parsed=JSON.parse(stdout);return Array.isArray(parsed)?parsed:[parsed];
 }
 
-export async function retireObsoleteVersions(cacheRoot,currentVersion,{remove=rm,release=releaseObsoleteMcpProcesses}={}){
+export async function retireObsoleteVersions(cacheRoot,currentVersion,{remove=rm,release=releaseObsoleteMcpProcesses,observedVersions=[]}={}){
  const root=resolve(cacheRoot);await noSymlinks(root);
  const entries=await readdir(root,{withFileTypes:true});
  requireValue(entries.some(entry=>entry.isDirectory()&&entry.name===currentVersion),'PLUGIN_CACHE_CURRENT','Installed plugin cache does not contain the new version');
@@ -75,6 +89,12 @@ export async function retireObsoleteVersions(cacheRoot,currentVersion,{remove=rm
   const stopped=await release(entry.name,root);if(stopped.length)released.push({version:entry.name,count:stopped.length});
   await remove(target,{recursive:true,force:false,maxRetries:3,retryDelay:50});removed.push(entry.name);
  }
+ // The standard CLI can remove old directories itself. Persisted startup
+ // identity remains sufficient for the existing exact PID/time/command check.
+ for(const version of observedVersions){
+  if(version===currentVersion||entries.some(entry=>entry.name===version))continue;
+  const stopped=await release(version,root);if(stopped.length)released.push({version,count:stopped.length});
+ }
  return {removed_versions:removed.sort(),released_processes:released};
 }
 
@@ -86,12 +106,13 @@ export async function installLocal({
 }={}) {
  currentVersion??=JSON.parse(await readFile(join(pluginRoot,'.codex-plugin/plugin.json'),'utf8')).version;
  preflightNativeContextProfileRegistration({codexHome});
+ const observedVersions=await observedObsoleteMcpVersions(currentVersion,cacheRoot,codexHome);
  // Normal updates must not sever every current-version client before the CLI
  // even runs. A sharing violation remains an explicit install failure; only
  // obsolete-version retirement after success may release its exact processes.
  await install();
  const native_context_profile=installNativeContextProfile({codexHome,deployedPluginRoot:resolve(cacheRoot,currentVersion)});
- const retired=await retireObsoleteVersions(cacheRoot,currentVersion,{remove,release});
+ const retired=await retireObsoleteVersions(cacheRoot,currentVersion,{remove,release,observedVersions});
  return {installed:true,retained_versions:[],...retired,native_context_profile,
   mcp_connection_refresh_required:retired.released_processes.length>0};
 }

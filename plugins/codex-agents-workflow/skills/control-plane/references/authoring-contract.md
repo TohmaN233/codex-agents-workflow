@@ -4,6 +4,16 @@ Use this contract for Skill conversion and brief-based generation. [Authoring](a
 
 ## Host execution defaults
 
+Host validation authority comes from the source or the requested task. Each check
+must identify the product, format or execution boundary it verifies. A broad read
+grant does not authorize an unchanged-directory completion condition. Do not add
+whole-workspace freshness, stable runtime bookkeeping, repeated source/resource
+audits or stricter quality requirements to make Host acceptance appear safer.
+Preserve original checks and repair limits, reuse their result, and observe the
+actual selected products at their declared consumer. An imposed Host condition is
+a generation blocker and a Host defect, not an instruction for a worker to obey
+or a reason to add another planner/verification round.
+
 Choose responsibility first, then actual difficulty. **Default exclusion applies
 to Main worker, never Main O.** The initiating Main owns user intent, route
 decisions, live clarification, conversation coordination and final semantic
