@@ -282,7 +282,8 @@ test('a guarded Host tool finalizes a Run without a model relay', async t => {
   }) }, env: {} });
   const f = await fixture(t, workflow, { runner });
   const result = await f.drive.advance(f.run.run_id, { control_token: f.run.control_token });
-  assert.deepEqual(result, { status: 'succeeded', stop_reason: 'terminal', steps: 1, output: { doubled: 6, all_passed: true } });
+  assert.deepEqual(result, { status: 'succeeded', stop_reason: 'terminal', steps: 1,
+    completion_satisfied: true, recovery_required: false, output: { doubled: 6, all_passed: true } });
   assert.equal(calls, 1);
   const state = await f.runtime.get(f.run.run_id);
   assert.deepEqual(state.nodes.double.output, { doubled: 6, all_passed: true });
