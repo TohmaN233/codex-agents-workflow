@@ -2,6 +2,8 @@
 
 ## Working standard
 
+- 2026-10-14 Main resume: authorized detached Host recovery must not require a specific persisted worker phase or termination reason. Attention, failed and stopped records may be relaunched by the current controller; running/starting owners retain their existing wait path, and controller authority and recovery-cleanup checks remain unchanged.
+
 - Standalone console URL cleanup must preserve authenticated reloads within the same tab and origin. Keep its token in session storage only, preserve its server-side lifetime, and leave MCP App authority on the existing host-gated channel. A fresh origin cannot reuse another origin's credential.
 
 - 2026-10-14 release 1.2.2: console-only update metadata checks share one bounded request per five-minute cache window; never add them to Run startup, bootstrap or model-facing tools. Offline/malformed responses remain visible and cannot mean up-to-date. Keep the repository Star link in both locales, retain plain version parsing for legacy two-part 1.2, and synchronize manifest, control-plane package and lockfile once at release completion. User workflow bundles remain in workflow-package, with measured source versions kept distinct from current package versions.

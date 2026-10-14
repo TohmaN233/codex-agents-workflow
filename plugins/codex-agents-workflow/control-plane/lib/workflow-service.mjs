@@ -532,11 +532,6 @@ async function resumeDetachedHostMain(service, runtime, args, state) {
     return { ...state, execution_owner: 'host_main_worker', host_worker: worker,
       next_action: 'workflow_wait', next_action_args: { run_id: args.run_id, control_token: args.control_token, timeout_ms: WORKFLOW_WAIT_MS } };
   }
-  const confirmedAuthorityRevocation = worker.termination?.confirmed === true
-    && worker.termination.reason === 'authority_revoked';
-  requireValue(confirmedAuthorityRevocation && worker.phase === 'stopped',
-  'HOST_MAIN_RESTART_UNSAFE',
-  `Detached Host Main cannot restart from ${worker.phase}: inspect its terminal evidence first`);
   await runtime.authorizeController(args.run_id, { control_token: args.control_token });
   const launched = await (service.capabilities.launchDetachedHostMain ?? launchDetachedHostMain)({
     configPath: service.configPath, defaultConfigPath: service.defaultConfigPath,

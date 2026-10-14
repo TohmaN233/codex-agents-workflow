@@ -450,19 +450,35 @@ test('resume relaunches the same detached Host owner after controller recovery s
   assert.equal(launches[0].owner, 'root');
 });
 
-test('resume rejects the removed failed-worker compatibility state', async t => {
+for (const phase of ['attention', 'failed', 'stopped']) test(`authorized resume relaunches an owner recorded as ${phase} without a termination-reason gate`, async t => {
   const launches = [];
   const f = await fixture(t, { capabilities: {
     launchDetachedHostMain: async args => { launches.push(args); return { run_id: args.runId, status: 'starting', host_worker_pid: 4243 }; },
   } });
   await f.migrate();
   const run = await f.start();
-  await writeHostMainWorker(f.configPath, run.run_id, 'failed', {
-    termination: { confirmed: true, reason: 'authority_revoked' },
-    error: { code: 'HOST_MAIN_STOPPED', diagnostic: 'Host Main permission was revoked', secondary_codes: [] },
-  });
+  await writeHostMainWorker(f.configPath, run.run_id, phase);
+  await assert.rejects(f.service.call('resume', { ...control(run), control_token: 'wrong-owner' }), { code: 'RUN_AUTHORITY' });
+  assert.equal(launches.length, 0);
+  const resumed = await f.service.call('resume', control(run));
+  assert.equal(resumed.status, 'running');
+  assert.equal(resumed.execution_owner, 'host_main_worker');
+  assert.equal(resumed.next_action, 'workflow_wait');
+  assert.equal(launches.length, 1);
+  assert.equal(launches[0].runId, run.run_id);
+  assert.equal(launches[0].controlToken, run.control_token);
+});
 
-  await assert.rejects(f.service.call('resume', control(run)),{code:'HOST_MAIN_RESTART_UNSAFE'});
+for (const phase of ['running', 'starting']) test(`resume waits for an owner recorded as ${phase} without launching another`, async t => {
+  const launches = [];
+  const f = await fixture(t, { capabilities: {
+    launchDetachedHostMain: async args => { launches.push(args); return { run_id: args.runId, status: 'starting' }; },
+  } });
+  await f.migrate();
+  const run = await f.start();
+  await writeHostMainWorker(f.configPath, run.run_id, phase);
+  const resumed = await f.service.call('resume', control(run));
+  assert.equal(resumed.next_action, 'workflow_wait');
   assert.equal(launches.length, 0);
 });
 
