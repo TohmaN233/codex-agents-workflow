@@ -2,6 +2,8 @@
 
 ## Working standard
 
+- 2026-10-14 installed-client retirement: the standard CLI may delete obsolete cache directories before post-install cleanup. Capture exact namespace/version startup identities before installation, then release only their matched obsolete processes after success even when those directories disappeared. Preserve current-version clients, PID reuse fences and install failure visibility; never recreate an old cache to hide a stale connection.
+
 - 2026-10-14 Main resume: authorized detached Host recovery must not require a specific persisted worker phase or termination reason. Attention, failed and stopped records may be relaunched by the current controller; running/starting owners retain their existing wait path, and controller authority and recovery-cleanup checks remain unchanged.
 
 - Standalone console URL cleanup must preserve authenticated reloads within the same tab and origin. Keep its token in session storage only, preserve its server-side lifetime, and leave MCP App authority on the existing host-gated channel. A fresh origin cannot reuse another origin's credential.

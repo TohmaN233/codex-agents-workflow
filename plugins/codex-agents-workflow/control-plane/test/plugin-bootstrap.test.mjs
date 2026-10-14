@@ -119,6 +119,32 @@ test('installation failure is exposed without automatic restore or retry',async(
  }finally{assert(home.startsWith(resolve(tmpdir())));await rm(home,{recursive:true});}
 });
 
+test('successful CLI replacement releases logged obsolete MCP owners after their cache directory disappears',async()=>{
+ const home=await mkdtemp(join(tmpdir(),'replaced-plugin-'));
+ try{
+  const cacheRoot=join(home,'cache','marketplace','codex-agents-workflow'),codexHome=join(home,'codex-home');
+  const old=join(cacheRoot,'1.0.0-old'),current=join(cacheRoot,'1.0.0-current');
+  await mkdir(join(old,'.codex-plugin'),{recursive:true});await mkdir(join(current,'agent-profiles'),{recursive:true});
+  await writeFile(join(old,'.codex-plugin','plugin.json'),JSON.stringify({name:'codex-agents-workflow',version:'1.0.0-old'}));
+  await writeFile(join(current,'agent-profiles','caw-native-builtins.toml'),readNativeContextProfileTemplate());
+  await mkdir(join(codexHome,'codex-agents-workflow'),{recursive:true});
+  const event={phase:'resolved',version:'1.0.0-old',pid:101,at:'2026-10-12T00:00:00.000Z',namespace:cacheRoot,marketplace:'marketplace',
+   pluginId:'codex-agents-workflow@marketplace',entry:join(old,'control-plane','server.mjs')};
+  await writeFile(join(codexHome,'codex-agents-workflow','mcp-startup.jsonl'),JSON.stringify(event)+'\n');
+  let installed=false;const released=[];
+  const result=await installLocal({cacheRoot,codexHome,currentVersion:'1.0.0-current',install:async()=>{
+   await rm(old,{recursive:true});installed=true;
+  },release:async(version,namespace)=>{
+   assert.equal(installed,true,'Never stop old owners before successful replacement');assert.equal(namespace,resolve(cacheRoot));
+   released.push(version);return [101];
+  }});
+  assert.deepEqual(released,['1.0.0-old']);
+  assert.deepEqual(result.removed_versions,[]);
+  assert.deepEqual(result.released_processes,[{version:'1.0.0-old',count:1}]);
+  assert.equal(result.mcp_connection_refresh_required,true);
+ }finally{assert(home.startsWith(resolve(tmpdir())));await rm(home,{recursive:true});}
+});
+
 async function profileFixture(run){
  const home=await mkdtemp(join(tmpdir(),'native-profile-'));
  try{
