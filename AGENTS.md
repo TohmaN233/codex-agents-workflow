@@ -8,7 +8,7 @@ Current-conversation Main scope observation records filesystem metadata, while d
 
 - Notification backpressure qualification covers both more than 256 small ordered notifications and aggregate queued bytes exceeding 8 MiB. Overflow tests must use finite waiter/test deadlines and release held sinks during cleanup; an obsolete count-based overflow expectation must not stall the full manifest.
 
-- Main delivery qualification uses actual oversized values above the current 16 KiB per-item boundary. Historical 12,000-byte file-replay fixtures explicitly select historical receipts; current receipt coverage retains complete medium inputs inline. Preserve the file-materialization and exact replay assertions when updating fixture sizes.
+- Main delivery qualification uses actual oversized values above the current 16 KiB per-item boundary. Historical 12,000-byte file-replay fixtures explicitly select historical receipts; current receipt coverage retains complete medium inputs inline. Preserve the file-materialization and exact replay assertions when updating fixture sizes. Sidecar fixtures must not depend on temporary path length to spill a medium value.
 
 - 2026-10-14 source-bound installation: local installation registers the checkout that owns the invoked script before plugin add. Compare the installed files against the captured source before reporting success or updating the native profile. Equal release versions do not prove equal code. Never patch temporary marketplace snapshots as the source of record. These checks run only at installation, never at Run or node startup; preserve current-version MCP clients and expose registration/copy failures without retries.
 

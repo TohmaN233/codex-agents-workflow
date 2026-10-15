@@ -214,7 +214,8 @@ for (const lane of ['inline', 'file']) test(`semantic Main projection hides Host
 });
 
 for (const lane of ['inline', 'file']) test(`semantic Main projection reopens an existing canonical ${lane} receipt without changing diagnostics or sidecars`, async t => {
-  const context = 'RETAIN_DECLARED_VALUE_'.repeat(700), reference = 'RETAIN_DECLARED_RESOURCE_'.repeat(700);
+  const context = 'RETAIN_DECLARED_VALUE_'.repeat(1000), reference = 'RETAIN_DECLARED_RESOURCE_'.repeat(700);
+  assert(Buffer.byteLength(context)>16384&&Buffer.byteLength(reference)>16384,'Sidecar coverage must not depend on temporary path length');
   const f = await fixture(t, { legacyTaskDelivery:true,resources: { 'reference.txt': reference }, extraInputs: { context }, mutateWorkflow: workflow => {
     workflow.inputs_schema.properties.context = { type: 'string' };
     const node = workflow.nodes.find(node => node.id === 'final');
