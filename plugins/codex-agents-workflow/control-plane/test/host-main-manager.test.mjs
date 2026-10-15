@@ -182,7 +182,7 @@ async function preparedMainFixture(t, { beforeStart,closeError,strictEnabled=tru
   const objects = join(root, 'runs', 'objects'); await mkdir(workspace); await mkdir(objects, { recursive: true });
   t.after(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const bodies = { 'behavior.md': 'BEHAVIOR_ONCE: Follow the declared acceptance criteria.',
-    'program.py': 'EXECUTABLE_BODY_MUST_STAY_LOCAL = True\n', 'large.md': 'LARGE_RESOURCE_BODY_' + 'z'.repeat(13000),
+    'program.py': 'EXECUTABLE_BODY_MUST_STAY_LOCAL = True\n', 'large.md': 'LARGE_RESOURCE_BODY_' + 'z'.repeat(20000),
     'undeclared.md': 'UNDECLARED_RESOURCE_BODY' };
   const pins = Object.entries(bodies).map(([path, body]) => ({ path, sha256: digest(body), bytes: Buffer.byteLength(body) }));
   for (const pin of pins) await writeFile(join(objects, pin.sha256), bodies[pin.path]);
@@ -192,7 +192,7 @@ async function preparedMainFixture(t, { beforeStart,closeError,strictEnabled=tru
     state: { main_actor: 'logical-main', nodes: { work: { attempts: [] } } } };
   const envelope = { node_id: 'work', executor: definition.executor, allowed_skills: [], resources: declared,
     skill_policy: { mode: policyMode, implicit: 'allow', ambient_allow: [], shadowed_skill_paths: [] },
-    inputs: { task: 'TASK_ONCE', baseline: 'BASELINE_ONCE', mode: 'MODE_ONCE', large_json: { body: 'LARGE_INPUT_BODY_' + 'x'.repeat(13000) } },
+    inputs: { task: 'TASK_ONCE', baseline: 'BASELINE_ONCE', mode: 'MODE_ONCE', large_json: { body: 'LARGE_INPUT_BODY_' + 'x'.repeat(20000) } },
     context_projection: { mode: 'declared_bindings', bindings: ['task', 'baseline', 'mode', 'large_json'], references: declared },
     access: 'read_only', workspace, effective_allowed_paths: [], constraints: {},
     prompt_template: 'Resources listed below are logical identifiers, not filesystem paths. Use read_workflow_resource; cite resource IDs.\n{{task}}', outputs_schema: output(false) };

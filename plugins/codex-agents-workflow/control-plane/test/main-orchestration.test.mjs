@@ -780,7 +780,7 @@ test('Main orchestration includes small declared bound values once without an ex
 });
 
 test('Main orchestration keeps oversized declared input values in verified bounded sidecars',async t=>{
-  const context='DECLARED_LARGE_VALUE_'.repeat(700);
+  const context='DECLARED_LARGE_VALUE_'.repeat(1000);
   const f=await fixture(t,{extraInputs:{context},mutateWorkflow:workflow=>{
     workflow.inputs_schema.properties.context={type:'string'};
     workflow.nodes.find(n=>n.id==='final').input_bindings.context='/inputs/context';
@@ -822,8 +822,8 @@ test('Main handoff delivers each declared reference once and keeps diagnostics o
   assert(result.response_schema);assert(result.allowed_paths);assert(result.workspace);
 });
 
-test('large orchestration indices use explicit file delivery and never inline resource bodies',async t=>{
-  const f=await fixture(t,{resources:{'reference.txt':'PRIVATE_RESOURCE_BODY'.repeat(2000)},mutateWorkflow:workflow=>{
+test('historical orchestration indices retain file delivery and never inline resource bodies',async t=>{
+  const f=await fixture(t,{legacyTaskDelivery:true,resources:{'reference.txt':'PRIVATE_RESOURCE_BODY'.repeat(2000)},mutateWorkflow:workflow=>{
     workflow.nodes.find(n=>n.id==='final').prompt_template='Long bounded task '+ 'instruction '.repeat(1000);
   }});
   const result=await f.service.call('native_next',{}, {model:true,modelThreadId:thread});
