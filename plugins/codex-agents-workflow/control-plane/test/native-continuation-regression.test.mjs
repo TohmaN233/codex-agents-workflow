@@ -2427,7 +2427,9 @@ test('native text amendment repair ACK accepts a ready sibling before the repair
     const item=[...threads.values()].find(item=>item.thread.id===args.threadId);assert(item);
     if(method==='thread/read')return {thread:item.thread};
     assert.equal(method,'thread/turns/list');
-    const isRepair=item.index===0&&repairing,terminal=!isRepair||repairTerminal;
+    // The sibling becomes ready at ACK, so this test exercises collection during
+    // repair rather than relying on how much work initial collection completes.
+    const isRepair=item.index===0&&repairing,terminal=item.index===1?repairing:!isRepair||repairTerminal;
     const payload=isRepair?{amendments:[{field:'summary',start_line:1,end_line:1,replacement:'accepted a\r\n'}]}
       :{outcome:'completed',result:{items:[{outcome:'completed',result:{summary:item.index===0?draft:'accepted b'}}]}};
     return {data:[{id:isRepair?item.repairTurn:item.firstTurn,status:terminal?'completed':'inProgress',itemsView:args.itemsView,
@@ -2460,7 +2462,8 @@ test('native text amendment repair ACK accepts a ready sibling before the repair
   const {runtime}=await f.service.open(),before=await runtime.runs.read(f.binding.run_id),beforeAttempt=before.state.nodes.worker.attempts[0];
   const originalRepair=structuredClone(beforeAttempt.native_pending_followup),repairRef=originalRepair.text_repair_ref;
   assert.equal(originalRepair.agent_id,agents[0]);assert.equal(originalRepair.rejection_count,1);
-  assert.equal((await f.service.call('native_next',f.binding)).repair_remaining,2);
+  // Do not advance native_next merely to inspect the budget: it can accept the
+  // ready sibling before this ACK, invalidating the concurrency precondition.
   const sealedBaseline=await runtime.runs.readExecutorResult(f.binding.run_id,beforeAttempt.id,repairRef.sha256);
   assert.deepEqual(sealedBaseline.native_observation,{index:0,agent_id:agents[0],turn_id:threads.get(agents[0]).firstTurn});
   assert.equal(sealedBaseline.item_index,0);
@@ -3233,13 +3236,20 @@ for(const fence of ['cancellation','controller','lease'])test('native public qui
   return inspectNativeAgents(client,ids,{...options,lifecycleHome:home,waitForTerminal:true,waitTimeoutMs:30000,
    waitForChange:async args=>{
     const waiting=waitForNativeSessionEvent(args);
-    const {runtime}=await f.service.open();
-    await runtime.runs.mutate(f.binding.run_id,'control_recovery',state=>{
-     if(fence==='cancellation')state.status='cancelled';
-     else if(fence==='controller')state.control_hash=digest('revoked-neutral-controller');
-     else state.nodes.worker.attempts[0].lease_generation=(state.nodes.worker.attempts[0].lease_generation??0)+1;
-    });
-    return waiting;
+    // Register the wait rejection immediately, before the faster observer can
+    // see the deliberate authority change. Settle both owned operations.
+    const changing=(async()=>{
+     const {runtime}=await f.service.open();
+     await runtime.runs.mutate(f.binding.run_id,'control_recovery',state=>{
+      if(fence==='cancellation')state.status='cancelled';
+      else if(fence==='controller')state.control_hash=digest('revoked-neutral-controller');
+      else state.nodes.worker.attempts[0].lease_generation=(state.nodes.worker.attempts[0].lease_generation??0)+1;
+     });
+    })();
+    const results=await Promise.allSettled([waiting,changing]),errors=results.filter(item=>item.status==='rejected').map(item=>item.reason);
+    if(errors.length===1)throw errors[0];
+    if(errors.length)throw new AggregateError(errors,'Native authority fixture operations failed');
+    return results[0].value;
    }});
  };
  const handoff=await f.service.call('native_next',{},MODEL_REQUEST);

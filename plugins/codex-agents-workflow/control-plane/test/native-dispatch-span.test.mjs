@@ -10,8 +10,10 @@ import {WorkflowService} from '../lib/workflow-service.mjs';
 import {HostToolRunner} from '../lib/execution/host-tool-runner.mjs';
 import {canonicalJSON,digest} from '../lib/workflow-revisions.mjs';
 import {retainOwnedAuthority} from '../lib/execution/owned-workflow-authority.mjs';
-import {captureNativeWorkspace,nativeWorkspaceChanges,materializeWithNativeSpan,settleNativeSpan,requireNativeSpanCompletion,requireNativeRootClaim,releaseNativeSpanOwner,assertNativeSpanAdmission,abandonNativeSpan} from '../lib/execution/native-dispatch-span.mjs';
+import {captureNativeWorkspace,nativeWorkspaceChanges,nativeSpanIdentity,materializeWithNativeSpan,settleNativeSpan,requireNativeSpanCompletion,requireNativeRootClaim,releaseNativeSpanOwner,assertNativeSpanAdmission,abandonNativeSpan} from '../lib/execution/native-dispatch-span.mjs';
 import {appendEvent} from '../lib/workflow-events.mjs';
+import nativeFs from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
 import {materializeNativeTaskBundle} from '../lib/execution/node-input-materials.mjs';
 const THREAD='00000000-0000-7000-8000-000000000001',MODEL={model:true,modelThreadId:THREAD};
 const object=properties=>({type:'object',properties,required:Object.keys(properties),additionalProperties:false});
@@ -89,6 +91,61 @@ test('native span empty dispatch establishes a reusable baseline without materia
  const settled=await f.close();assert.deepEqual(settled.changed_paths,[]);
 });
 
+test('native preparation failure before journal publication releases its exact root reservation',async t=>{
+ const f=await unit(t);f.attempt.dispatch.receipt=null;
+ const original=f.runtime.runs.saveArtifact,error=Object.assign(new Error('Injected baseline storage failure'),{code:'TEST_BASELINE_WRITE'});
+ f.runtime.runs.saveArtifact=async()=>{throw error;};
+ await assert.rejects(prepareNativeSpan(f.runtime,f.record,f.definition,f.binding,{envelope:{workspace:f.workspace}},f.plan),caught=>caught===error);
+ f.runtime.runs.saveArtifact=original;
+ assert.equal(f.attempt.native_dispatch_span,undefined);
+ await requireNativeRootClaim(f.runtime,{...f.record.state,run_id:'next-run'},f.definition);
+ await prepareNativeSpan(f.runtime,f.record,f.definition,f.binding,{envelope:{workspace:f.workspace}},f.plan);
+});
+
+test('public cancel retires a historical unstarted reservation and the next same-root Run can dispatch',async t=>{
+ const f=await setup(t,async()=>{});
+ const claim=await f.runtime.claimNode(f.run.run_id,{node_id:'worker',owner:'root',request_id:'unstarted-claim',control_token:f.run.control_token});
+ await f.runtime.recordDispatchIntent(f.run.run_id,{node_id:'worker',attempt_id:claim.attempt_id,lease_token:claim.lease_token,
+  request_id:'unstarted-dispatch',envelope_hash:digest('unstarted-envelope'),control_token:f.run.control_token});
+ const record=await f.runtime.runs.read(f.run.run_id),definition=record.pins.root.workflow.nodes.find(n=>n.id==='worker'),attempt=record.state.nodes.worker.attempts.at(-1);
+ const identity=nativeSpanIdentity(record,definition,attempt,null),directory=join(f.runtime.runs.root,'.run-locks','.native-task-roots');
+ await mkdir(directory,{recursive:true});
+ const owner=Object.fromEntries(['run_id','pins_hash','node_id','attempt_id','dispatch_request_id','workspace'].map(key=>[key,identity[key]]));
+ const key=process.platform==='win32'?resolve(f.workspace).toLowerCase():resolve(f.workspace);
+ const path=join(directory,digest(key)+'.json');await writeFile(path,canonicalJSON(owner));
+ await f.service.call('cancel',{run_id:f.run.run_id,control_token:f.run.control_token});
+ const cancelled=await f.runtime.runs.read(f.run.run_id);
+ assert.equal(cancelled.state.status,'cancelled');
+ assert.equal(cancelled.state.nodes.worker.attempts.at(-1).dispatch.cancellation_pending,false);
+ await assert.rejects(readFile(path),{code:'ENOENT'});
+ const next=await f.service.call('start',{workflow_id:record.state.workflow_id,revision_hash:record.pins.root.revision_hash,
+  workspace:f.workspace,access:'bounded_write',allowed_paths:['pages'],main_actor:'root',native_parent_thread_id:THREAD,inputs:{task:'Explain the next neutral task.'}});
+ await retainOwnedAuthority(f.runtime,next);
+ const handoff=await f.service.call('native_next',{},MODEL);
+ assert(handoff.spawn_calls?.length>0||handoff.packets?.length>0);
+});
+
+test('same-root admission repairs an already-cancelled historical preparation without resubmitting it',async t=>{
+ const f=await setup(t,async()=>{});
+ const claim=await f.runtime.claimNode(f.run.run_id,{node_id:'worker',owner:'root',request_id:'historical-claim',control_token:f.run.control_token});
+ await f.runtime.recordDispatchIntent(f.run.run_id,{node_id:'worker',attempt_id:claim.attempt_id,lease_token:claim.lease_token,
+  request_id:'historical-dispatch',envelope_hash:digest('historical-envelope'),control_token:f.run.control_token});
+ const record=await f.runtime.runs.read(f.run.run_id),definition=record.pins.root.workflow.nodes.find(n=>n.id==='worker'),attempt=record.state.nodes.worker.attempts.at(-1);
+ const identity=nativeSpanIdentity(record,definition,attempt,null),directory=join(f.runtime.runs.root,'.run-locks','.native-task-roots');
+ await mkdir(directory,{recursive:true});
+ const owner=Object.fromEntries(['run_id','pins_hash','node_id','attempt_id','dispatch_request_id','workspace'].map(key=>[key,identity[key]]));
+ const key=process.platform==='win32'?resolve(f.workspace).toLowerCase():resolve(f.workspace);
+ await writeFile(join(directory,digest(key)+'.json'),canonicalJSON(owner));
+ await f.runtime.runs.mutate(f.run.run_id,'cancel',state=>{
+  state.status='cancelled';state.nodes.worker.status='cancelled';
+  const current=state.nodes.worker.attempts.at(-1);current.status='cancelled';current.dispatch.cancellation_pending=true;
+ });
+ await requireNativeRootClaim(f.runtime,{...record.state,run_id:'next-run'},definition);
+ const closed=(await f.runtime.runs.read(f.run.run_id)).state.nodes.worker.attempts.at(-1);
+ assert.equal(closed.dispatch.cancellation_pending,false);assert.equal(closed.native_preparation_closure.outcome,'not_started');
+ assert.equal(closed.dispatch.receipt,null);assert.equal(closed.native_agents,undefined);
+});
+
 test('native span published pending packet replay is read-only and rejects changed evidence or authority',async t=>{
  for(const scenario of ['exact','pending tuple','packet hash','published bytes','unsettled publication','authority during verification'])await t.test(scenario,async t=>{
   const f=await unit(t),published=await f.publish(0),packet=published.packets[0];
@@ -129,6 +186,32 @@ test('native span whole-root coverage includes hidden files, git and directory/t
  const paths=nativeWorkspaceChanges(before,await captureNativeWorkspace(f.workspace)).map(c=>c.path);
  assert(paths.includes('.git/index'));assert(paths.includes('.hidden'));assert(paths.includes('pages/empty'));
 });
+
+test('native scoped observation avoids unrelated file contents and still records outside changes',async t=>{
+ const f=await unit(t),outside=join(f.workspace,'unrelated-binary');await writeFile(outside,'original bytes');
+ const original=nativeFs.open;let before;
+ nativeFs.open=async(path,...args)=>{assert.notEqual(path,outside,'Unrelated content must not be read');return original(path,...args);};syncBuiltinESMExports();
+ try{before=await captureNativeWorkspace(f.workspace,{hashPaths:['pages']});}
+ finally{nativeFs.open=original;syncBuiltinESMExports();}
+ assert.equal(before.entries.find(entry=>entry.path==='unrelated-binary').sha256,undefined);
+ await writeFile(outside,'changed bytes');
+ const changes=nativeWorkspaceChanges(before,await captureNativeWorkspace(f.workspace,{hashPaths:['pages']}));
+ assert(changes.some(change=>change.path==='unrelated-binary'));
+});
+test('native dispatch preparation does not read or count unrelated content toward its 2 GiB material bound',async t=>{
+ const f=await unit(t),outside=join(f.workspace,'large-unrelated-binary');await writeFile(outside,'small physical fixture');
+ const originalStat=nativeFs.lstat,originalOpen=nativeFs.open,virtualBytes=2*1024*1024*1024+1;
+ nativeFs.lstat=async(path,...args)=>{const info=await originalStat(path,...args);if(path===outside)info.size=typeof info.size==='bigint'?BigInt(virtualBytes):virtualBytes;return info;};
+ nativeFs.open=async(path,...args)=>{assert.notEqual(path,outside,'Dispatch must not open unrelated repository content');return originalOpen(path,...args);};syncBuiltinESMExports();
+ let prepared;
+ try{prepared=await prepareNativeSpan(f.runtime,f.record,f.definition,f.binding,{envelope:{workspace:f.workspace}},f.plan);}
+ finally{nativeFs.lstat=originalStat;nativeFs.open=originalOpen;syncBuiltinESMExports();}
+ const before=JSON.parse((await f.runtime.runs.readArtifact('run1',prepared.span.before_ref)).toString('utf8'));
+ const observed=before.snapshot.entries.find(entry=>entry.path==='large-unrelated-binary');
+ assert.equal(observed.bytes,virtualBytes);assert.equal(observed.sha256,undefined);
+ assert.deepEqual(before.snapshot.hash_paths,['work/.workflow-runtime/native-agent/run1/attempt']);
+});
+
 test('native span capped publications retain first baseline and aggregate both disjoint grants',async t=>{
  const f=await unit(t);await f.publish(0);const initial=f.attempt.native_dispatch_span.before_ref;
  await writeFile(join(f.workspace,'pages/a/first'),'first');await f.publish(1);await writeFile(join(f.workspace,'pages/b/second'),'second');

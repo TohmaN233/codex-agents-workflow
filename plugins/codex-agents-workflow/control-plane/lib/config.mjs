@@ -973,7 +973,7 @@ export async function appendAuditEvent(configPath, event, { effectCommitted = fa
   const auditPath = resolveAuditPath(configPath);
   try {
     const { WorkflowStore } = await import('./workflow-store.mjs');
-    await new WorkflowStore(dirname(resolve(configPath))).withWriter(async () => {
+    await new WorkflowStore(join(dirname(resolve(configPath)),'.audit-writer')).withAuditWriter(async () => {
       if (await exists(auditPath)) await assertRegularNoSymlink(auditPath, 'control-plane audit path');
       const file = await open(auditPath, 'a', 0o600);
       try { await file.writeFile(`${JSON.stringify(safe)}\n`); await file.sync(); } finally { await file.close(); }

@@ -34,7 +34,7 @@ test('thread lookup validates candidate metadata while explicit audits verify re
  }
  const active=await create(thread),done=await create(thread,'succeeded');
  for(let i=0;i<8;i++)ids.push(await create(foreign));
- const reads=[],read=runs.read.bind(runs);runs.read=async id=>{reads.push(id);return read(id);};
+ const reads=[],observe=runs.observe.bind(runs);runs.observe=async id=>{reads.push(id);return observe(id);};
  await writeFile(join(runs.directory(ids[0].id),'objects',ids[0].sha256),'broken');
  assert.deepEqual((await runs.listForThread(thread)).map(r=>r.state.run_id).sort(),[active.id,done.id].sort());
  assert.deepEqual(reads.sort(),[active.id,done.id].sort());

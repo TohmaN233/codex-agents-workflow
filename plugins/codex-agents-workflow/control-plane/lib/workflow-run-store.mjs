@@ -515,6 +515,13 @@ export class WorkflowRunStore {
     },'read');
   }
 
+  // Status and lookup inspect immutable pins and the append-only journal. They
+  // do not publish effects, repair ownership or wait for a stale writer.
+  async observe(id) {
+    observeMethod('observe');
+    return this.#readJournalPins(id);
+  }
+
   // Explicit whole-package integrity audit. This is a Host storage operation,
   // not a caller-controlled execution shortcut or a resource cache.
   async audit(id) {
@@ -538,30 +545,14 @@ export class WorkflowRunStore {
     return storeOperation(this.root,()=>boundedRead(selected,4,async id=>[id,await this.readHistoryMetadata(id)]),'history_batch');
   }
 
-  // A held native event wait needs fresh controller/lease/turn state, not an
-  // executable resource packet. Keep journal+pin integrity and its Run locks;
-  // deliberately return no pins or objects that could authorize production.
-  // Resource consumers verify their exact objects at the actual use boundary.
+  // Lifecycle observation needs no writer admission. Otherwise this exact Run
+  // guard can collide with a maintenance writer in another process, even though
+  // both readers are healthy. Keep strict journal/pin verification and return no
+  // executable pins/resources; actual transitions retain writer ownership.
   async readNativeWaitState(id) {
     observeMethod('native_wait');
-    // This operation reads exactly one Run and cannot acquire global admission
-    // while holding its guard. Global writers/deletion take that same guard;
-    // no ancestor read, journal publication or arbitrary callback occurs here.
-    return (async()=>{
-      const root=this.directory(id);
-      const read=async()=>{
-        const {state,events,sequence}=await this.#readJournalPins(id);
-        return {state,events,sequence};
-      };
-      if(activeRunWriters.getStore()?.get(operationKey(root))?.active)return read();
-      return serializeRun(root,async()=>{
-        await noSymlinks(root);
-        return this.#withRunGuard(id,async()=>{
-          await noSymlinks(root);
-          return new WorkflowStore(root).withWriter(read);
-        },true);
-      });
-    })();
+    const {state,events,sequence}=await this.#readJournalPins(id);
+    return {state,events,sequence};
   }
   async #read(id, { auditHistoryTree=false, auditResources=false } = {}) {
     const root = this.directory(id);
@@ -834,13 +825,12 @@ export class WorkflowRunStore {
     return storeOperation(this.root, async () => (await readHistoryRevision(this.root)).revision === revision,'history_fence');
   }
 
-  async #captureHistory() {
-    return storeOperation(this.root, () => serializeRun(this.root, () => this.writer.withWriter(async () => {
+  async #historyRunIds({validateReserved=false}={}) {
       await noSymlinks(this.root);
       const runIds = [];
       for (const entry of await readdir(this.root, { withFileTypes: true })) {
         if (['.pending', '.trash', '.run-locks', '.writer.lock', '.recovery.lock'].includes(entry.name)) {
-          await noSymlinks(join(this.root, entry.name));
+          if(validateReserved)await noSymlinks(join(this.root, entry.name));
           continue;
         }
         requireValue(entry.isDirectory() && !entry.isSymbolicLink() && /^run-.+\.run$/.test(entry.name),
@@ -848,7 +838,12 @@ export class WorkflowRunStore {
         runIds.push(workflowId(entry.name.slice(4, -4)));
       }
       runIds.sort();
-      return { runIds, witness: await readHistoryRevision(this.root) };
+      return runIds;
+  }
+
+  async #captureHistory() {
+    return storeOperation(this.root, () => serializeRun(this.root, () => this.writer.withWriter(async () => {
+      return { runIds:await this.#historyRunIds({validateReserved:true}), witness: await readHistoryRevision(this.root) };
     })),'history_locator');
   }
 
@@ -902,10 +897,10 @@ export class WorkflowRunStore {
   }
 
   async list() {
-    const { runIds } = await this.#captureHistory();
+    const runIds = await this.#historyRunIds();
     const runs = await boundedRead(runIds, 4, async id => {
       // Concurrent deletion is an explicit ENOENT, not a silently omitted row.
-      const { state, sequence } = await this.read(id);
+      const { state, sequence } = await this.observe(id);
       return { run_id: state.run_id, workflow_id: state.workflow_id, status: state.status,
         created_at: state.created_at, updated_at: state.updated_at, sequence };
     });
@@ -917,7 +912,7 @@ export class WorkflowRunStore {
       'MODEL_THREAD_ID', 'Run lookup requires an authenticated conversation identity');
     requireValue(onLookup === undefined || typeof onLookup === 'function', 'RUN_LOOKUP_DIAGNOSTIC', 'Run lookup diagnostics require a callback');
     const startedAt = performance.now(); let inspected = 0;
-    const result = await storeOperation(this.root, () => serializeRun(this.root, () => this.writer.withWriter(async () => {
+    const result = await (async () => {
       await noSymlinks(this.root); const matches = [];
       const entries = await readdir(this.root, { withFileTypes: true }), pending = new Map();
       const reserved = entry => ['.pending', '.trash', '.run-locks', '.writer.lock', '.recovery.lock'].includes(entry.name);
@@ -938,7 +933,7 @@ export class WorkflowRunStore {
       fill();
       try { for (const [index, entry] of entries.entries()) {
         const job = pending.get(index);
-        if (reserved(entry)) { await noSymlinks(join(this.root, entry.name)); pending.delete(index); fill(); continue; }
+        if (reserved(entry)) { pending.delete(index); fill(); continue; }
         requireValue(entry.isDirectory() && !entry.isSymbolicLink() && /^run-.+\.run$/.test(entry.name), 'RUN_STORE_ENTRY', 'Unexpected Run store entry');
         const id = workflowId(entry.name.slice(4, -4));
         const located = await job.result;
@@ -948,11 +943,10 @@ export class WorkflowRunStore {
         requireValue(started.payload?.state?.run_id === id, 'RUN_IDENTITY', 'Run start identity differs from its directory');
         // The locator supplies no authority, terminal state or resource grants.
         // Validate every exact candidate through the usual current read path.
-        if (started.payload.state.constraints?.native_parent_thread_id === threadId) matches.push(await this.read(id));
+        if (started.payload.state.constraints?.native_parent_thread_id === threadId) matches.push(await this.observe(id));
         pending.delete(index); fill();
       } } catch (error) {
-        // There are at most four admitted slots. Drain under the same writer
-        // before releasing it, even when ordered candidate validation failed.
+        // Settle the bounded in-flight reads and preserve every ordered fault.
         const jobs = [...pending.values()], settled = await Promise.all(jobs.map(job => job.result));
         const additional = settled.flatMap((result,index) => jobs[index].started && jobs[index] !== failedLocator && Object.hasOwn(result, 'error') ? [result.error] : []);
         if (!additional.length) throw error;
@@ -961,7 +955,7 @@ export class WorkflowRunStore {
         throw failure;
       }
       return matches;
-    })),'thread_locator');
+    })();
     if (onLookup) await onLookup({ inspected_start_records: inspected, fully_validated_candidates: result.length, duration_ms: Math.round(performance.now() - startedAt) });
     return result;
   }

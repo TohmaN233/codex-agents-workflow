@@ -92,7 +92,7 @@ test('history preserves exact pending child intent before its directory exists',
   assert.equal((await store.list()).length, 3);
 });
 
-test('history and list queued during child creation do not invert root and Run locks', { timeout: 10000 }, async t => {
+test('history queues while list observes committed state during child creation without lock inversion', { timeout: 10000 }, async t => {
   const { store } = await fixture(t);
   await addRun(store, 'creating-parent', { status: 'running' });
   const entered = latch(), proceed = latch();
@@ -103,10 +103,11 @@ test('history and list queued during child creation do not invert root and Run l
   });
   await entered.promise;
   const cleanup = store.cleanupHistory({ olderThanMs: 0 });
-  const listing = store.list();
-  proceed.release();
-  const [, result, rows] = await Promise.all([creating, cleanup, listing]);
-  assert.equal(result.preserved_count, 2); assert.equal(rows.length, 2);
+  let rows;
+  try{rows=await store.list();}finally{proceed.release();}
+  const [, result] = await Promise.all([creating, cleanup]);
+  assert.deepEqual(rows.map(row=>row.run_id),['creating-parent']);
+  assert.equal(result.preserved_count, 2); assert.equal((await store.list()).length, 2);
 });
 
 test('opposing parent and child journal reads remain live across store instances', { timeout: 10000 }, async t => {

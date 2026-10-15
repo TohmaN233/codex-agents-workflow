@@ -21,6 +21,30 @@ async function fixture(t) {
   return {root,store,admission:join(root,'.run-locks','.store-operation')};
 }
 
+test('Run observation and conversation lookup do not acquire abandoned writer admission',async t=>{
+ const f=await fixture(t),thread='00000000-0000-7000-8000-000000000001';
+ // The thread locator reads the immutable start identity.
+ const located=await f.store.read('parent');
+ const pins=located.pins,id='same-thread';
+ await f.store.create(id,pins,new Map(),{run_id:id,pins_hash:digest(canonicalJSON(pins)),status:'cancelled',nodes:{},constraints:{native_parent_thread_id:thread}});
+ const bytes=canonicalJSON({pid:process.pid,token:randomUUID(),created_at:new Date().toISOString()});
+ const paths=[join(f.admission,'.writer.lock'),join(f.root,'.writer.lock'),join(f.store.directory(id),'.writer.lock')];
+ for(const path of paths)await writeFile(path,bytes);
+ assert.equal((await f.store.observe(id)).state.status,'cancelled');
+ assert.equal((await f.store.list()).length,3);
+ assert.deepEqual((await f.store.listForThread(thread)).map(r=>r.state.run_id),[id]);
+ for(const path of paths)assert.equal(await readFile(path,'utf8'),bytes);
+});
+
+test('lock-free observation still rejects torn journals and mismatched immutable pins',async t=>{
+ const f=await fixture(t),path=join(f.store.directory('parent'),'events.jsonl'),original=await readFile(path);
+ await writeFile(path,Buffer.concat([original,Buffer.from('{"unfinished":')]));
+ await assert.rejects(f.store.observe('parent'),{code:'RUN_JOURNAL_TORN'});
+ await writeFile(path,original);
+ await writeFile(join(f.store.directory('parent'),'pins.json'),canonicalJSON({resources:[],changed:true}));
+ await assert.rejects(f.store.observe('parent'),{code:'RUN_PINS_CORRUPT'});
+});
+
 function childProcess(t,code,args) {
   const child=spawn(process.execPath,['--input-type=module','-e',code,...args],{windowsHide:true,stdio:['ignore','pipe','pipe','ipc']});
   let stderr='';child.stderr.on('data',data=>{stderr+=data;});
@@ -122,6 +146,21 @@ else {const guard=s.withRunGuard.bind(s);s.withRunGuard=(id,action)=>guard(id,as
 process.send({done:true,callbacks});process.disconnect();
 `;
 
+test('a native lifecycle observation never collides with cross-process history admission',async t=>{
+ const f=await fixture(t);
+ const holder=childProcess(t,`
+  import fs from 'node:fs/promises';import {syncBuiltinESMExports} from 'node:module';import {join} from 'node:path';
+  const original=fs.readFile,path=join(process.argv[1],'run-parent.run','events.jsonl');let held=false;
+  fs.readFile=async(file,...args)=>{if(file===path&&!held){held=true;process.send({entered:true});await new Promise(resolve=>process.once('message',resolve));}return original(file,...args);};syncBuiltinESMExports();
+  const {WorkflowRunStore}=await import(${JSON.stringify(runModule)});
+  await new WorkflowRunStore(process.argv[1]).readNativeWaitState('parent');process.send({done:true});process.disconnect();
+ `,[f.root]);
+ await holder.next();let record;
+ try{record=await f.store.readHistoryMetadata('parent');}
+ finally{holder.child.send({release:true});await holder.next();await holder.closed;}
+ assert.equal(record.state.run_id,'parent');
+});
+
 test('named Run admission proves the actual cross-PID writer operation without another lock file',async t=>{
   const f=await fixture(t),holder=childProcess(t,holdTransaction,[f.root,'mutate']);
   const held=await holder.next();let waiting,report;
@@ -178,7 +217,7 @@ test('history read failure settles admitted cross-process callbacks without mono
  assert(await readFile(join(f.store.directory('parent'),'pins.json')));
 });
 
-for(const mode of ['mutate','list','read'])test(`a second Node process waits for admitted ${mode} and runs history/read once`,{timeout:15000},async t=>{
+for(const mode of ['mutate','read'])test(`a second Node process waits for admitted ${mode} and runs history/read once`,{timeout:15000},async t=>{
   const f=await fixture(t),holder=childProcess(t,holdTransaction,[f.root,mode]);
   assert.equal((await holder.next()).entered,true);
   const waiting=f.store.cleanupHistory({olderThanMs:0}).then(result=>({result}),error=>({error}));
@@ -295,7 +334,7 @@ test('outer admission does not wait for unknown inner guards or permit ordinary 
   }
   assert.throws(()=>f.store.writer.withRunAdmission(()=>{}),{code:'RUN_STORE_ADMISSION_SCOPE'});
   const rootLock=join(f.root,'.writer.lock');await writeFile(rootLock,canonicalJSON({pid:process.pid,token:'external'}));
-  await assert.rejects(f.store.list(),error=>{assert.equal(error.code,'WORKFLOW_STORE_BUSY');assert.equal(error.lock_path,rootLock);return true;});
+  assert.equal((await f.store.list()).length,2);
   await unlink(rootLock);
 });
 
@@ -321,8 +360,12 @@ for (const mode of ['list', 'cleanupHistory']) test(`cross-process ${mode} excee
       s.readHistoryMetadataBatch=async(...args)=>{await new Promise(resolve=>setTimeout(resolve,500));return batch(...args);};
     }
     let reads = 0;
+    if(process.argv[2]==='list'){
+      const observe=s.observe.bind(s);
+      s.observe=async id=>{if(++reads===1)process.send({reading:true});await new Promise(resolve=>setTimeout(resolve,500));return observe(id);};
+    }
     WorkflowStore.prototype.withWriter = function(action) {
-      if (this.root.startsWith(s.root) && this.root.endsWith('.run')) return original.call(this, async () => {
+      if (process.argv[2]!=='list'&&this.root.startsWith(s.root) && this.root.endsWith('.run')) return original.call(this, async () => {
         if (++reads === 1) process.send({ reading: true });
         await new Promise(resolve => setTimeout(resolve, 120));
         return action();
@@ -346,7 +389,7 @@ for (const mode of ['list', 'cleanupHistory']) test(`cross-process ${mode} excee
 
 const pausedAudit = `
   import { WorkflowRunStore } from ${JSON.stringify(runModule)};
-  const s = new WorkflowRunStore(process.argv[1]), method=process.argv[4]==='cleanupHistory'?'readHistoryMetadataBatch':'read',original=s[method].bind(s);
+  const s = new WorkflowRunStore(process.argv[1]), method=process.argv[4]==='cleanupHistory'?'readHistoryMetadataBatch':'observe',original=s[method].bind(s);
   let paused = false, reads = 0;
   s[method] = async (id, options) => {
     reads+=Array.isArray(id)?id.length:1;
