@@ -233,6 +233,8 @@ After pulling, reinstall the local plugin on Windows:
 node plugins/codex-agents-workflow/scripts/install-local.mjs
 ```
 
+Run this script from the source checkout you intend to install. It registers that checkout's marketplace, installs it, and verifies the installed files. Matching version numbers alone do not prove installation succeeded. Keep fixes in that source rather than cache or temporary marketplace copies.
+
 Use the host's plugin-catalog reload or reconnect action and reopen the embedded workbench. Restart Codex only if the relevant reload is unavailable or demonstrably ineffective. For a CLI task, reconnect its MCP session and verify a real plugin tool call in that session. Opening the workbench does not require creating another task.
 
 Workflow definitions, Role customizations, Provider settings, and Run records are stored in the user-level Codex configuration directory.

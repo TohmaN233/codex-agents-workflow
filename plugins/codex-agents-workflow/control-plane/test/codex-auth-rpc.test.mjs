@@ -15,6 +15,35 @@ function fixture(options = {}) {
   return { client, child, sent, events };
 }
 
+test('one stdout chunk may contain more than 256 ordered small notifications during durable backpressure',async()=>{
+ let release;const gate=new Promise(resolve=>{release=resolve;}),seen=[];
+ const f=fixture({onEventBatch:async messages=>{await gate;seen.push(...messages);}});
+ const done=f.client.waitFor(event=>event.method==='item/completed'&&event.params.item.id==='item-349',{timeout:1000});void done.catch(()=>{});
+ try{
+  const lines=Array.from({length:350},(_,index)=>JSON.stringify({method:'item/completed',params:{item:{id:'item-'+index,type:'reasoning'}}}));
+  f.child.stdout.write(lines.join('\n')+'\n');
+  assert(f.client.notificationStats().peak_queued>256,'readline can emit the rest of an already-read chunk after stdout.pause');
+  release();await done;
+  assert.equal(seen.length,350);assert.deepEqual(seen.map(event=>event.params.item.id),Array.from({length:350},(_,index)=>'item-'+index));
+ }finally{release();await f.client.close();}
+});
+
+test('an exited server with genuinely open stdio still fails with bounded transport facts',async()=>{
+ const f=fixture();f.child.stdin.on('finish',()=>f.child.emit('exit',0,null));
+ try{await assert.rejects(f.client.close({timeout:2500}),error=>{
+  assert.equal(error.code,'CODEX_APP_SERVER_PIPE_HELD');assert.equal(error.details.exit_seen,true);
+  assert.equal(error.details.transport_closed,false);assert.equal(error.details.notification_queue,0);
+  assert.equal(error.details.stdout_buffered_bytes,0);assert.match(error.message,/transport=/);return true;
+ });}finally{f.child.emit('close');}
+});
+
+test('notification backpressure retains its existing byte ceiling',async()=>{
+ const f=fixture(),rejected=f.client.waitFor(()=>false,{timeout:1000});void rejected.catch(()=>{});
+ f.child.stdout.write(JSON.stringify({method:'item/completed',params:{payload:'x'.repeat(8*1024*1024)}})+'\n');
+ await assert.rejects(rejected,error=>error.code==='CODEX_NOTIFICATION_QUEUE_LIMIT'&&/byte bound/.test(error.message));
+ await f.client.close();
+});
+
 test('qualified raw notifications are scrubbed before retained events, callbacks and waiter predicates', async () => {
   const f = fixture({ rawObservation: { supported: true } }), matched = [];
   const wait = f.client.waitFor(event => { matched.push(event); return event.method === 'rawResponse/completed'; }, { timeout: 1000 });

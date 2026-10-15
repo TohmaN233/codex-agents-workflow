@@ -309,7 +309,7 @@ export class HostMainManager {
       rawObservation: codexQualification(settings)?.raw_observation,
       ...(resolveModelSelection?{resolveModelSelection}:{model,effort}),
       ephemeral: true,
-      cwd: envelope.workspace, access: envelope.access, allowedPaths:envelope.effective_allowed_paths, env: environment, toolBroker: entry.broker, authorize, assertActive,
+      cwd: envelope.workspace, access: envelope.access, hostWorker:true, allowedPaths:envelope.effective_allowed_paths, env: environment, toolBroker: entry.broker, authorize, assertActive,
       skillPolicy: {...(envelope.skill_policy ?? {mode:"cooperative",ambient_allow:[],shadowed_skill_paths:[]}),implicit:"deny"}, allowedSkills,
       maxTurns: remainingTurns,
       onSessionOwned: session => { entry.session = session; },

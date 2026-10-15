@@ -101,6 +101,15 @@ async function fixture(t,{baseline=100,toolMode='code_mode_only',shellType,ordin
     async worker(prefix){const item=join(root,'item');await mkdir(item,{recursive:true});child=await createCodexSession({...options,cwd:item,prefix,onPrefixOwned:undefined});const turn=child.turn;child.turn=(text,args={})=>turn(text,{output_schema:{type:'string'},...args});return child;}};
 }
 
+test('writable Host common source selects ordinary execution without changing its initiating Main policy',async t=>{
+  const f=await fixture(t);f.options.hostWorker=true;f.options.sourceExecutionAccess='bounded_write';
+  f.options.resolveModelSelection=async()=>({model:'prefix-model',effort:'high',main_execution_context:{parent_thread_id:'main',sandbox_type:'workspace-write'}});
+  await f.prepare();
+  assert.equal(f.startArguments[0].sandbox,'danger-full-access');
+  const source=f.launches.find(item=>item.home!==f.normalHome&&item.onToolCall);
+  assert(source,'Owned model still uses its private common context library');
+});
+
 test('live common preparation retains two ordinary clients plus two metadata clients with exact execution qualification',async t=>{
   const f=await fixture(t,{shellType:'unified_exec',useResponsesLite:true}),cohort=await f.prepareLive();
   assert.equal(f.launches.length,4,'One discovery, two model-free hook inventories and one private execution client');

@@ -55,7 +55,7 @@ async function fixture(t,{jobs=[{name:'a',workspace:'pages/a',destinations:['pag
  const created=[],prompts=[],selections=[];let modelReads=0;
  if(prefixFactory)Object.defineProperty(prefixFactory,'usageCapability',{value:Object.freeze({...prefixCapability})});
  const manager=new HostMainManager({register:async({config})=>config,configPath:join(root,'control-plane.json'),...(prefixFactory?{prefixFactory}:{}),...(hostCheck?{hostToolRunner:hostCheck.runner}:{}),env:{},getConfig:async()=>({global:{enabled:true},strict_executor:settings,providers:[]}),qualify:async()=>settings,mainModelSelection:async()=>{modelReads++;return {model:'initiating-main',effort:'high',...(mainExecutionContext?{main_execution_context:structuredClone(mainExecutionContext)}:{})};},sessionFactory:async options=>{
-   const index=options.owner.item_index??0;const selected=await options.resolveModelSelection({});selections.push(selected);assert.equal(options.ephemeral,true);assert.equal(options.cwd,single?workspace:join(workspace,jobs[index].workspace));assert.deepEqual(options.allowedPaths,['.']);assert.equal(options.isolatedWorkspace,undefined,'Main fanout must not add an OS isolation probe');
+   const index=options.owner.item_index??0;const selected=await options.resolveModelSelection({});selections.push(selected);assert.equal(options.ephemeral,true);assert.equal(options.hostWorker,true,'Host fixes worker execution policy; models never select a new OS sandbox');assert.equal(options.cwd,single?workspace:join(workspace,jobs[index].workspace));assert.deepEqual(options.allowedPaths,['.']);assert.equal(options.isolatedWorkspace,undefined,'Main fanout must not add an OS isolation probe');
    let closed=false,turnNumber=0;const gate=deferred(),session={prepareHostCompletion:async()=>prepare({index,options,session}),interrupt:async()=>gate.resolve(),close:async()=>{closed=true;gate.resolve();await close({index,options,session});options.toolBroker.revoke();},turn:async(text,turnOptions={})=>{
      const itemIndex=Number(/runtime item (\d+)/.exec(text)?.[1]??index);prompts.push({index:itemIndex,text});await turn({index:itemIndex,text,options,session,gate,closed:()=>closed});
      if(closed)throw Object.assign(new Error('interrupted fixture item'),{code:'HOST_MAIN_STOPPED'});
@@ -94,7 +94,7 @@ test('shared prefix declared-resource source and writable children preserve call
  f=await fixture(t,{sharedPrefix:{common_inputs:[]},resources:{'reference.txt':'Declared common reference.'},
   factory:async({options})=>{const tools=callableTools(options);assert.deepEqual(tools,sourceTools);children.push(tools);},
   prefixFactory:async(options,text)=>{
-   await options.resolveModelSelection({});assert.equal(options.access,'read_only');assert.match(text,/Make no tool calls or workspace changes/);
+   await options.resolveModelSelection({});assert.equal(options.access,'read_only');assert.equal(options.hostWorker,true);assert.match(text,/Make no tool calls or workspace changes/);
    sourceTools=callableTools(options);assert(sourceTools.some(tool=>tool.name==='materialize_workflow_resource'));
    const call=options.toolBroker.call;options.toolBroker.call=(...args)=>{sourceCalls++;return call(...args);};
    assert.equal(await readFile(join(f.workspace,'pages','a','output.txt')).catch(error=>{assert.equal(error.code,'ENOENT');return null;}),null);
@@ -643,9 +643,9 @@ for(const closeFails of [false,true])test(`ordinary correction retains every set
  if(closeFails){assert.notEqual(record.state.nodes.pages.status,'succeeded');f.created[0].session.close=async()=>{};}
 });
 
-for(const shared of [false,true])for(const invalid of [null,'outside_scope','full_result'])test('Main fanout seals scoped text repair and rechecks merged content (shared='+shared+', invalid='+invalid+')',async t=>{
- const config={fields:['conclusion'],repair_scope_field:'repair_scope',max_edits:8,max_replacement_bytes:8192};
- const edit={amendments:[{field:'conclusion',start_line:2,end_line:2,replacement:'start\n'}]};
+for(const shared of [false,true])for(const addressing of [undefined,'host_ranges'])for(const invalid of [null,'outside_scope','full_result'])test('Main fanout seals scoped text repair and rechecks merged content (shared='+shared+', addressing='+addressing+', invalid='+invalid+')',async t=>{
+ const config={fields:['conclusion'],repair_scope_field:'repair_scope',max_edits:8,max_replacement_bytes:8192,...(addressing?{addressing}:{})};
+ const edit=addressing?{replacements:[['start']]}:{amendments:[{field:'conclusion',start_line:2,end_line:2,replacement:'start\n'}]};
  const line={type:'integer',minimum:1},scopeSchema={type:'object',additionalProperties:false,properties:{conclusion:{type:'array',items:object({start_line:line,end_line:line})}}};
  const check=workerCheckFixture({execute:async(request,count)=>{
    assert.equal(request.input.output.conclusion,count===1?'keep\ninitiate\ntail':'keep\nstart\ntail');
@@ -654,7 +654,7 @@ for(const shared of [false,true])for(const invalid of [null,'outside_scope','ful
  }});
  check.text_amendment=config;check.contract.output_schema.properties.repair_scope=scopeSchema;check.contract.output_schema.required.push('repair_scope');
  let f;const args={hostCheck:check,jobs:[{name:'a',workspace:'pages/a',destinations:['pages/a']}],payloadForTurn:({turn})=>turn===1?{conclusion:'keep\ninitiate\ntail'}:
-  turn===2&&invalid?invalid==='full_result'?{conclusion:'unrequested full rewrite'}:{amendments:[{...edit.amendments[0],start_line:1,end_line:1}]}:edit};
+  turn===2&&invalid?invalid==='full_result'?{conclusion:'unrequested full rewrite'}:addressing?{replacements:[['start'],['extra block']]}:{amendments:[{...edit.amendments[0],start_line:1,end_line:1}]}:edit};
  if(shared){
   const capability={complete_usage:true,reason:'fixture',responseTransport:{create_for_schema:createTypedBatchOutputTransport}};
   args.sharedPrefix={common_inputs:[]};args.prefixCapability=capability;
@@ -675,7 +675,8 @@ for(const shared of [false,true])for(const invalid of [null,'outside_scope','ful
  }
  f=await fixture(t,args);const execution=await f.execute(await f.claim('scoped-'+shared));await execution.job;
  assert.equal(check.calls.length,2);assert.equal(f.created.length,1);assert.equal(f.prompts.length,invalid?3:2);
- assert.match(f.prompts[1].text,/physical-line amendments/);assert.ok(!f.prompts[1].text.includes('keep\ninitiate\ntail'));
+ assert.match(f.prompts[1].text,addressing?/Host owns/:/physical-line amendments/);assert.ok(!f.prompts[1].text.includes('keep\ninitiate\ntail'));
+ if(addressing){assert.match(f.prompts[1].text,/initiate/);assert(!f.prompts[1].text.includes('start_line'));assert(!f.prompts[1].text.includes('end_line'));}
  const record=await f.runtime.runs.read(f.run.run_id),attempt=record.state.nodes.pages.attempts[0];
  assert.equal(attempt.main_item_results[0].result.conclusion,'keep\nstart\ntail');assert.equal(attempt.main_item_turns[0],invalid?3:2);
  const files=await import('node:fs/promises').then(fs=>fs.readdir(f.runtime.runs.directory(f.run.run_id)));

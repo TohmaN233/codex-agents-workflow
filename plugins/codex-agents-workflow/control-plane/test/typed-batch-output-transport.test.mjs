@@ -11,6 +11,14 @@ const schema={type:'object',properties:{markdown:{type:'string'}},required:['mar
 const raw=value=>JSON.stringify({results:value});
 
 const repair=textAmendmentSchema({fields:['markdown'],max_edits:8,max_replacement_bytes:8192});
+test('Host-owned range content retains one common API schema and no mechanical model fields',()=>{
+  const repair=textAmendmentSchema({fields:['markdown'],max_edits:8,max_replacement_bytes:8192,addressing:'host_ranges'});
+  const transport=createTypedBatchOutputTransport(schema,{repair_schema:repair});
+  assert.deepEqual(transport.prepare_setup('Shared.',ready).output_schema,transport.prepare('Correction.',repair).output_schema);
+  const payload={replacements:[['改过的内容 😀','另一行']]};
+  assert.deepEqual(JSON.parse(transport.decode(JSON.stringify({results:[],repairs:[payload]}),repair)),payload);
+  assert(!JSON.stringify(repair).includes('start_line'));assert(!JSON.stringify(repair).includes('end_line'));
+});
 test('full result and scoped repair preserve one typed API contract and exclude each other',()=>{
   const transport=createTypedBatchOutputTransport(schema,{repair_schema:repair});
   const source=transport.prepare_setup('Common.',ready),full=transport.prepare('Write.',schema),patch=transport.prepare('Correct.',repair);

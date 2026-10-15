@@ -1,12 +1,12 @@
 import {readPinnedObject} from '../pinned-object-reader.mjs';
-import { join } from 'node:path';
+import { join,relative } from 'node:path';
 import { requireValue } from '../workflow-paths.mjs';
 import { canonicalJSON, digest } from '../workflow-revisions.mjs';
 import { validateData } from '../workflow-data-schema.mjs';
 import { leaseToken, bindingContext } from '../workflow-execution-envelope.mjs';
 import { isOrchestrationMain } from './main-execution-mode.mjs';
 import { semanticResultSchema, hostResultProposalEnvelope } from './host-main-automation.mjs';
-import { materializeMainTaskBundle, readMainTaskProjection,readTerminalMainInputs,projectTerminalMainInputBindings,TERMINAL_MAIN_INPUT_BUDGET } from './node-input-materials.mjs';
+import { materializeMainTaskBundle, readMainTaskProjection,readTerminalMainInputs,projectTerminalMainInputBindings,TERMINAL_MAIN_INPUT_BUDGET,MAIN_TASK_CURRENT_INLINE_LIMIT,MAIN_TASK_INLINE_LIMIT } from './node-input-materials.mjs';
 import { snapshotWorkspace, changedWorkspacePaths } from './workspace-snapshot.mjs';
 import { semanticTurnsConsumed } from './completion-turn-budget.mjs';
 import { preflightSemanticOutput } from './completion-preflight.mjs';
@@ -57,7 +57,9 @@ async function activeOrchestration(runtime, runId, controlToken, threadId, expec
   const definition = record.pins.root.workflow.nodes.find(node => node.id === binding.node_id);
   const attempt = record.state.nodes[binding.node_id].attempts.find(item => item.id === binding.attempt_id);
   const event = (kind, metadata) => runtime.recordExecutorEvent(runId, { ...binding, event: { kind, metadata } });
-  const snapshot = () => snapshotWorkspace(envelope.workspace, { access: envelope.access,
+  const contentPaths=(sharedHostProjection(record.state,record.pins.root.workflow,definition.id)?.sources??[])
+    .map(source=>relative(envelope.workspace,source.path).replaceAll('\\','/'));
+  const snapshot = (hashPaths=contentPaths) => snapshotWorkspace(envelope.workspace, { access: envelope.access,hashPaths,
     allowedPaths: envelope.effective_allowed_paths, requiredPaths: (definition.required_artifacts ?? []).map(item => item.path),
     onUnreadable: metadata => event('workspace_unreadable_authorized_path', { ...metadata, phase: 'orchestration' }) });
   return { record, definition, attempt, binding, envelope, event, snapshot };
@@ -89,10 +91,11 @@ export async function prepareMainOrchestration(runtime, { run_id, control_token,
     const before = await snapshot();
     if(projection)requireSharedHostProjectionSnapshot(projection,before);
     const reference = await runtime.runs.saveArtifact(run_id, `orchestration-before-${attempt.id}`,
-      Buffer.from(canonicalJSON({ files: [...before], unreadable: [...before.unreadablePaths] })));
+      Buffer.from(canonicalJSON({ files: [...before], unreadable: [...before.unreadablePaths],hash_paths:before.hashPaths })));
     receipt = { executor: 'codex-current-main-orchestration', thread_id, main_actor: record.state.main_actor,
       session_id: `logical-main-${run_id}`, call_chain_id: `workflow-run-${run_id}`,
-      task_bundle_path: bundle.task_bundle_path, task_bundle_sha256: bundle.task_bundle_sha256, before_snapshot: reference };
+      task_bundle_path: bundle.task_bundle_path, task_bundle_sha256: bundle.task_bundle_sha256,
+      task_inline_limit: MAIN_TASK_CURRENT_INLINE_LIMIT, before_snapshot: reference };
     if(projection)receipt.source_projection={region_id:projection.region_id,tool_attempt_id:projection.tool_attempt_id,
       sources:projection.sources.map(({input,sha256,bytes})=>({input,sha256,bytes}))};
     await runtime.recordHostMainDispatchReceipt(run_id, { ...binding, request_id: `dispatch-${attempt.id}`, receipt });
@@ -107,7 +110,7 @@ export async function prepareMainOrchestration(runtime, { run_id, control_token,
     task_delivery: inline ? 'inline' : 'file',
     completion_tool: 'workflow_orchestration_complete',
     instruction: (inline ? 'Execute this node in the current conversation using the supplied task_bundle; do not reread its index file. Read only needed materialized sidecars at their exact addresses.'
-      : 'Execute this node in the current conversation using its existing task context and the local task bundle; task_delivery=file because its index exceeds the 12000-byte inline limit.')
+      : `Execute this node in the current conversation using its existing task context and the local task bundle; task_delivery=file because its index exceeds the ${receipt.task_inline_limit??MAIN_TASK_INLINE_LIMIT}-byte inline limit.`)
       + ' Submit only newly authored semantic output to workflow_orchestration_complete.' };
   const repairLoop=record.pins.root.workflow.loops?.find(loop=>loop.review_context==='current_main'&&loop.exit_node===definition.id);
   if(repairLoop)handoff.rejection_route={kind:'loop_feedback',loop_id:repairLoop.id,round:record.state.loops[repairLoop.id].round,
@@ -173,7 +176,7 @@ export async function completeMainOrchestration(runtime, { run_id, control_token
     const savedBefore = JSON.parse((await runtime.runs.readArtifact(run_id, receipt.before_snapshot)).toString('utf8'));
     const before = new Map(savedBefore.files); before.unreadablePaths = new Map(savedBefore.unreadable);
     const auditScope = async () => {
-      const after = await snapshot(), changed = changedWorkspacePaths(before, after);
+      const after = await snapshot(savedBefore.hash_paths??null), changed = changedWorkspacePaths(before, after);
       const outside = envelope.access === 'read_only' ? changed : changed.filter(path => !envelope.effective_allowed_paths.some(boundary => within(path, boundary)));
       if (outside.length) await rejectWorkspaceScope({ runtime, runId: run_id, attemptId: attempt.id,
         code: 'MAIN_ORCHESTRATION_SCOPE_VIOLATION', changed, outside, before, after, event });

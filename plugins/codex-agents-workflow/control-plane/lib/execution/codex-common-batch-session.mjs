@@ -16,7 +16,7 @@ const failTogether=(errors,label)=>{if(errors.length===1)throw errors[0];if(erro
 /** Ordinary native tools plus code-mode MCP, one private common-only source,
  * independently owned program/resource brokers, logical assignment scopes,
  * and real restored-before-submit usage baselines. */
-export async function prepareCodexCommonBatch(options,text,turnOptions={}){
+export async function prepareCodexCommonBatch(options,text,turnOptions={}, {prepareSource=prepareCodexLiveCommonSource}={}){
   requireValue(options.shared_output_schema!==undefined,'CODEX_BATCH_OUTPUT_SCHEMA','Common batch requires its exact shared item output schema');
   const responseTransport=createTypedBatchOutputTransport(options.shared_output_schema,{repair_schema:options.shared_repair_schema});
   let sourceOwner,prepared,engine,revoked=false,closing,finish;
@@ -42,7 +42,7 @@ export async function prepareCodexCommonBatch(options,text,turnOptions={}){
   };
   try{
     await options.onPrefixOwned?.(owner);open();
-    prepared=await prepareCodexLiveCommonSource({...options,sharedResponseTransport:responseTransport,
+    prepared=await prepareSource({...options,sharedResponseTransport:responseTransport,
       onPrefixOwned:owned=>{sourceOwner=owned;open();},
       sharedEventObserver:async event=>{engine?.observe(event);},
       sharedToolRouter:params=>{
@@ -88,10 +88,11 @@ export async function prepareCodexCommonBatch(options,text,turnOptions={}){
         };
         const childOpen=()=>{open();requireValue(!closed,'CODEX_SESSION_CLOSED','Shared child ownership was revoked');childOptions.assertActive?.();};
         const makeCommands=()=>createCodexCommandBroker({binary:childOptions.binary,home:session.profile.home,cwd:childOptions.cwd,
+          getClient:()=>session.client,
           access:childOptions.access,env:childOptions.env,allowedPaths:childOptions.allowedPaths,
           spoolRoot:childOptions.ownedCommandTemp?join(childOptions.cwd,'.workflow-command-output',digest(receiptHome)):join(receiptHome,'command-output'),
           ownedCommandTemp:childOptions.ownedCommandTemp,recoverToolErrors:true,
-          getExecutionPolicy:()=>cooperativeExecutionPolicy(childOptions.access,selection.main_execution_context),
+          getExecutionPolicy:()=>cooperativeExecutionPolicy(childOptions.access,selection.main_execution_context,{hostWorker:options.hostWorker===true}),
           getOutputBudget:()=>source.tool_output_budget,networkAccess:childOptions.commandNetworkAccess??false,
           shutdownGraceMs:childOptions.commandShutdownGraceMs,
           onOperation:operation=>childOptions.onEvent?.({method:'workflow/command',...Object.fromEntries(

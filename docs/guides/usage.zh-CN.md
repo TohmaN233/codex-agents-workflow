@@ -233,6 +233,8 @@ git pull --ff-only origin main
 node plugins/codex-agents-workflow/scripts/install-local.mjs
 ```
 
+请从要安装的源码克隆中运行此脚本。脚本会先注册该克隆的市场，再安装并核对实际文件；仅版本号相同不算安装成功。不要修改缓存或临时市场副本来保存修复。
+
 使用宿主的插件目录重新加载或连接刷新功能，再打开内嵌工作台。只有相关刷新方式不可用或已证明确实无效时才重启 Codex。CLI task 使用自己的 MCP 重新连接方式，并在该会话中成功调用插件工具验证。打开工作台不需要新建 task。
 
 Workflow 定义、Role 自定义、Provider 设置和 Run 记录保存在用户级 Codex 配置目录。

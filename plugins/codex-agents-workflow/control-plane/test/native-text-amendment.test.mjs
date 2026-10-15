@@ -1,12 +1,46 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {applyTextAmendment,textLineCount,validateTextRepairScope,validateTextAmendmentDeclaration} from '../lib/execution/native-text-amendment.mjs';
+import * as textRepair from '../lib/execution/native-text-amendment.mjs';
 
 const config={fields:['markdown'],repair_scope_field:'repair_scope',max_edits:8,max_replacement_bytes:100};
 const baseline={markdown:'first\r\n😀 middle\nlast',conclusion:'unchanged'};
 const scope={markdown:[{start_line:1,end_line:3}]};
 const edit=(start_line,end_line,replacement,field='markdown')=>({field,start_line,end_line,replacement});
 const merge=amendments=>applyTextAmendment(baseline,scope,config,{amendments});
+
+test('Host-owned repair ranges accept content lines without model addresses or separators',()=>{
+  const host={...config,addressing:'host_ranges'},scoped={markdown:[{start_line:2,end_line:2},{start_line:3,end_line:3}]};
+  assert.deepEqual(applyTextAmendment(baseline,scoped,host,{replacements:[['新😀','second'],['end']]}),
+    {markdown:'first\r\n新😀\nsecond\nend',conclusion:'unchanged'});
+  assert.equal(applyTextAmendment(baseline,{markdown:[{start_line:1,end_line:1}]},host,{replacements:[['new']]}).markdown,'new\r\n😀 middle\nlast');
+  assert.equal(applyTextAmendment(baseline,scoped,host,{replacements:[[],['end']]}).markdown,'first\r\nend');
+  assert.equal(baseline.markdown,'first\r\n😀 middle\nlast');
+});
+
+test('Host ranges reject incomplete block lists manual metadata line separators and oversized content',()=>{
+  const host={...config,addressing:'host_ranges'},scoped={markdown:[{start_line:2,end_line:2}]};
+  for(const payload of [{replacements:[]},{replacements:[['one'],['two']]},{replacements:[['x\ny']]},
+    {replacements:[['x']],start_line:2},{replacements:[['\ud800']]},{replacements:[['😀'.repeat(30)]]}])
+    assert.throws(()=>applyTextAmendment(baseline,scoped,host,payload),{code:'NATIVE_TEXT_AMENDMENT'});
+});
+
+test('Host blocks preserve mixed separators and bind multiple fields in declaration order',()=>{
+  const before={markdown:'a\r\nb\nc\rlast',caption:'one\r\ntwo\n'},host={...config,fields:['markdown','caption'],addressing:'host_ranges'};
+  const selected={caption:[{start_line:2,end_line:2}],markdown:[{start_line:1,end_line:3}]};
+  assert.deepEqual(applyTextAmendment(before,selected,host,{replacements:[['a','b','c'],['new']]}),
+    {markdown:before.markdown,caption:'one\r\nnew\n'});
+});
+
+test('Host repair prompt includes only the exact affected blocks in stable field order',()=>{
+  const host={...config,addressing:'host_ranges'};
+  const instruction=textRepair.textAmendmentInstruction(baseline,{markdown:[{start_line:2,end_line:2}]},host);
+  assert.match(instruction,/Host owns/);assert.match(instruction,/😀 middle/);
+  assert(!instruction.includes('first'));assert(!instruction.includes('last'));
+  const schema=textRepair.textAmendmentSchema(host);
+  assert.deepEqual(schema.required,['replacements']);assert.equal(schema.properties.replacements.items.type,'array');
+  const classic=textRepair.textAmendmentInstruction(baseline,scope,config);assert.match(classic,/1-based inclusive/);
+});
 
 test('text amendment splices exact physical lines with CRLF LF CR nonBMP and no final newline',()=>{
   assert.deepEqual(merge([edit(2,2,'新😀\r\n')]),{markdown:'first\r\n新😀\r\nlast',conclusion:'unchanged'});
@@ -41,6 +75,10 @@ test('text amendment declaration requires native mode required strings and typed
   const tool={output_schema:{type:'object',required:['repair_scope'],properties:{repair_scope:{type:'object',additionalProperties:false,properties:{markdown:{type:'array',items:{type:'object',additionalProperties:false,required:['start_line','end_line'],properties:{start_line:line,end_line:line}}}}}}}};
   const node={outputs_schema:{type:'object',required:['markdown'],properties:{markdown:{type:'string'}}},completion_contract:{host_check:{text_amendment:config}}};
   assert.doesNotThrow(()=>validateTextAmendmentDeclaration(node,tool,true));
+  const hostRanges=structuredClone(node);hostRanges.completion_contract.host_check.text_amendment.addressing='host_ranges';
+  assert.doesNotThrow(()=>validateTextAmendmentDeclaration(hostRanges,tool,true));
+  hostRanges.completion_contract.host_check.text_amendment.addressing='unknown';
+  assert.throws(()=>validateTextAmendmentDeclaration(hostRanges,tool,true),{code:'NATIVE_TEXT_AMENDMENT_CONTRACT'});
   assert.throws(()=>validateTextAmendmentDeclaration(node,tool,false),{code:'NATIVE_TEXT_AMENDMENT_MODE'});
   const main={...node,executor:{kind:'main',mode:'worker'},outputs_schema:{type:'object',properties:{results:{type:'array',items:node.outputs_schema}}},
     fanout:{result_mode:'per_item',distribution:'one_per_item',result_output:'results'}};
