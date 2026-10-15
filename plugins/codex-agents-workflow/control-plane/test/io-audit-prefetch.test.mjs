@@ -45,7 +45,7 @@ test('one full 67-resource audit uses each walked leaf stat once and a second au
 test('locator metadata holds at most four slots until ordered consumption and serial candidate validation advance',async t=>{
   const f=await fixture(t,{count:8,matches:[0,1,6]}),release=latch(),four=latch(),candidateEntered=latch(),candidateRelease=latch();
   let active=0,max=0;const started=[],full=[];
-  const originalRead=f.store.read.bind(f.store);f.store.read=async id=>{full.push(id);if(id===f.ids[0]){candidateEntered.resolve();await candidateRelease.promise;}return originalRead(id);};
+  const originalRead=f.store.observe.bind(f.store);f.store.observe=async id=>{full.push(id);if(id===f.ids[0]){candidateEntered.resolve();await candidateRelease.promise;}return originalRead(id);};
   let lookup;
   await patched({open:async(path,flags,...args)=>{
     if(flags==='r'&&path.endsWith('events.jsonl')){
@@ -115,13 +115,13 @@ test('locator keeps the actual opened handle stat and always closes it on reject
   assert.equal(stats,1);assert.equal(reads,0);assert.equal(closes,1);
 });
 
-for(const early of ['candidate','locator'])test(`ordered ${early} failure takes precedence and drains admitted handles before writer release`,async t=>{
+for(const early of ['candidate','locator'])test(`ordered ${early} failure drains its handles while independent writes remain available`,async t=>{
   const f=await fixture(t,{count:8,matches:[0,1]}),laterOpened=latch(),closeEntered=latch(),releaseClose=latch(),primarySeen=latch();
   await native.writeFile(join(f.store.directory(early==='candidate'?f.ids[0]:f.ids[1]),'pins.json'),'{}');
   const badStart=join(f.store.directory(early==='candidate'?f.ids[2]:f.ids[0]),'events.jsonl');
   const start=JSON.parse(await native.readFile(badStart,'utf8'));start.hash='0'.repeat(64);await native.writeFile(badStart,canonicalJSON(start)+'\n');
-  const full=[],locatorIds=[],originalRead=f.store.read.bind(f.store);let callbacks=0,settled=false,mutationEntered=false;
-  f.store.read=async id=>{full.push(id);try{return await originalRead(id);}catch(error){primarySeen.resolve();throw error;}};
+  const full=[],locatorIds=[],originalRead=f.store.observe.bind(f.store);let callbacks=0,settled=false,mutationEntered=false;
+  f.store.observe=async id=>{full.push(id);try{return await originalRead(id);}catch(error){primarySeen.resolve();throw error;}};
   await patched({open:async(path,flags,...args)=>{
     const index=f.ids.findIndex(id=>path===join(f.store.directory(id),'events.jsonl'));
     if(flags!=='r'||index<0)return native.open(path,flags,...args);
@@ -135,10 +135,11 @@ for(const early of ['candidate','locator'])test(`ordered ${early} failure takes 
     let mutation;
     try{
       await bounded(primarySeen.promise);await bounded(closeEntered.promise);
-      assert.equal(settled,false);assert((await native.lstat(join(f.root,'.writer.lock'))).isFile());
-      assert((await native.lstat(join(f.root,'.run-locks','.store-operation','.writer.lock'))).isFile());
+      assert.equal(settled,false);
+      await assert.rejects(native.lstat(join(f.root,'.writer.lock')),{code:'ENOENT'});
+      await assert.rejects(native.lstat(join(f.root,'.run-locks','.store-operation','.writer.lock')),{code:'ENOENT'});
       mutation=f.store.mutate(f.ids[7],'pause',state=>{mutationEntered=true;state.fixture_changed=true;});
-      assert.equal(mutationEntered,false);
+      await bounded(mutation);assert.equal(mutationEntered,true);assert.equal(settled,false);
     }finally{releaseClose.resolve();}
     const result=await outcome;if(mutation)await mutation;
     assert.equal(callbacks,0);assert.equal(mutationEntered,true);
@@ -146,8 +147,8 @@ for(const early of ['candidate','locator'])test(`ordered ${early} failure takes 
     if(early==='candidate'){
       assert(result.error instanceof AggregateError);assert.equal(result.error.code,'RUN_PINS_CORRUPT');
       assert.equal(result.error.errors[0].code,'RUN_PINS_CORRUPT');assert.equal(result.error.errors[1].code,'RUN_JOURNAL_CORRUPT');assert.equal(result.error.cause,result.error.errors[0]);
-      assert.deepEqual(full,[f.ids[0],f.ids[7]],'only the first candidate and the subsequent admitted mutation fully read');
-    }else {assert(!(result.error instanceof AggregateError));assert.equal(result.error.code,'RUN_JOURNAL_CORRUPT');assert.deepEqual(full,[f.ids[7]],'later corrupt candidate is never fully read');}
+      assert.deepEqual(full,[f.ids[0]],'only the first candidate enters observation');
+    }else {assert(!(result.error instanceof AggregateError));assert.equal(result.error.code,'RUN_JOURNAL_CORRUPT');assert.deepEqual(full,[],'later corrupt candidate is never fully read');}
     await assert.rejects(native.lstat(join(f.root,'.writer.lock')),{code:'ENOENT'});
   });
 });

@@ -9,12 +9,11 @@ import {WorkflowRunStore} from '../lib/workflow-run-store.mjs';
 import {canonicalJSON,digest} from '../lib/workflow-revisions.mjs';
 
 const native={...fs};
-test('single Run wait observation never acquires global writer admission',async t=>{
+test('single Run wait observation never acquires writer admission',async t=>{
   const f=await fixture(t),opened=[];
   fs.open=async(path,flags,...args)=>{if(flags==='wx')opened.push(String(path));return native.open(path,flags,...args);};syncBuiltinESMExports();
   try{await f.store.readNativeWaitState(f.id);}finally{fs.open=native.open;syncBuiltinESMExports();}
-  assert(!opened.some(path=>path.includes('.store-operation')),'Pure single-Run observation acquired global writer admission');
-  assert(opened.some(path=>path===join(f.store.runLockDirectory(f.id),'.writer.lock')));
+  assert.deepEqual(opened,[],'Pure single-Run observation acquired a writer lock');
 });
 async function fixture(t){
   const root=await fs.mkdtemp(join(tmpdir(),'native-wait-state-'));
@@ -77,7 +76,7 @@ test('native wait rereads inside its already-owned Run writer without nesting an
   }finally{clearTimeout(timer);}
 });
 
-test('native wait respects a real other-process writer and reads its committed latest state',async t=>{
+test('native wait observes committed state without blocking a real other-process writer',{timeout:15000},async t=>{
   const f=await fixture(t),module=new URL('../lib/workflow-run-store.mjs',import.meta.url).href,
     eventModule=new URL('../lib/workflow-events.mjs',import.meta.url).href;
   const code=`const {WorkflowRunStore}=await import(${JSON.stringify(module)});
@@ -99,24 +98,20 @@ test('native wait respects a real other-process writer and reads its committed l
   const closed=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
   t.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill();await closed;});
   assert.equal((await next()).phase,'owned');
-  let entered;const blocked=new Promise(resolve=>entered=resolve);
-  fs.open=async(path,flags,...args)=>{
-    if(String(path)===join(f.store.runLockDirectory(f.id),'.writer.lock')&&flags==='wx')entered();
-    return native.open(path,flags,...args);
-  };syncBuiltinESMExports();
-  let settled=false;const reading=f.store.readNativeWaitState(f.id).then(value=>{settled=true;return value;});
-  try{
-    await blocked;assert.equal(settled,false);
-    child.send({release:true});assert.equal((await reading).state.control_hash,'cross-process');
-    assert.equal((await next()).phase,'committed');
-  }finally{fs.open=native.open;syncBuiltinESMExports();}
+  assert.equal((await f.store.readNativeWaitState(f.id)).state.control_hash,'first');
+  child.send({release:true});
+  assert.equal((await next()).phase,'committed');
   assert.deepEqual(await closed,{code:0,signal:null},stderr);
   assert.equal((await f.store.readNativeWaitState(f.id)).state.control_hash,'cross-process');
 });
 
-for(const kind of ['malformed','orphan','recovery'])test('exact observation guard rejects '+kind+' ownership without global admission',async t=>{
+for(const kind of ['malformed','orphan','recovery'])test('native observation bypasses '+kind+' ownership while writers remain fenced',async t=>{
  const f=await fixture(t),directory=f.store.runLockDirectory(f.id);await fs.mkdir(directory,{recursive:true});
  const path=join(directory,kind==='recovery'?'.recovery.lock':'.writer.lock');
  await fs.writeFile(path,kind==='malformed'?'not-json':JSON.stringify({pid:99999999,token:'11111111-1111-4111-8111-111111111111',created_at:new Date().toISOString()}));
- await assert.rejects(f.store.readNativeWaitState(f.id),{code:kind==='malformed'?'RUN_STORE_ADMISSION_MALFORMED':kind==='orphan'?'RUN_STORE_ADMISSION_ORPHANED':'RUN_STORE_ADMISSION_RECOVERY_REQUIRED'});
+ const marker=await fs.readFile(path,'utf8');
+ assert.equal((await f.store.readNativeWaitState(f.id)).state.control_hash,'first');
+ let entered=false;
+ await assert.rejects(f.store.withRunWriter(f.id,()=>{entered=true;}),{code:'WORKFLOW_STORE_BUSY'});
+ assert.equal(entered,false);assert.equal(await fs.readFile(path,'utf8'),marker);
 });

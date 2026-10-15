@@ -1,4 +1,7 @@
 import test from 'node:test';
+import nativeFs from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
+import {snapshotWorkspace} from '../lib/execution/workspace-snapshot.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -41,6 +44,36 @@ import { hostResultProposalEnvelope } from '../lib/execution/host-main-automatio
 import { materializeNativeTaskBundle } from '../lib/execution/node-input-materials.mjs';
 
 const thread = '12345678-1234-4234-8234-123456789abc';
+
+test('current Main prepares and completes with an unrelated file larger than 2 GiB without reading it',async t=>{
+ const f=await fixture(t),outside=join(f.workspace,'large-unrelated');await writeFile(outside,'small physical fixture');
+ const originalStat=nativeFs.lstat,originalRead=nativeFs.readFile;
+ t.mock.method(nativeFs,'lstat',async(path,...args)=>{const info=await originalStat(path,...args);if(path===outside)info.size=typeof info.size==='bigint'?2147483649n:2147483649;return info;});
+ t.mock.method(nativeFs,'readFile',async(path,...args)=>{assert.notEqual(path,outside,'Main scope observation must not read unrelated contents');return originalRead(path,...args);});syncBuiltinESMExports();
+ try{
+  await f.service.call('native_next',{}, {model:true,modelThreadId:thread});
+  const result=await f.service.call('orchestration_complete',{output:{conclusion:'Selected the documentation scope.'}}, {model:true,modelThreadId:thread});
+  assert.equal(result.status,'succeeded');assert.equal(f.sessions(),0);
+ }finally{t.mock.restoreAll();syncBuiltinESMExports();}
+});
+test('current Main replays a historical content baseline without changing its observation mode',async t=>{
+ const f=await fixture(t);await writeFile(join(f.workspace,'unchanged.txt'),'retained content');
+ const prototype=Object.getPrototypeOf(f.runtime.runs),save=prototype.saveArtifact;
+ t.mock.method(prototype,'saveArtifact',async function(id,label,bytes){
+  if(label.startsWith('orchestration-before-')){
+   const legacy=await snapshotWorkspace(f.workspace);
+   bytes=canonicalJSON({files:[...legacy],unreadable:[...legacy.unreadablePaths]});
+  }
+  return save.call(this,id,label,bytes);
+ });
+ await f.service.call('native_next',{}, {model:true,modelThreadId:thread});
+ const {receipt}=await retainedMainBundle(f);
+ const saved=JSON.parse((await f.runtime.runs.readArtifact(f.run_id,receipt.before_snapshot)).toString('utf8'));
+ assert.equal(Object.hasOwn(saved,'hash_paths'),false);
+ const result=await f.service.call('orchestration_complete',{output:{conclusion:'Retained the prior content observation.'}}, {model:true,modelThreadId:thread});
+ assert.equal(result.status,'succeeded');
+});
+
 const schema = { type: 'object', properties: { conclusion: {type:'string'} }, required: ['conclusion'], additionalProperties: false };
 function hostCheckFixture({ verified = true, exit = 0, write = true, changed = 'result.txt', deadline = 1000, execute } = {}) {
   const tool = { id: 'final-check', identity: { name: 'final-check-fixture', version: '1', sha256: digest('fixture') },
@@ -67,7 +100,7 @@ function hostCheckFixture({ verified = true, exit = 0, write = true, changed = '
   };
   return { tool, broker, calls, install, registry: { [tool.id]: broker } };
 }
-async function fixture(t, {write = false, resources = {}, mutateWorkflow = () => {}, hostToolRegistry = {}, allowedPaths = ['result.txt'], extraInputs = {},runtimeEnv={},expectedDrainFailure=false} = {}) {
+async function fixture(t, {write = false, resources = {}, mutateWorkflow = () => {}, hostToolRegistry = {}, allowedPaths = ['result.txt'], extraInputs = {},runtimeEnv={},expectedDrainFailure=false,legacyTaskDelivery=false} = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'main-orchestration-'));
   let service;
   t.after(async () => {
@@ -123,6 +156,13 @@ async function fixture(t, {write = false, resources = {}, mutateWorkflow = () =>
     ...(write?{allowed_paths:allowedPaths}:{}),inputs:{task:'Use our prior conclusions',...extraInputs},main_actor:'codex',native_parent_thread_id:thread};
   const handoff = await service.call('begin_main',options);
   const {runtime}=await service.open();
+  if(legacyTaskDelivery){
+    const record=WorkflowRuntime.prototype.recordHostMainDispatchReceipt;
+    t.mock.method(WorkflowRuntime.prototype,'recordHostMainDispatchReceipt',function(runId,args){
+      delete args.receipt.task_inline_limit;
+      return record.call(this,runId,args);
+    });
+  }
   const {run_id,control_token}=handoff.host_binding;
   await retainOwnedAuthority(runtime,{run_id,control_token});
   return {service,manager,runtime,workflow,workspace,options,handoff,run_id,control_token,sessions:()=>sessions};
@@ -154,7 +194,7 @@ test('terminal Main whole reply budget keeps an exact public semantic input refe
 });
 
 for (const lane of ['inline', 'file']) test(`semantic Main projection hides Host preparation addresses in ${lane} native_next handoff`, async t => {
-  const f = await fixture(t, { mutateWorkflow: workflow => {
+  const f = await fixture(t, { legacyTaskDelivery:true,mutateWorkflow: workflow => {
     if (lane === 'file') workflow.nodes.find(node => node.id === 'final').prompt_template = 'Bounded task ' + 'instruction '.repeat(1000);
   } });
   const result = await f.service.call('native_next', {}, { model: true, modelThreadId: thread });
@@ -174,8 +214,9 @@ for (const lane of ['inline', 'file']) test(`semantic Main projection hides Host
 });
 
 for (const lane of ['inline', 'file']) test(`semantic Main projection reopens an existing canonical ${lane} receipt without changing diagnostics or sidecars`, async t => {
-  const context = 'RETAIN_DECLARED_VALUE_'.repeat(700), reference = 'RETAIN_DECLARED_RESOURCE_'.repeat(700);
-  const f = await fixture(t, { resources: { 'reference.txt': reference }, extraInputs: { context }, mutateWorkflow: workflow => {
+  const context = 'RETAIN_DECLARED_VALUE_'.repeat(1000), reference = 'RETAIN_DECLARED_RESOURCE_'.repeat(700);
+  assert(Buffer.byteLength(context)>16384&&Buffer.byteLength(reference)>16384,'Sidecar coverage must not depend on temporary path length');
+  const f = await fixture(t, { legacyTaskDelivery:true,resources: { 'reference.txt': reference }, extraInputs: { context }, mutateWorkflow: workflow => {
     workflow.inputs_schema.properties.context = { type: 'string' };
     const node = workflow.nodes.find(node => node.id === 'final');
     node.input_bindings.context = '/inputs/context';
@@ -217,7 +258,7 @@ for (const lane of ['inline', 'file']) test(`semantic Main projection reopens an
 
 for (const target of ['canonical', 'preparation', 'public']) test(`semantic Main projection rejects ${target} tampering at native_next and completion before effects`, async t => {
   const h = hostCheckFixture();
-  const f = await fixture(t, { write: true, hostToolRegistry: h.registry, mutateWorkflow: workflow => {
+  const f = await fixture(t, { legacyTaskDelivery:true,write: true, hostToolRegistry: h.registry, mutateWorkflow: workflow => {
     h.install(workflow); workflow.nodes.find(node => node.id === 'final').prompt_template = 'Bounded task ' + 'instruction '.repeat(1000);
   } });
   const handoff = await f.service.call('native_next', {}, { model: true, modelThreadId: thread });
@@ -231,6 +272,20 @@ for (const target of ['canonical', 'preparation', 'public']) test(`semantic Main
   const record = await f.runtime.runs.read(f.run_id), attempt = record.state.nodes.final.attempts[0];
   assert.deepEqual(attempt.dispatch.receipt, receipt); assert.equal(attempt.completion_turns ?? 0, 0);
   assert.equal(record.state.status, 'running'); assert.equal(h.calls.length, 0); assert.equal(f.sessions(), 0);
+});
+
+test('new Main dispatch delivers the entire 12–16 KiB semantic task inline and replays the pinned budget',async t=>{
+  const complete='Keep every original condition.\n'+'中文🌱'.repeat(1350)+'\nEND_OF_COMPLETE_REFERENCE';
+  const f=await fixture(t,{mutateWorkflow:workflow=>{workflow.nodes.find(node=>node.id==='final').prompt_template=complete;}});
+  const result=await f.service.call('native_next',{}, {model:true,modelThreadId:thread});
+  const bytes=Buffer.from(canonicalJSON(result.task_bundle));
+  assert(bytes.length>12000&&bytes.length<=16384);
+  assert.equal(result.task_delivery,'inline');assert(result.task_bundle.task.includes(complete));
+  assert.equal(Object.hasOwn(result,'task_bundle_path'),false);
+  const {receipt}=await retainedMainBundle(f);assert.equal(receipt.task_inline_limit,16384);
+  assert.deepEqual(await f.service.call('native_next',{}, {model:true,modelThreadId:thread}),result);
+  await f.service.call('orchestration_complete',{output:{conclusion:'The complete original conditions are retained.'}}, {model:true,modelThreadId:thread});
+  assert.equal((await f.runtime.get(f.run_id)).status,'succeeded');assert.equal(f.sessions(),0);
 });
 
 test('semantic Main projection preserves historical schema1 receipt resource addresses', async t => {
@@ -726,7 +781,7 @@ test('Main orchestration includes small declared bound values once without an ex
 });
 
 test('Main orchestration keeps oversized declared input values in verified bounded sidecars',async t=>{
-  const context='DECLARED_LARGE_VALUE_'.repeat(700);
+  const context='DECLARED_LARGE_VALUE_'.repeat(1000);
   const f=await fixture(t,{extraInputs:{context},mutateWorkflow:workflow=>{
     workflow.inputs_schema.properties.context={type:'string'};
     workflow.nodes.find(n=>n.id==='final').input_bindings.context='/inputs/context';
@@ -763,13 +818,13 @@ test('Main handoff delivers each declared reference once and keeps diagnostics o
   const {bundle}=await retainedMainBundle(f);
   const manifest=JSON.parse(await readFile(bundle.context_preparation.path,'utf8'));
   assert.equal(manifest.audit.inline_resource_count,1);assert.equal(manifest.audit.inline_input_count,2);
-  assert.deepEqual(manifest.audit.budgets,{item_bytes:8192,resource_bytes:8192,input_bytes:8192,total_bytes:12000});
+  assert.deepEqual(manifest.audit.budgets,{item_bytes:16384,resource_bytes:16384,input_bytes:16384,total_bytes:32768});
   assert.equal(digest(await readFile(bundle.context_preparation.path)),bundle.context_preparation.sha256);
   assert(result.response_schema);assert(result.allowed_paths);assert(result.workspace);
 });
 
-test('large orchestration indices use explicit file delivery and never inline resource bodies',async t=>{
-  const f=await fixture(t,{resources:{'reference.txt':'PRIVATE_RESOURCE_BODY'.repeat(2000)},mutateWorkflow:workflow=>{
+test('historical orchestration indices retain file delivery and never inline resource bodies',async t=>{
+  const f=await fixture(t,{legacyTaskDelivery:true,resources:{'reference.txt':'PRIVATE_RESOURCE_BODY'.repeat(2000)},mutateWorkflow:workflow=>{
     workflow.nodes.find(n=>n.id==='final').prompt_template='Long bounded task '+ 'instruction '.repeat(1000);
   }});
   const result=await f.service.call('native_next',{}, {model:true,modelThreadId:thread});

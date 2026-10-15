@@ -36,7 +36,8 @@ test('terminal semantic input carrier excludes resources and verified binary fil
 
 test('terminal JSON carrier supplies its complete native value without a second JSON string encoding',async t=>{
   const root=await fixture(t);
-  const value={pages:[{source:'Quote "hello", path \\neutral and line\r\n🌱'.repeat(260)}],settings:{enabled:true,count:3}};
+  const value={pages:[{source:'Quote "hello", path \\neutral and line\r\n🌱'.repeat(400)}],settings:{enabled:true,count:3}};
+  assert(Buffer.byteLength(canonicalJSON(value))>HOST_MAIN_INLINE_BUDGETS.input_bytes);
   const receipt=await materializeMainTaskBundle({directory:join(root,'terminal-native-json'),
     envelope:{workspace:root,access:'read_only',inputs:{manuscripts:value},resources:[],prompt_template:'Read the complete manuscript'}});
   const carrier=await readTerminalMainInputs(receipt);
@@ -279,6 +280,21 @@ test('Main semantic projection applies the exact UTF-8 inline boundary and retai
   }
 });
 
+test('new pinned Main budget retains a complete medium task while historical file replay remains exact',async t=>{
+  const root=await fixture(t),directory=join(root,'main-budget');
+  const receipt=await materializeMainTaskBundle({directory,envelope:{workspace:root,access:'read_only',inputs:{},resources:[],prompt_template:'Complete original conditions. '+'x'.repeat(13000)}});
+  const storage=projectionStorage(root);
+  const historical=await readMainTaskProjection(receipt,{...storage,materialize:true});assert.equal(historical.inline,false);
+  const current={...receipt,task_inline_limit:16384};
+  const inline=await readMainTaskProjection(current);assert.equal(inline.inline,true);
+  assert.deepEqual(inline.task_bundle,JSON.parse(await readFile(historical.task_bundle_path,'utf8')));
+  assert.deepEqual(await readMainTaskProjection(current),inline);
+  await writeFile(historical.task_bundle_path,'changed historical public file');
+  await assert.rejects(readMainTaskProjection(receipt,storage),{code:'MAIN_ORCHESTRATION_BUNDLE'});
+  assert.deepEqual(await readMainTaskProjection(current),inline);
+  await assert.rejects(readMainTaskProjection({...receipt,task_inline_limit:1048576}),{code:'MAIN_ORCHESTRATION_BUNDLE'});
+});
+
 test('Main semantic projection rejects linked canonical, preparation and public indices', async t => {
   const root = await fixture(t), directory = join(root, 'main');
   const receipt = await materializeMainTaskBundle({ directory, envelope: { workspace: root, access: 'read_only', inputs: {}, resources: [],
@@ -331,22 +347,22 @@ test('Main bundle checks the preparation path for a link before consuming metada
   }finally{filesystem.lstat=original;syncBuiltinESMExports();}
 });
 
-test('Main context budgets count UTF-8 bytes and apply deterministic aggregate admission', async t => {
+test('Main context budgets count UTF-8 bytes and apply deterministic category admission', async t => {
   const root = await fixture(t), directory = join(root, 'main');
   const resources = ['z.md', 'a.md', 'm.md'].map(path => {
-    const bytes = Buffer.from(path + '雪'.repeat(1100));
+    const bytes = Buffer.from(path + '雪'.repeat(2000));
     return { path, bytes, size: bytes.length, sha256: sha256(bytes) };
   });
-  const inputs = { z: '雪'.repeat(1000), a: '雪'.repeat(1000), m: '雪'.repeat(1000), oversized: '雪'.repeat(1500) };
+  const inputs = { z: '雪'.repeat(2000), a: '雪'.repeat(2000), m: '雪'.repeat(2000), oversized: '雪'.repeat(5500) };
   const envelope = { workspace: root, node_id: 'main', inputs, resources: resources.map(item => item.path),
     context_projection: { references: resources.map(item => item.path) }, prompt_template: 'Use the declared context.' };
   const result = await prepareHostMainContext({ directory, envelope, resources });
   const manifestBytes = await readFile(result.preparation_path), manifest = JSON.parse(manifestBytes);
   assert.equal(sha256(manifestBytes), result.preparation_sha256);
   assert.deepEqual(manifest.resources.map(item => [item.path, item.delivery]), [['a.md', 'inline'], ['m.md', 'inline'], ['z.md', 'file']]);
-  assert.deepEqual(manifest.inputs.map(item => [item.name, item.delivery]), [['a', 'inline'], ['m', 'file'], ['oversized', 'file'], ['z', 'file']]);
-  assert.equal(result.audit.inline_resource_bytes, 6608); assert.equal(result.audit.inline_input_bytes, 3000);
-  assert.equal(result.audit.inline_total_bytes, 9608); assert.deepEqual(result.audit.budgets, HOST_MAIN_INLINE_BUDGETS);
+  assert.deepEqual(manifest.inputs.map(item => [item.name, item.delivery]), [['a', 'inline'], ['m', 'inline'], ['oversized', 'file'], ['z', 'file']]);
+  assert.equal(result.audit.inline_resource_bytes, 12008); assert.equal(result.audit.inline_input_bytes, 12000);
+  assert.equal(result.audit.inline_total_bytes, 24008); assert.deepEqual(result.audit.budgets, HOST_MAIN_INLINE_BUDGETS);
   assert.equal(result.audit.prompt_bytes, Buffer.byteLength(result.prompt));
   for (const item of manifest.resources) assert.equal(sha256(await readFile(item.local_path)), item.sha256);
   for (const item of manifest.inputs) if (item.delivery === 'file') assert.equal(sha256(await readFile(item.path)), item.sha256);
@@ -398,19 +414,19 @@ test('Main projects usable resource addresses once and keeps complete integrity 
   await assert.rejects(prepareHostMainContext({ directory, envelope, resources }), { code: 'NODE_INPUT_MATERIALS_CONFLICT' });
 });
 
-test('Main includes a medium semantic acceptance packet once within unchanged aggregate budgets', async t => {
-  const root=await fixture(t),value='SEMANTIC_ACCEPTANCE_'+ '雪'.repeat(1840);
-  assert(Buffer.byteLength(value)>4096&&Buffer.byteLength(value)<8192);
+test('Main includes a medium semantic acceptance packet once within 16 KiB input admission', async t => {
+  const root=await fixture(t),value='SEMANTIC_ACCEPTANCE_'+ '雪'.repeat(4010);
+  assert(Buffer.byteLength(value)>8192&&Buffer.byteLength(value)<16384);
   const envelope={workspace:root,node_id:'main',inputs:{result:value},resources:[],prompt_template:'Review the supplied result.'};
   const result=await prepareHostMainContext({directory:join(root,'main'),envelope});
   const manifest=JSON.parse(await readFile(result.preparation_path));
   assert.equal(manifest.inputs[0].delivery,'inline');
   assert.equal(result.prompt.split(value).length-1,1);
   assert.equal(result.audit.inline_input_bytes,Buffer.byteLength(value));
-  assert.equal(HOST_MAIN_INLINE_BUDGETS.resource_bytes,8192);
-  assert.equal(HOST_MAIN_INLINE_BUDGETS.input_bytes,8192);
-  assert.equal(HOST_MAIN_INLINE_BUDGETS.total_bytes,12000);
-  const large=await prepareHostMainContext({directory:join(root,'large'),envelope:{...envelope,inputs:{result:'雪'.repeat(2800)}}});
+  assert.equal(HOST_MAIN_INLINE_BUDGETS.resource_bytes,16384);
+  assert.equal(HOST_MAIN_INLINE_BUDGETS.input_bytes,16384);
+  assert.equal(HOST_MAIN_INLINE_BUDGETS.total_bytes,32768);
+  const large=await prepareHostMainContext({directory:join(root,'large'),envelope:{...envelope,inputs:{result:'雪'.repeat(5500)}}});
   assert.equal(JSON.parse(await readFile(large.preparation_path)).inputs[0].delivery,'file');
   await assert.rejects(prepareHostMainContext({directory:join(root,'main'),envelope:{...envelope,inputs:{result:value+'changed'}}}),{code:'NODE_INPUT_MATERIALS_CONFLICT'});
 });
@@ -459,7 +475,7 @@ test('Main delivers a small hash-bound text file once in prepared context and re
 
 test('Main file delivery preserves executable, oversized, unverified and over-budget inputs',async t=>{
   const root=await fixture(t),inputs={};
-  for(const [name,text] of [['program.mjs','NEUTRAL_EXECUTABLE_BODY'],['large.md','NEUTRAL_LARGE_BODY'.repeat(700)],['unicode.md','雪'.repeat(2700)]]){
+  for(const [name,text] of [['program.mjs','NEUTRAL_EXECUTABLE_BODY'],['large.md','NEUTRAL_LARGE_BODY'.repeat(1100)],['unicode.md','雪'.repeat(5500)]]){
     const path=join(root,name);await writeFile(path,text);inputs[name]={source_path:path,source_sha256:sha256(text)};
   }
   const unverified=join(root,'unverified.md');await writeFile(unverified,'UNVERIFIED_TEXT_BODY');inputs.unverified=unverified;
@@ -745,7 +761,7 @@ test('one native task index points at pinned resources and verified absolute and
 
 test('native semantic delivery shares exact Main inline input and resource budgets',async t=>{
   const root=await fixture(t),directory=join(root,'native');
-  const body=Buffer.from('R'.repeat(4000)),inputs={a:'A'.repeat(7000),b:'B'.repeat(1300),c:'C'.repeat(8193)};
+  const body=Buffer.from('R'.repeat(4000)),inputs={a:'A'.repeat(7000),b:'B'.repeat(10000),c:'C'.repeat(16385)};
   const receipt=await materializeNativeTaskBundle({directory,envelope:{workspace:root,access:'read_only',resources:['one.md'],inputs},
     resources:[{path:'one.md',sha256:sha256(body),size:body.length,bytes:body}]});
   const bundle=JSON.parse(await readFile(receipt.task_bundle_path)),metadata=JSON.parse(await readFile(bundle.context_preparation.path));
@@ -832,7 +848,7 @@ test('native semantic sidecar is bounded and verified exactly after saving and o
 for(const target of ['canonical','preparation','resource','verified','input','scope','schema'])test(`native semantic projection rejects changed ${target} before delivery`,async t=>{
   const root=await fixture(t),source=join(root,'draft.md'),resource=Buffer.from('exact declared reference');await writeFile(source,'declared draft');
   const receipt=await materializeNativeTaskBundle({directory:join(root,'native'),envelope:{workspace:root,access:'bounded_write',resources:['reference.md'],
-    inputs:{source:{source_path:source,source_sha256:sha256('declared draft')},large:'X'.repeat(9000)}},allowedPaths:['page'],resultSchema:{type:'object'},
+    inputs:{source:{source_path:source,source_sha256:sha256('declared draft')},large:'X'.repeat(17000)}},allowedPaths:['page'],resultSchema:{type:'object'},
     resources:[{path:'reference.md',sha256:sha256(resource),size:resource.length,bytes:resource}]});
   const bundle=JSON.parse(await readFile(receipt.task_bundle_path)),metadata=JSON.parse(await readFile(bundle.context_preparation.path));
   if(target==='canonical')await writeFile(receipt.task_bundle_path,'changed');

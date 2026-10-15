@@ -43,7 +43,7 @@ import { validateFanoutProducerOutput } from './execution/completion-preflight.m
 import { WORKSPACE_SOURCE_LOCATIONS, revalidateBoundSourceLocations, validateWorkspaceSourceLocations } from './workspace-source-locations.mjs';
 import {fenceForegroundPriority,reconcileForegroundPriority,retainedForegroundPriority} from './foreground-activity.mjs';
 import {workerHostCheckContext,validateWorkerHostCheckReceipt,requireWorkerHostCheckAccepted,requireWorkerHostCheckScope,nativeHostCheckSlot,workerHostCheckEffectPaths,nativeItemHasSemanticResult,readNativeTextRepair} from './execution/worker-host-check.mjs';
-import {requireNativeSpanCompletion,requireNativeRootClaim,abandonNativeSpan,releaseNativeSpanOwner} from './execution/native-dispatch-span.mjs';
+import {requireNativeSpanCompletion,requireNativeRootClaim,abandonNativeSpan,releaseNativeSpanOwner,nativePreparationNotStarted,releaseCancelledNativePreparation} from './execution/native-dispatch-span.mjs';
 
 const CHILD_COMPLETION = Symbol('verified child completion');
 const AUTHORING_HUMAN_ACCEPTANCE = Symbol('verified authoring human acceptance');
@@ -313,7 +313,7 @@ export class WorkflowRuntime {
     return { ...publicRun(created), control_token: controlToken };
   }
 
-  async get(runId) { return publicRun(await this.runs.read(runId)); }
+  async get(runId) { return publicRun(await this.runs.observe(runId)); }
 
   async ensureRuntimeEnvironment(runId, options) { return ensureRunRuntimeEnvironment(this, runId, options); }
   async ensureNativeRuntimeEnvironmentFromAudit(runId,options,record){
@@ -1439,7 +1439,7 @@ export class WorkflowRuntime {
       const wasPaused=state.status==='paused';
       const {node,graph,definition}=retryState(state,pins,node_id);
       const previous = node.attempts.at(-1);
-      if(previous?.native_dispatch_span&&!previous.native_dispatch_span.settled_ref&&!previous.native_dispatch_span.abandoned_ref){
+      if(previous?.native_dispatch_span&&!previous.native_dispatch_span.settled_ref&&!previous.native_dispatch_span.abandoned_ref&&!previous.native_preparation_closure){
         const abandoned=await abandonNativeSpan(this,{state,pins},definition,previous,
           {node_id,attempt_id:previous.id,control_token},resolvedSubagentPlan(definition,state));
         previous.native_dispatch_span.abandoned_ref=abandoned.reference;
@@ -1527,7 +1527,7 @@ export class WorkflowRuntime {
   }
 
   async cancel(runId, { control_token }, onFenced = () => {}) {
-    const result = await this.runs.mutate(runId, 'cancel', state => {
+    const result = await this.runs.mutate(runId, 'cancel', (state,pins) => {
       authorize(state, control_token);
       requireValue(state.status !== 'succeeded', 'RUN_TERMINAL', 'Completed Run cannot be cancelled');
       (this.fenceRunExecution ?? (id => this.executionAdmission?.fenceRun(id)))(runId,this.#foregroundFence(state));
@@ -1542,17 +1542,26 @@ export class WorkflowRuntime {
         attempt.cancellation_reconciliation={kind:'recorded_session_closed',sequence:attempt.executor_events.findLast(event=>event.kind==='session_state').sequence};
         touch(state);
       }
+      for(const definition of pins.root.workflow.nodes)for(const attempt of state.nodes[definition.id]?.attempts??[]){
+        if(attempt.dispatch?.cancellation_pending&&nativePreparationNotStarted(pins,definition,attempt)){
+          attempt.dispatch.cancellation_pending=false;
+          attempt.cancellation_reconciliation={kind:'native_not_dispatched'};touch(state);
+        }
+      }
       if (state.status === 'cancelled') return;
       state.status = 'cancelled';
-      for (const node of Object.values(state.nodes)) if (!['succeeded', 'failed', 'skipped'].includes(node.status)) {
+      for (const [nodeId,node] of Object.entries(state.nodes)) if (!['succeeded', 'failed', 'skipped'].includes(node.status)) {
         node.status = 'cancelled';
         const attempt = node.attempts.find(item => item.id === node.active_attempt_id);
-        if (attempt) { attempt.status = 'cancelled'; if (attempt.dispatch) attempt.dispatch.cancellation_pending = !recordedClose(attempt); }
+        if (attempt) { attempt.status = 'cancelled'; if (attempt.dispatch) {
+          const definition=pins.root.workflow.nodes.find(item=>item.id===nodeId);
+          attempt.dispatch.cancellation_pending = !recordedClose(attempt)&&!nativePreparationNotStarted(pins,definition,attempt);
+        } }
       }
       for (const id of Object.keys(state.edges)) if (state.edges[id] === 'pending') state.edges[id] = 'skipped';
       touch(state);
     });
-    return publicRun(result);
+    return publicRun(await releaseCancelledNativePreparation(this,result));
   }
 
   async recordDispatchIntent(runId, { node_id, attempt_id, lease_token, request_id, envelope_hash, control_token }, authority = null) {
@@ -1821,7 +1830,7 @@ export class WorkflowRuntime {
   }
 
   async events(runId, { after_sequence = 0, control_token }) {
-    return this.#eventsFromRecord(await this.runs.read(runId), { after_sequence, control_token });
+    return this.#eventsFromRecord(await this.runs.observe(runId), { after_sequence, control_token });
   }
 
   #eventsFromRecord(record, { after_sequence = 0, control_token }) {

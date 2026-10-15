@@ -70,7 +70,7 @@ import { workflowResourceProgramRegistry } from './execution/workflow-resource-p
 import { inspectNativeAgents, inspectNativeParent, nativeParentThreadId, withNativeAgentObserver, withNativeAgentObserverDrive } from './execution/native-agent-observer.mjs';
 import { resolveMainModelSelection } from './execution/main-model-selection.mjs';
 import {workerHostCheckEffectPaths,nativeItemHasSemanticResult,nativeTextRepairSnapshot,readNativeTextRepair} from './execution/worker-host-check.mjs';
-import {applyTextAmendment,textAmendmentSchema} from './execution/native-text-amendment.mjs';
+import {applyTextAmendment,textAmendmentSchema,textAmendmentInstruction} from './execution/native-text-amendment.mjs';
 import {prepareNativeSpan,materializeWithNativeSpan,reuseNativeSpanPublication,settleNativeSpan,releaseNativeSpanOwner} from './execution/native-dispatch-span.mjs';
 import { WorkflowDrive } from './workflow-drive.mjs';
 import { WorkflowAuthoringCompiler, compileWorkflowBrief } from './skill-import/workflow-authoring.mjs';
@@ -864,7 +864,9 @@ export class WorkflowService {
           +(definition.fanout.shared_change_field?`A delegated entry remains allowed for ${definition.fanout.shared_change_field} work owned by the downstream shared-write owner. `:'')
           +'The Host retained accepted siblings. Return only the selected entries without IDs, positions, paths, hashes, tokens or receipts.';
       }
-      if(textRepair)repairPrompt=`Rejected result: ${reason}\nRevise only the sealed prior text using 1-based inclusive physical-line edits. Each selected line includes its separator. Replacement is exact text; nonempty non-EOF replacement must end in CRLF, LF or CR. Empty replacement deletes selected lines. Preserve all unrelated content. Return only this amendment JSON, without a full result, hashes or receipts.\nAllowed field/line scope: ${canonicalJSON(textRepair.snapshot.scope)}\nAmendment schema: ${canonicalJSON(textAmendmentSchema(textRepair.config))}`;
+      if(textRepair)repairPrompt=textRepair.config.addressing==='host_ranges'
+        ?`Rejected result: ${reason}\n${textAmendmentInstruction(textRepair.baseline,textRepair.snapshot.scope,textRepair.config)}\nAmendment schema: ${canonicalJSON(textAmendmentSchema(textRepair.config))}`
+        :`Rejected result: ${reason}\nRevise only the sealed prior text using 1-based inclusive physical-line edits. Each selected line includes its separator. Replacement is exact text; nonempty non-EOF replacement must end in CRLF, LF or CR. Empty replacement deletes selected lines. Preserve all unrelated content. Return only this amendment JSON, without a full result, hashes or receipts.\nAllowed field/line scope: ${canonicalJSON(textRepair.snapshot.scope)}\nAmendment schema: ${canonicalJSON(textAmendmentSchema(textRepair.config))}`;
       requireValue(repairPrompt.length<=200000,'CODEX_INPUT_LIMIT','Full native Host correction exceeds the actual 200000-character turn input bound');
       const intent={index,agent_id:agentId,item_index:unresolvedItemIndices[0]??null,task_bundle_sha256:repairPacket.task_bundle_sha256,
         followup_kind:'repair',rejection_count:rejectionCount,...(textRepairRef?{text_repair_ref:textRepairRef}:{})};

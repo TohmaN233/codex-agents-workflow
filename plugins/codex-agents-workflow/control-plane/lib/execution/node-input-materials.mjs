@@ -15,9 +15,15 @@ const NATIVE_BUNDLE_LIMIT = 32 * 1024 * 1024;
 // separate Host-written files without truncating later assignments.
 const NATIVE_TASK_INDEX_LIMIT = 16 * 1024;
 
-export const HOST_MAIN_INLINE_BUDGETS = Object.freeze({ item_bytes: 8192, resource_bytes: 8192, input_bytes: 8192, total_bytes: 12000 });
+// Admit complete behavioral references and task inputs under one portable
+// default. Shared sources then process reusable text before branch-specific
+// input; prompt/index admission below can still select complete file delivery.
+export const HOST_MAIN_INLINE_BUDGETS = Object.freeze({ item_bytes: 16384, resource_bytes: 16384, input_bytes: 16384, total_bytes: 32768 });
 
 export const MAIN_TASK_INLINE_LIMIT = 12000;
+// New dispatches pin the full admitted index budget. Missing fields identify
+// historical receipts whose published file must still be verified on replay.
+export const MAIN_TASK_CURRENT_INLINE_LIMIT = 16 * 1024;
 export const NATIVE_TASK_INLINE_LIMIT = 1024;
 export const TERMINAL_MAIN_INPUT_BUDGET=Object.freeze({item_bytes:32*1024,total_bytes:64*1024,reply_bytes:96*1024});
 // Generous metadata-only ceiling matching the pinned Run resource-byte budget.
@@ -328,11 +334,12 @@ export async function prepareHostMainContext({ directory, envelope, resources = 
   });
   const { entries, localAddresses } = await materializationPlan(rewrittenInputs, inputDirectory, envelope.workspace,
     { includeTask: true, localFiles: verifiedItems.map(item => item.local_path) });
+  const budgets=HOST_MAIN_INLINE_BUDGETS;
   let resourceBytes = 0, inputBytes = 0;
   const inline = (bytes, kind) => {
     const used = kind === 'resource' ? resourceBytes : inputBytes;
-    if (bytes > HOST_MAIN_INLINE_BUDGETS.item_bytes || used + bytes > HOST_MAIN_INLINE_BUDGETS[`${kind}_bytes`]
-      || resourceBytes + inputBytes + bytes > HOST_MAIN_INLINE_BUDGETS.total_bytes) return false;
+    if (bytes > budgets.item_bytes || used + bytes > budgets[`${kind}_bytes`]
+      || resourceBytes + inputBytes + bytes > budgets.total_bytes) return false;
     if (kind === 'resource') resourceBytes += bytes; else inputBytes += bytes;
     return true;
   };
@@ -346,7 +353,7 @@ export async function prepareHostMainContext({ directory, envelope, resources = 
     delivery:/\.(?:md|txt|rst)$/i.test(item.path)&&inline(item.bytes,'input')?'inline':'file'}));
   const compileEnvelope = structuredClone(envelope);
   compileEnvelope.inputs = { ...rewrittenInputs, ...localAddresses };
-  const compileCurrentProjection=()=>{
+  const compileCurrentProjection=(limit=maxPromptChars)=>{
   for (let index = 0; index < entries.length; index++) {
     const item = entries[index];
     compileEnvelope.inputs[item.name] = inputManifest[index].delivery === 'file' ? inputReferenceText(item) : rewrittenInputs[item.name];
@@ -361,28 +368,29 @@ export async function prepareHostMainContext({ directory, envelope, resources = 
   compileEnvelope.prompt_template = String(compileEnvelope.prompt_template ?? '').replace(
     'Resources listed below are logical identifiers, not filesystem paths. Use read_workflow_resource; cite resource IDs.',
     'Declared pinned resources below contain complete text or an exact Host-prepared local file address.');
-  return compilePrompt(compileEnvelope, maxPromptChars);
+  return compilePrompt(compileEnvelope, limit);
   };
-  let prompt=compileCurrentProjection(),indexSpillCount=0;
+  let prompt=compileCurrentProjection(Number.MAX_SAFE_INTEGER),indexSpillCount=0;
   // Count the serialized whole index, including instructions, scope, schema
   // and JSON escapes. Inline body budgets alone do not bound that carrier.
   // Choose delivery before committing its manifest; never truncate content.
-  if(taskIndexBytes){
     const candidates=[
       ...inputManifest.map((item,index)=>({item,bytes:item.bytes,path:entries[index].path,kind:'input'})),
       ...resourceManifest.map(item=>({item,bytes:item.bytes,kind:'resource'})),
       ...verifiedManifest.map(item=>({item,bytes:item.bytes,kind:'input'})),
     ].filter(({item})=>item.delivery==='inline').sort((a,b)=>b.bytes-a.bytes);
-    while(taskIndexBytes(prompt)>NATIVE_TASK_INDEX_LIMIT){
+    while(prompt.length>maxPromptChars||(taskIndexBytes&&taskIndexBytes(prompt)>NATIVE_TASK_INDEX_LIMIT)){
       const candidate=candidates.shift();
-      requireValue(candidate,'NATIVE_TASK_INDEX_LIMIT','Task instructions, scope and schema exceed the index limit even with all bound content in files');
+      const promptOverflow=prompt.length>maxPromptChars;
+      requireValue(candidate,promptOverflow?'PROMPT_LIMIT':'NATIVE_TASK_INDEX_LIMIT',
+        promptOverflow?'Node instructions, scope and schema exceed the prompt limit even with all bound content in files'
+          :'Task instructions, scope and schema exceed the index limit even with all bound content in files');
       candidate.item.delivery='file';
       if(candidate.path)candidate.item.path=candidate.path;
       if(candidate.kind==='resource')resourceBytes-=candidate.bytes;else inputBytes-=candidate.bytes;
       indexSpillCount++;
-      prompt=compileCurrentProjection();
+      prompt=compileCurrentProjection(Number.MAX_SAFE_INTEGER);
     }
-  }
   const audit = { basis: 'declared_bindings_and_pinned_resources', resource_count: resourceItems.length,
     resource_bytes: resourceItems.reduce((sum, item) => sum + item.bytes, 0),
     inline_resource_count: resourceManifest.filter(item => item.delivery === 'inline').length, inline_resource_bytes: resourceBytes,
@@ -393,7 +401,7 @@ export async function prepareHostMainContext({ directory, envelope, resources = 
     verified_file_count: verifiedItems.length, verified_file_bytes: verifiedItems.reduce((sum, item) => sum + item.bytes, 0),
     inline_verified_file_count:verifiedManifest.filter(item=>item.delivery==='inline').length,
     inline_verified_file_bytes:verifiedManifest.filter(item=>item.delivery==='inline').reduce((sum,item)=>sum+item.bytes,0),
-    prompt_bytes: Buffer.byteLength(prompt), inline_total_bytes: resourceBytes + inputBytes, budgets: HOST_MAIN_INLINE_BUDGETS,
+    prompt_bytes: Buffer.byteLength(prompt), inline_total_bytes: resourceBytes + inputBytes, budgets,
     ...(indexSpillCount?{index_spill_count:indexSpillCount}:{}) };
   const contract = { schema_version: 1, kind: 'host_main_context', resources: resourceManifest, inputs: inputManifest,
     local_addresses: localAddresses, verified_files: verifiedManifest,
@@ -483,7 +491,10 @@ export async function readMainTaskProjection(receipt, { materialize = false, art
   const bytes = Buffer.from(canonicalJSON(projection));
   requireValue(bytes.length <= NATIVE_TASK_INDEX_LIMIT, 'NATIVE_TASK_INDEX_LIMIT',
     `Main semantic task index exceeds ${NATIVE_TASK_INDEX_LIMIT} bytes`);
-  const inline = bytes.length <= MAIN_TASK_INLINE_LIMIT;
+  const inlineLimit=receipt.task_inline_limit??MAIN_TASK_INLINE_LIMIT;
+  requireValue([MAIN_TASK_INLINE_LIMIT,MAIN_TASK_CURRENT_INLINE_LIMIT].includes(inlineLimit),
+    'MAIN_ORCHESTRATION_BUNDLE','The Host receipt has an unsupported semantic task delivery budget');
+  const inline = bytes.length <= inlineLimit;
   if (inline) return { inline, task_bundle: projection };
   requireValue(artifactStore && typeof artifactStore.directory === 'function' && typeof artifactStore.saveArtifact === 'function'
     && typeof runId === 'string' && typeof attemptId === 'string',

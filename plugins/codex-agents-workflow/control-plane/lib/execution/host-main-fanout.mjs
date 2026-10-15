@@ -24,7 +24,7 @@ import {createCodexCommandBroker} from './codex-command-broker.mjs';
 import {ownedCommandDeclarations} from './owned-command-declarations.mjs';
 import {OWNED_MCP_NAMESPACE} from './owned-tool-mcp.mjs';
 import {createTypedBatchOutputTransport} from './typed-batch-output-transport.mjs';
-import {applyTextAmendment,textAmendmentSchema} from './native-text-amendment.mjs';
+import {applyTextAmendment,textAmendmentSchema,textAmendmentInstruction} from './native-text-amendment.mjs';
 
 const within=(path,root)=>{const key=value=>process.platform==='win32'?value.toLowerCase():value;path=key(path);root=key(root);return root==='.'||path===root||path.startsWith(root+'/');};
 async function settleAll(values,action,label){
@@ -170,7 +170,7 @@ export async function executeHostMainFanout(manager,entry,{record,envelope,bindi
         +(typedTransport?'Return readiness once through the declared API output contract.':'Return {"ready":true} once.');
       preparedPrefix=await manager.prefixFactory({parent:manager.parent,owner:{run_id:runId,node_id:binding.node_id,attempt_id:binding.attempt_id,phase:'shared-prefix'},
         hostAuth:manager.hostAuth,binary:settings.codex_binary,expectedBinaryHash:settings.binary_sha256,expectedBinaryPath:codexQualification(settings)?.resolved_path,dynamicToolFormat:codexQualification(settings)?.dynamic_tool_format,authentication:settings.authentication,rawObservation:codexQualification(settings)?.raw_observation,
-        cwd:commonDirectory,access:'read_only',sourceExecutionAccess:envelope.access,allowedPaths:[],env:augmentedRuntimeEnvironment(manager.env,envelope.constraints?.runtime_environment??record.state.runtime_environment??record.state.constraints?.runtime_environment,{workspace:envelope.workspace}),
+        cwd:commonDirectory,access:'read_only',sourceExecutionAccess:envelope.access,hostWorker:true,allowedPaths:[],env:augmentedRuntimeEnvironment(manager.env,envelope.constraints?.runtime_environment??record.state.runtime_environment??record.state.constraints?.runtime_environment,{workspace:envelope.workspace}),
         toolBroker:sourceBroker,authorize,assertActive,resolveModelSelection:select,shared_output_schema:itemOutputSchema,shared_repair_schema:repairSchema,skillPolicy:{...envelope.skill_policy,implicit:'deny'},allowedSkills,
         onPrefixOwned:owner=>{requireValue(!entry.prefixOwner&&typeof owner?.close==='function'&&typeof owner?.interrupt==='function','HOST_MAIN_PREFIX_OWNER','Shared prefix must have one explicit cleanup and interruption owner');entry.prefixOwner=owner;entry.poolResourceVersion++;},
         onProfilePrepared:profile=>event('profile_owned',{home:profile.home,...(profile.receipt_home?{receipt_home:profile.receipt_home}:{}),executable_sha256:profile.binary_sha256}),onModelCatalog:metadata=>event('model_catalog',metadata),
@@ -223,7 +223,7 @@ export async function executeHostMainFanout(manager,entry,{record,envelope,bindi
       const createSession=preparedPrefix?.openSession?options=>preparedPrefix.openSession(options):manager.sessionFactory;
       const created=await createSession({parent:manager.parent,owner:{run_id:runId,node_id:binding.node_id,attempt_id:binding.attempt_id,assignment_index:assignment.index,item_index:itemIndex},
         hostAuth:preparedPrefix||settings.authentication.mode==='host_chatgpt'?manager.hostAuth:undefined,binary:settings.codex_binary,expectedBinaryHash:settings.binary_sha256,expectedBinaryPath:codexQualification(settings)?.resolved_path,dynamicToolFormat:codexQualification(settings)?.dynamic_tool_format,authentication:settings.authentication,rawObservation:codexQualification(settings)?.raw_observation,
-        resolveModelSelection:select,...(preparedPrefix?{prefix:preparedPrefix.prefix}:{}),ephemeral:true,cwd:scope.cwd,access:envelope.access,allowedPaths:envelope.access==='bounded_write'?['.']:scope.itemPaths,
+        resolveModelSelection:select,...(preparedPrefix?{prefix:preparedPrefix.prefix}:{}),ephemeral:true,hostWorker:true,cwd:scope.cwd,access:envelope.access,allowedPaths:envelope.access==='bounded_write'?['.']:scope.itemPaths,
         ...(envelope.access==='bounded_write'?{ownedCommandTemp:true}:{}),
         env:augmentedRuntimeEnvironment(manager.env,envelope.constraints?.runtime_environment??record.state.runtime_environment??record.state.constraints?.runtime_environment,{workspace:scope.cwd}),toolBroker:broker,authorize,assertActive,skillPolicy:{...envelope.skill_policy,implicit:'deny'},allowedSkills,maxTurns:definition.retry.max_attempts,onSessionOwned:own,
         onProfilePrepared:profile=>event('profile_owned',{home:profile.home,...(profile.receipt_home?{receipt_home:profile.receipt_home}:{}),executable_sha256:profile.binary_sha256}),onModelCatalog:metadata=>event('model_catalog',metadata),
@@ -260,7 +260,7 @@ export async function executeHostMainFanout(manager,entry,{record,envelope,bindi
           catch(error){if(!['DATA_INVALID','NATIVE_TEXT_AMENDMENT'].includes(error.code)&&!(error instanceof SyntaxError))throw error;
             await event('completion_invalid',{correction,diagnostic:String(error.message).slice(0,900),thread_id:result.thread_id,turn_id:result.turn_id});if(correction+1===remaining)throw error;
             prompt=`Correct the prior JSON ${textRepair?'amendment':'result'}: ${String(error.message).slice(0,900)}. `+(textRepair
-              ?`Return only the requested amendment within the same sealed scope: ${canonicalJSON(textRepair.scope)}.`
+              ?textAmendmentInstruction(textRepair.baseline,textRepair.scope,amendmentConfig)
               :`Return the complete semantic result for assigned item ${itemIndex}.`);value=null;continue;}
           if(definition.completion_contract?.host_check){
           requireValue(typeof session.prepareHostCompletion==='function','CODEX_HOST_COMPLETION_BOUNDARY','Worker session has no command completion boundary');
@@ -273,7 +273,7 @@ export async function executeHostMainFanout(manager,entry,{record,envelope,bindi
               requireValue(correction+1<remaining,'MAIN_WORKER_HOST_CHECK_FALSE',`Worker Host completion rejected item ${itemIndex}: ${diagnostic.slice(0,900)}`);
               if(amendmentConfig){
                 textRepair={baseline:structuredClone(value),scope:structuredClone(workerHostCheck.repair_scope),reference:structuredClone(workerHostCheck.reference)};
-                prompt=`Original CLI correction for this same item ${itemIndex}: ${diagnostic}\nReturn only physical-line amendments for the prior manuscript. Use 1-based inclusive lines; each line includes its separator. Nonempty non-EOF replacement must end with CRLF, LF or CR. Preserve unrelated content. Allowed scope: ${canonicalJSON(textRepair.scope)}.`;
+                prompt=`Original CLI correction for this same item ${itemIndex}: ${diagnostic}\n${textAmendmentInstruction(textRepair.baseline,textRepair.scope,amendmentConfig)}`;
               }else prompt=workerHostCheckCorrectionPrompt(diagnostic,`this same item ${itemIndex}`);
               value=null;continue;
             }

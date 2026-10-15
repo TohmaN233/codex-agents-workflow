@@ -565,11 +565,13 @@ test('authorized execution preserves paused and cancelled Run barriers', async t
 test('Host tool receipt reconciliation reads one authorized projection before its unchanged commit', async t => {
   const f = await hostReceiptFixture(t);
   await f.runtime.recordHostToolReceipt(f.run.run_id, { ...f.args, receipt: f.receipt });
-  const read = f.runtime.runs.read.bind(f.runtime.runs); let reads = 0;
+  const read = f.runtime.runs.read.bind(f.runtime.runs), observe=f.runtime.runs.observe.bind(f.runtime.runs); let reads = 0,observations=0;
   f.runtime.runs.read = (...values) => { reads++; return read(...values); };
+  f.runtime.runs.observe = (...values) => { observations++; return observe(...values); };
   const completeNode = f.runtime.completeNode.bind(f.runtime);
   f.runtime.completeNode = (...values) => {
-    assert.equal(reads, 2, 'One projection read and the existing cancellation read precede the locked acceptance transaction');
+    assert.equal(reads, 1, 'Only the authorized projection precedes the locked acceptance transaction');
+    assert.equal(observations, 1, 'Cancellation uses strict lock-free lifecycle observation');
     return completeNode(...values);
   };
   const executor = new WorkflowExecutor({ runtime: f.runtime, hostToolRunner: { execute: () => assert.fail('A committed receipt must never rerun effects') } });

@@ -2,12 +2,52 @@ import {lstat,readFile,readdir,rm} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {join,resolve,dirname} from 'node:path';
 import {execFileSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {insideRoot,noSymlinks,requireValue} from '../control-plane/lib/workflow-paths.mjs';
 import {preflightNativeContextProfileRegistration,installNativeContextProfile} from './native-context-profile.mjs';
 
 const pluginRoot=resolve(dirname(fileURLToPath(import.meta.url)),'..');
 const defaultCacheRoot=()=>resolve(process.env.CODEX_HOME||join(homedir(),'.codex'),'plugins/cache/codex-agents-workflow/codex-agents-workflow');
+const sha256=bytes=>createHash('sha256').update(bytes).digest('hex');
+async function capturePluginSource(sourceRoot){
+ const root=resolve(sourceRoot),manifest=JSON.parse(await readFile(join(root,'.codex-plugin/plugin.json'),'utf8'));
+ requireValue(manifest.name==='codex-agents-workflow','PLUGIN_IDENTITY','Wrong plugin source');
+ const files=[];
+ async function visit(relative=''){
+  const entries=await readdir(join(root,relative),{withFileTypes:true});
+  for(const entry of entries.sort((a,b)=>a.name.localeCompare(b.name))){
+   const path=relative?relative+'/'+entry.name:entry.name;
+   if(entry.isDirectory())await visit(path);
+   else{
+    requireValue(entry.isFile(),'PLUGIN_SOURCE_ENTRY','Plugin source contains an unsupported entry: '+path);
+    files.push({path,sha256:sha256(await readFile(join(root,path)))});
+   }
+  }
+ }
+ await visit();
+ return {root,version:manifest.version,files,sha256:sha256(JSON.stringify(files))};
+}
+async function registerSource(source,runCli,codexHome){
+ const marketplaceRoot=resolve(source.root,'../..');
+ const catalog=JSON.parse(await readFile(join(marketplaceRoot,'.agents/plugins/marketplace.json'),'utf8'));
+ const entry=catalog.plugins?.find(item=>item.name==='codex-agents-workflow');
+ const path=typeof entry?.source==='string'?entry.source:entry?.source?.source==='local'?entry.source.path:undefined;
+ requireValue(catalog.name==='codex-agents-workflow'&&typeof path==='string'&&resolve(marketplaceRoot,path)===source.root,
+  'PLUGIN_SOURCE_CATALOG','Local marketplace must point at the source being installed');
+ const options={stdio:'inherit',windowsHide:true,...(codexHome?{env:{...process.env,CODEX_HOME:codexHome}}:{})};
+ await runCli('codex',['plugin','marketplace','add',marketplaceRoot],options);
+ await runCli('codex',['plugin','add','codex-agents-workflow@codex-agents-workflow'],options);
+}
+async function verifyPluginSource(source,deployedRoot){
+ for(const file of source.files){
+  let actual;
+  try{actual=sha256(await readFile(join(deployedRoot,file.path)));}
+  catch(error){if(error.code!=='ENOENT')throw error;}
+  requireValue(actual===file.sha256,'PLUGIN_SOURCE_MISMATCH','Installed plugin differs from selected source: '+file.path);
+ }
+ return {source_root:source.root,installed_root:deployedRoot,sha256:source.sha256,file_count:source.files.length};
+}
 export function selectObsoleteMcpEvents(lines,version,cacheRoot){
  const root=resolve(cacheRoot),marketplace=dirname(root).split(/[\\/]/).at(-1);
  const samePath=(left,right)=>typeof left==='string'&&(process.platform==='win32'
@@ -101,19 +141,26 @@ export async function retireObsoleteVersions(cacheRoot,currentVersion,{remove=rm
 // Installation keeps one active version. Obsolete cache directories are not a
 // rollback mechanism and must not silently accumulate after the CLI succeeds.
 export async function installLocal({
- install=()=>execFileSync('codex',['plugin','add','codex-agents-workflow@codex-agents-workflow'],{stdio:'inherit',windowsHide:true}),
+ install,runCli=execFileSync,sourceRoot,
  cacheRoot=defaultCacheRoot(),currentVersion,remove=rm,release=releaseObsoleteMcpProcesses,codexHome,
 }={}) {
- currentVersion??=JSON.parse(await readFile(join(pluginRoot,'.codex-plugin/plugin.json'),'utf8')).version;
+ // The CLI installs its registered marketplace, not the script's directory.
+ // Bind normal local installation to this checkout before invoking plugin add.
+ // Injected legacy installer fixtures can omit sourceRoot; real installs cannot.
+ if(!install)sourceRoot??=pluginRoot;
+ const source=sourceRoot?await capturePluginSource(sourceRoot):undefined;
+ currentVersion??=source?.version??JSON.parse(await readFile(join(pluginRoot,'.codex-plugin/plugin.json'),'utf8')).version;
+ if(source)requireValue(currentVersion===source.version,'PLUGIN_SOURCE_VERSION','Selected source version differs from requested installation');
  preflightNativeContextProfileRegistration({codexHome});
  const observedVersions=await observedObsoleteMcpVersions(currentVersion,cacheRoot,codexHome);
  // Normal updates must not sever every current-version client before the CLI
  // even runs. A sharing violation remains an explicit install failure; only
  // obsolete-version retirement after success may release its exact processes.
- await install();
+ if(install)await install();else await registerSource(source,runCli,codexHome);
+ const verifiedSource=source?await verifyPluginSource(source,resolve(cacheRoot,currentVersion)):undefined;
  const native_context_profile=installNativeContextProfile({codexHome,deployedPluginRoot:resolve(cacheRoot,currentVersion)});
  const retired=await retireObsoleteVersions(cacheRoot,currentVersion,{remove,release,observedVersions});
- return {installed:true,retained_versions:[],...retired,native_context_profile,
+ return {installed:true,retained_versions:[],...retired,native_context_profile,...(verifiedSource?{source:verifiedSource}:{}),
   mcp_connection_refresh_required:retired.released_processes.length>0};
 }
 

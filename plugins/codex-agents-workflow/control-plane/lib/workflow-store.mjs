@@ -213,6 +213,13 @@ export class WorkflowStore {
     requireValue(typeof action==='function','CONFIG_BOOTSTRAP_ACTION','Config bootstrap requires a callable transaction');
     return this.#withWriter(action,{timeoutMs:5000,initializationMs:250,onWait:admissionObserver(this.root),operation:'config_bootstrap'});
   }
+  // Append-only diagnostics have their own writer lane. They must neither
+  // acquire the configuration writer nor fail on a concurrent healthy append.
+  async withAuditWriter(action) {
+    requireValue(basename(this.root)==='.audit-writer','AUDIT_WRITER_SCOPE','Audit append requires its dedicated writer directory');
+    await ensureDirectory(this.root);
+    return this.#withWriter(action,{timeoutMs:5000,initializationMs:250,onWait:admissionObserver(this.root),operation:'audit'});
+  }
   // The fixed read-only single-Run observer has no ancestor/creation callback
   // and takes no global writer admission. Wait only on its exact Run guard;
   // retain the original bounded owner/recovery/liveness validation.

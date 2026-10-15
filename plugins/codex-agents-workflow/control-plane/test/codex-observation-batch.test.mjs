@@ -60,12 +60,15 @@ test('batch cap and semantic separators retain complete ingress order without cr
   assert.equal(f.client.notificationStats().batched_events,120);assert.equal(f.client.notificationStats().queued_bytes,0);await f.client.close();
 });
 
-test('bounded residual notification queue fails visibly without accepting terminal completion',async()=>{
+test('residual notification byte overflow fails visibly without accepting terminal completion',{timeout:5000},async t=>{
   const release=latch();const f=fixture({onEventBatch:()=>release.promise});
-  const turn=f.client.waitFor(()=>true).then(value=>({value}),error=>({error}));
-  f.emit(Array.from({length:300},()=>observations[0]));const result=await turn;
-  assert.equal(result.error.code,'CODEX_NOTIFICATION_QUEUE_LIMIT');assert.equal(result.value,undefined);
-  release.resolve();await f.client.close();
+  t.after(async()=>{release.resolve();await f.client.close();});
+  const turn=f.client.waitFor(()=>true,{timeout:1000}).then(value=>({value}),error=>({error}));
+  const payload='x'.repeat(128*1024);
+  f.emit(Array.from({length:70},(_,index)=>({method:'item/completed',params:{item:{id:String(index),type:'reasoning'},payload}})));
+  const result=await turn;
+  assert.equal(result.error.code,'CODEX_NOTIFICATION_QUEUE_LIMIT');assert.match(result.error.message,/byte bound/);
+  assert.equal(result.value,undefined);
 });
 
 test('actual normal session routes scrubbed metadata batches and shutdown flush through the owned client',async t=>{

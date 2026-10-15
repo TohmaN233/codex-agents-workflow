@@ -7,6 +7,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from './physical-tempdir.mjs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { spawn } from 'node:child_process';
 import { GitWorktrees } from '../lib/parallel/git-worktrees.mjs';
 
 import {
@@ -17,6 +18,8 @@ import {
   sanitizeConfig,
   saveConfig,
   validateConfig,
+  appendAuditEvent,
+  resolveAuditPath,
 } from '../lib/config.mjs';
 import { resolveSelection } from '../lib/control.mjs';
 import { buildProviderAdapter } from '../lib/providers.mjs';
@@ -28,6 +31,34 @@ async function fixture() {
   const config = await loadLegacyConfig({ configPath, defaultConfigPath: DEFAULT_CONFIG_PATH });
   return { dir, configPath, config };
 }
+
+test('audit appends do not acquire or wait for the configuration writer', {timeout:10000}, async t => {
+  const root=await mkdtemp(join(tmpdir(),'audit-config-lock-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const configPath=join(root,'config.json');
+  await new WorkflowStore(root).withWriter(async()=>{
+    await Promise.all(Array.from({length:8},(_,i)=>appendAuditEvent(configPath,{event:'audit-independent',detail:String(i)})));
+    assert.equal((await readFile(resolveAuditPath(configPath),'utf8')).trim().split('\n').length,8);
+  });
+});
+
+test('same-process and cross-process audit appends preserve every complete record', {timeout:15000}, async t => {
+  const root=await mkdtemp(join(tmpdir(),'audit-concurrent-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const configPath=join(root,'config.json'),module=new URL('../lib/config.mjs',import.meta.url).href;
+  const code=`const {appendAuditEvent}=await import(${JSON.stringify(module)});
+    await Promise.all(Array.from({length:12},(_,i)=>appendAuditEvent(process.argv[1],{event:'audit-child',detail:String(i)})));`;
+  const child=spawn(process.execPath,['--input-type=module','-e',code,configPath],{windowsHide:true,stdio:['ignore','ignore','pipe']});
+  let stderr='';child.stderr.on('data',chunk=>stderr+=chunk);
+  const closed=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
+  t.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill();await closed;});
+  const [,exit]=await Promise.all([
+    Promise.all(Array.from({length:12},(_,i)=>appendAuditEvent(configPath,{event:'audit-parent',detail:String(i)}))),closed,
+  ]);
+  assert.deepEqual(exit,{code:0,signal:null},stderr);
+  const rows=(await readFile(resolveAuditPath(configPath),'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(rows.length,24);assert.equal(new Set(rows.map(row=>`${row.event}:${row.detail}`)).size,24);
+});
 
 test('built-in native Providers contain one selectable entry per real model and effort', async () => {
   const { config } = await fixture();

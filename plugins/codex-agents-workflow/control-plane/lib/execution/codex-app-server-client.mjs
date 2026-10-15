@@ -140,6 +140,12 @@ export function createCodexClient(binary, { home, cwd, overrides = [], env = pro
   let startupStderr = '';
   let exited = false;
   let closing;
+  const pipeFailure=message=>{
+    const details={pid:child.pid??null,exit_seen:exited,transport_closed:closed,stdout_paused:child.stdout.isPaused(),
+      stdout_buffered_bytes:child.stdout.readableLength,stderr_buffered_bytes:child.stderr.readableLength,
+      notification_queue:notifications.length,notification_bytes:notificationBytes,notification_drain_pending:draining};
+    return Object.assign(new Error(message+'; transport='+JSON.stringify(details)),{code:'CODEX_APP_SERVER_PIPE_HELD',details});
+  };
   // Streaming deltas are activity signals, not replayable turn artifacts.
   // Retaining every token delta (or imposing a lifetime byte/event ceiling)
   // makes an otherwise healthy long turn fail while it is still active.
@@ -286,10 +292,11 @@ export function createCodexClient(binary, { home, cwd, overrides = [], env = pro
       return;
     }
     const bytes = Buffer.byteLength(JSON.stringify(message));
-    // Pause transport while durable callbacks drain. readline may already have
-    // decoded the current chunk; that residual queue has an explicit bound.
-    if (notifications.length >= 256 || notificationBytes + bytes > 8 * 1024 * 1024) {
-      fail(Object.assign(new Error('App Server notification queue exceeded its bound'), {code:'CODEX_NOTIFICATION_QUEUE_LIMIT'})); child.kill(); return;
+    // Pause transport while durable callbacks drain. readline can emit many
+    // small lines already decoded from the same chunk after stdout.pause().
+    // Bound actual bytes rather than rejecting that valid residual by count.
+    if (notificationBytes + bytes > 8 * 1024 * 1024) {
+      fail(Object.assign(new Error(`App Server notification queue exceeded its byte bound: queued=${notificationBytes}, incoming=${bytes}, limit=${8*1024*1024}`), {code:'CODEX_NOTIFICATION_QUEUE_LIMIT'})); child.kill(); return;
     }
     notifications.push({message,bytes}); notificationBytes += bytes;
     notificationStats.received++;notificationStats.peak_queued=Math.max(notificationStats.peak_queued,notifications.length);
@@ -368,7 +375,7 @@ export function createCodexClient(binary, { home, cwd, overrides = [], env = pro
         // native tools and plugin helpers wind down before forced termination.
         if (!child.stdin.destroyed) child.stdin.end();
         if (await settledWithin(closedPromise, 1500)) return;
-        if (exited) throw Object.assign(new Error('Owned App Server exited while a helper still holds its stdio pipes'), { code: 'CODEX_APP_SERVER_PIPE_HELD' });
+        if (exited) throw pipeFailure('Owned App Server exited while a helper still holds its stdio pipes');
         if (process.platform === 'win32' && Number.isInteger(child.pid)) {
           // The PID belongs to the child spawned by this client. Never target
           // a shared Codex process or a process discovered by name.
@@ -380,7 +387,7 @@ export function createCodexClient(binary, { home, cwd, overrides = [], env = pro
           }
         } else child.kill();
         if (!await settledWithin(exitedPromise, 2500)) throw Object.assign(new Error('Owned App Server did not exit after shutdown'), { code: 'CODEX_APP_SERVER_STOP_TIMEOUT' });
-        if (!await settledWithin(closedPromise, 1000)) throw Object.assign(new Error('Owned App Server or helper still holds stdio pipes'), { code: 'CODEX_APP_SERVER_PIPE_HELD' });
+        if (!await settledWithin(closedPromise, 1000)) throw pipeFailure('Owned App Server or helper still holds stdio pipes');
       })();
       const settlement=Promise.allSettled([transport,drain]).then(results=>{
         const failures=results.filter(result=>result.status==='rejected').map(result=>result.reason);

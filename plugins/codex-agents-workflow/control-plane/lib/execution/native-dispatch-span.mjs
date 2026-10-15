@@ -8,6 +8,7 @@ import {nodePermissions} from '../workflow-execution-envelope.mjs';
 import {assignedFanoutWritePaths,assertFanoutWriteScopesDisjoint} from './fanout-input-projection.mjs';
 import {readNativeTaskProjection} from './node-input-materials.mjs';
 import {readStartedEvent} from '../workflow-events.mjs';
+import {retireOwnedFile} from '../owned-file-retirement.mjs';
 
 const MAX_ENTRIES=20000,MAX_BYTES=2*1024*1024*1024;
 const identical=(a,b)=>['dev','ino','mode','nlink','size','mtimeNs','ctimeNs','birthtimeNs'].every(key=>a[key]===b[key]);
@@ -16,16 +17,36 @@ const same=(a,b)=>canonicalJSON(a??null)===canonicalJSON(b??null);
 const rootKey=path=>process.platform==='win32'?resolve(path).toLowerCase():resolve(path);
 const fail=(condition,code,message,details)=>requireValue(condition,`NATIVE_SPAN_${code}`,message,details);
 
+// Dispatch intent alone does not release work. A published packet, batch or
+// receipt remains uncertain even when no child acknowledgement was recorded.
+export function nativePreparationUnreleased(attempt){
+  return Boolean(attempt?.dispatch)&&!attempt.dispatch.receipt
+    &&!Object.keys(attempt.native_agents??{}).length&&!Object.keys(attempt.native_pending_spawns??{}).length
+    &&!Object.keys(attempt.native_spawn_batches??{}).length&&!attempt.native_pending_followup
+    &&!(attempt.native_dispatch_span?.publications??[]).length&&!attempt.native_dispatch_span?.publication_intent
+    &&!attempt.host_tool&&!Object.keys(attempt.worker_host_checks??{}).length;
+}
+export function nativePreparationNotStarted(pins,definition,attempt){
+  return pins.native_dispatch_span_version===1&&definition?.executor?.kind==='provider'
+    &&pins.providers?.some(provider=>provider.id===definition.executor.provider_id&&provider.kind==='native_agent')
+    &&nativePreparationUnreleased(attempt);
+}
+
 // Cooperative evidence, not an OS sandbox or a claim about the actor that
 // wrote a path. Include hidden entries, .git, types and directory topology.
 // Descriptor/path identity and directory listing checks make partial or
 // unstable coverage an error instead of a successful empty effect report.
-export async function captureNativeWorkspace(workspace,{subtree=null}={}){
-  const root=resolve(workspace),entries=[];let bytes=0;
+export async function captureNativeWorkspace(workspace,{subtree=null,hashPaths=null}={}){
+  const root=resolve(workspace),entries=[];let bytes=0,hashed=0;
+  const hashFile=path=>hashPaths===null||hashPaths.some(scope=>pathBoundaryContains(scope,path));
+  await noSymlinks(root);
   const visit=async(absolute,path)=>{
-    await noSymlinks(absolute);const before=await lstat(absolute,{bigint:true});
+    const before=await lstat(absolute,{bigint:true});
+    if(before.isSymbolicLink()&&hashPaths!==null&&!hashPaths.some(scope=>pathBoundaryContains(scope,path)||pathBoundaryContains(path,scope))){
+      entries.push({path,kind:'symlink',mode:Number(before.mode),bytes:Number(before.size),mtime_ns:String(before.mtimeNs),ctime_ns:String(before.ctimeNs)});return;
+    }
     fail(!before.isSymbolicLink(),'COVERAGE',`Symbolic workspace entry: ${path}`);
-    fail(entries.length<MAX_ENTRIES,'LIMIT','Native span exceeds its entry bound');
+    if(hashPaths===null)fail(entries.length<MAX_ENTRIES,'LIMIT','Native span exceeds its entry bound');
     if(before.isDirectory()){
       const names=(await readdir(absolute)).sort();entries.push({path,kind:'directory',mode:Number(before.mode)});
       for(const name of names)await visit(join(absolute,name),path?`${path}/${name}`:name);
@@ -33,6 +54,15 @@ export async function captureNativeWorkspace(workspace,{subtree=null}={}){
       fail(identical(before,after)&&same(names,(await readdir(absolute)).sort()),'UNSTABLE',`Directory changed during native snapshot: ${path}`);return;
     }
     fail(before.isFile(),'COVERAGE',`Unsupported workspace entry: ${path}`);
+    if(!hashFile(path)){
+      // Scope observation needs identity/timestamp metadata, not repository
+      // contents. Existing product checks own artifact integrity; exact Host
+      // material publication still carries its content hashes.
+      const after=await lstat(absolute,{bigint:true});
+      fail(identical(before,after),'UNSTABLE',`File changed during native observation: ${path}`);
+      entries.push({path,kind:'file',mode:Number(after.mode),bytes:Number(after.size),mtime_ns:String(after.mtimeNs),ctime_ns:String(after.ctimeNs)});return;
+    }
+    fail(++hashed<=MAX_ENTRIES,'LIMIT','Native span exceeds its declared content entry bound');
     bytes+=Number(before.size);fail(bytes<=MAX_BYTES,'LIMIT','Native span exceeds its content bound');
     const file=await open(absolute,constants.O_RDONLY|(process.platform==='win32'?0:constants.O_NOFOLLOW|constants.O_NONBLOCK));
     try{
@@ -46,7 +76,8 @@ export async function captureNativeWorkspace(workspace,{subtree=null}={}){
     const path=slash(relative(root,resolve(subtree)));fail(path&&!path.startsWith('../')&&path!=='..','PUBLICATION','Material subtree leaves workspace');
     try{await visit(resolve(subtree),path);}catch(error){if(error.code!=='ENOENT')throw error;fail(entries.length===0,'UNSTABLE','Material subtree disappeared during capture');}
   }else await visit(root,'');
-  return {schema_version:1,coverage:subtree===null?'whole_workspace':'exact_material_subtree',workspace:root,entries};
+  return {schema_version:1,coverage:subtree===null?'whole_workspace':'exact_material_subtree',workspace:root,entries,
+    ...(hashPaths===null?{}:{hash_paths:[...hashPaths]})};
 }
 
 export function nativeWorkspaceChanges(before,after){
@@ -96,7 +127,7 @@ export async function assertNativeSpanAdmission(runtime,record,nodeId,attemptId)
       const node=other.state.nodes[definition.id];
       for(const attempt of node.attempts){
         if(other.state.run_id===record.state.run_id&&definition.id===nodeId&&attempt.id===attemptId)continue;
-        const unfinished=attempt.native_dispatch_span&&!attempt.native_dispatch_span.settled_ref&&!attempt.native_dispatch_span.abandoned_ref;
+        const unfinished=attempt.native_dispatch_span&&!attempt.native_dispatch_span.settled_ref&&!attempt.native_dispatch_span.abandoned_ref&&!attempt.native_preparation_closure;
         const active=['claimed','running'].includes(attempt.status)&&nodePermissions(definition,other.state).access==='bounded_write';
         fail(!unfinished&&!active,'CONCURRENT_WRITER','Another same-root writer or unfinished native span prevents honest group effect evidence',
           {run_id:other.state.run_id,node_id:definition.id,attempt_id:attempt.id});
@@ -113,8 +144,39 @@ async function readOwner(runtime,workspace){
 }
 async function reserveOwner(runtime,identity){
   const path=ownerPath(runtime,identity.workspace),value=ownerIdentity(identity);await mkdir(dirname(path),{recursive:true});await noSymlinks(dirname(path));
-  try{const file=await open(path,'wx',0o600);try{await file.writeFile(canonicalJSON(value));await file.sync();}finally{await file.close();}}
-  catch(error){if(error.code!=='EEXIST')throw error;fail(same(await readOwner(runtime,identity.workspace),value),'CONCURRENT_WRITER','A different native dispatch owns this task-root effect span');}
+  try{const file=await open(path,'wx',0o600);try{await file.writeFile(canonicalJSON(value));await file.sync();}finally{await file.close();}return true;}
+  catch(error){if(error.code!=='EEXIST')throw error;fail(same(await readOwner(runtime,identity.workspace),value),'CONCURRENT_WRITER','A different native dispatch owns this task-root effect span');return false;}
+}
+async function retireOwner(runtime,owner){
+  const path=ownerPath(runtime,owner.workspace);
+  await retireOwnedFile(path,{stagingRoot:join(dirname(path),'.pending'),validate:bytes=>{
+    fail(same(JSON.parse(bytes.toString('utf8')),owner),'BINDING','Native root owner changed before release');
+  }});
+}
+async function closeUnstartedOwner(runtime,owner){
+  const record=await runtime.runs.mutate(owner.run_id,'execution_drain',(state,pins)=>{
+    const definition=pins.root.workflow.nodes.find(node=>node.id===owner.node_id);
+    const attempt=state.nodes[owner.node_id]?.attempts.find(item=>item.id===owner.attempt_id);
+    fail(['cancelled','failed','interrupted','blocked'].includes(attempt?.status)&&nativePreparationNotStarted(pins,definition,attempt),
+      'UNSETTLED','Native root release requires a stopped attempt with no released work');
+    fail(state.pins_hash===owner.pins_hash&&attempt.dispatch.request_id===owner.dispatch_request_id
+      &&rootKey(state.permissions.workspace)===rootKey(owner.workspace),'BINDING','Unstarted native owner differs from its original attempt');
+    attempt.native_preparation_closure={outcome:'not_started',owner_sha256:digest(canonicalJSON(owner))};
+    attempt.dispatch.cancellation_pending=false;
+  });
+  const current=await readOwner(runtime,owner.workspace);
+  // Another cleanup may already have retired this owner. Preserve any successor.
+  if(current&&same(current,owner))await retireOwner(runtime,owner);
+  return record;
+}
+export async function releaseCancelledNativePreparation(runtime,record){
+  if(record.pins.native_dispatch_span_version!==1)return record;
+  const owner=await readOwner(runtime,record.state.permissions.workspace);
+  if(!owner||owner.run_id!==record.state.run_id)return record;
+  const definition=record.pins.root.workflow.nodes.find(node=>node.id===owner.node_id);
+  const attempt=record.state.nodes[owner.node_id]?.attempts.find(item=>item.id===owner.attempt_id);
+  if(!['cancelled','failed','interrupted','blocked'].includes(attempt?.status)||!nativePreparationNotStarted(record.pins,definition,attempt))return record;
+  return closeUnstartedOwner(runtime,owner);
 }
 export async function requireNativeRootClaim(runtime,state,definition,existing){
   if(nodePermissions(definition,state).access!=='bounded_write')return;
@@ -124,9 +186,12 @@ export async function requireNativeRootClaim(runtime,state,definition,existing){
   // The narrow lifecycle read supplies no execution permission; this claim's
   // original fully audited transaction still controls its own authority.
   const {state:previous}=await runtime.runs.readNativeWaitState(owner.run_id),attempt=previous.nodes[owner.node_id]?.attempts.find(a=>a.id===owner.attempt_id);
-  await requireClosedOwner(runtime,owner.run_id,attempt,'CONCURRENT_WRITER');
+  if(['cancelled','failed','interrupted','blocked'].includes(attempt?.status)&&nativePreparationUnreleased(attempt)){
+    await closeUnstartedOwner(runtime,owner);return;
+  }
+  await requireClosedOwner(runtime,owner.run_id,attempt,'CONCURRENT_WRITER',owner);
   fail(same(await readOwner(runtime,state.permissions.workspace),owner),'BINDING','Native root owner changed during settled release');
-  await unlink(ownerPath(runtime,state.permissions.workspace));
+  await retireOwner(runtime,owner);
 }
 export async function releaseNativeSpanOwner(runtime,record,definition,attempt){
   if(record.pins.native_dispatch_span_version!==1||!attempt.native_dispatch_span?.settled_ref&&!attempt.native_dispatch_span?.abandoned_ref)return;
@@ -137,11 +202,13 @@ export async function releaseNativeSpanOwner(runtime,record,definition,attempt){
   fail(same(owner,ownerIdentity(attempt.native_dispatch_span.identity)),'BINDING','Native task-root admission owner changed before release');
   await unlink(ownerPath(runtime,record.state.permissions.workspace));
 }
-async function requireClosedOwner(runtime,runId,attempt,code){
+async function requireClosedOwner(runtime,runId,attempt,code,owner){
   const span=attempt?.native_dispatch_span;
   const accepted=attempt?.status==='succeeded'&&span?.settled_ref&&same(attempt.completion?.evidence.find(e=>e.kind==='native_dispatch_span')?.reference,span.settled_ref);
-  const abandoned=span?.abandoned_ref&&span.closure?.outcome==='abandoned'&&['failed','interrupted','blocked'].includes(attempt.status);
-  fail(accepted||abandoned,code,'An unfinished native dispatch owns the task-root write admission');
+  const abandoned=span?.abandoned_ref&&span.closure?.outcome==='abandoned'&&['failed','interrupted','blocked','cancelled'].includes(attempt.status);
+  const unstarted=owner&&attempt?.native_preparation_closure?.outcome==='not_started'
+    &&attempt.native_preparation_closure.owner_sha256===digest(canonicalJSON(owner))&&nativePreparationUnreleased(attempt);
+  fail(accepted||abandoned||unstarted,code,'An unfinished native dispatch owns the task-root write admission');
   if(abandoned){const closed=await artifact(runtime,runId,span.abandoned_ref);
     fail(closed.kind==='native_dispatch_abandoned'&&same(closed.identity,span.identity)&&same(closed.before_ref,span.before_ref)
       &&same(closed.terminal_turns,span.closure.terminal_turns),'BINDING','Abandoned native owner lacks its exact durable failed closure');}
@@ -181,14 +248,25 @@ export async function prepareNativeSpan(runtime,record,definition,binding,dispat
   fail(resolve(dispatched.envelope.workspace)===root,'WORKSPACE','Native span requires the exact task workspace; isolated external roots need separate evidence');
   let span=attempt.native_dispatch_span;
   if(!span){
-    await assertNativeSpanAdmission(runtime,record,definition.id,attempt.id);
-    await reserveOwner(runtime,identity);
-    await assertNativeSpanAdmission(runtime,record,definition.id,attempt.id);
     fail(!Object.keys(attempt.native_agents??{}).length&&!Object.keys(attempt.native_pending_spawns??{}).length,'BEFORE_REQUIRED','Cannot invent a native baseline after a possibly-started spawn');
-    const before={kind:'native_dispatch_before',identity,snapshot:await captureNativeWorkspace(root)};
-    const before_ref=await runtime.runs.saveArtifact(runId,`native-before-${attempt.id}`,canonicalJSON(before));
-    await runtime.recordNativeSpan(runId,{...binding,phase:'before',value:{before_ref,identity,publications:[]}});
-    span={before_ref,identity,publications:[]};
+    await assertNativeSpanAdmission(runtime,record,definition.id,attempt.id);
+    const reserved=await reserveOwner(runtime,identity);
+    try{
+      await assertNativeSpanAdmission(runtime,record,definition.id,attempt.id);
+      const materialRoot=slash(relative(root,join(root,'work','.workflow-runtime','native-agent',runId,attempt.id)));
+      const hashPaths=[materialRoot];
+      const before={kind:'native_dispatch_before',identity,snapshot:await captureNativeWorkspace(root,{hashPaths})};
+      const before_ref=await runtime.runs.saveArtifact(runId,`native-before-${attempt.id}`,canonicalJSON(before));
+      await runtime.recordNativeSpan(runId,{...binding,phase:'before',value:{before_ref,identity,publications:[]}});
+      span={before_ref,identity,publications:[]};
+    }catch(error){
+      if(reserved)try{
+        const {state}=await runtime.runs.readNativeWaitState(runId),current=state.nodes[definition.id]?.attempts.find(item=>item.id===attempt.id);
+        const owner=await readOwner(runtime,root);
+        if(!current?.native_dispatch_span&&nativePreparationUnreleased(current)&&same(owner,ownerIdentity(identity)))await retireOwner(runtime,owner);
+      }catch(cleanup){throw new AggregateError([error,cleanup],'Native preparation failed and its reservation cleanup failed',{cause:error});}
+      throw error;
+    }
   }else fail(same(await readOwner(runtime,root),ownerIdentity(span.identity)),'BINDING','Native publication lost its exact task-root owner');
   requireIdentity(span.identity,identity,attempt);
   return {runId,attempt,identity,root,span};
@@ -263,7 +341,7 @@ export async function settleNativeSpan(runtime,record,definition,attempt,binding
     'UNSETTLED','Every possibly-started spawn, follow-up and Host check must settle before native group evidence');
   const before=await artifact(runtime,record.state.run_id,span.before_ref),values=await publications(runtime,record.state.run_id,span);
   fail(same(before.identity,span.identity)&&before.snapshot.coverage==='whole_workspace','BINDING','Native initial snapshot is not its sealed whole-root evidence');
-  const current=await captureNativeWorkspace(span.identity.workspace);verifyPublications(current,values);
+  const current=await captureNativeWorkspace(span.identity.workspace,{hashPaths:before.snapshot.hash_paths??null});verifyPublications(current,values);
   for(const value of values)for(const packet of value.packets)await readNativeTaskProjection(packet);
   const publicationEntries=new Map(values.flatMap(value=>value.entries).map(entry=>[entry.path,entry]));
   const changes=nativeWorkspaceChanges(before.snapshot,current),changed_paths=[];
@@ -324,6 +402,6 @@ export async function requireNativeSpanCompletion(runtime,runId,record,definitio
   fail(span?.settled_ref&&same(proof?.reference,span.settled_ref),'EVIDENCE','Native completion lacks the exact settled group evidence');
   const settled=await artifact(runtime,runId,span.settled_ref);
   fail(settled.kind==='native_dispatch_settled'&&same(settled.identity,span.identity)&&same(settled.before_ref,span.before_ref),'BINDING','Settled native evidence belongs to another span');
-  fail(same(settled.snapshot,await captureNativeWorkspace(span.identity.workspace)),'STALE','Workspace changed after native span settled');
+  fail(same(settled.snapshot,await captureNativeWorkspace(span.identity.workspace,{hashPaths:settled.snapshot.hash_paths??null})),'STALE','Workspace changed after native span settled');
   return settled.changed_paths;
 }

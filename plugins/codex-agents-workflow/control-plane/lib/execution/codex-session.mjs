@@ -281,7 +281,7 @@ async function createNormalSession(options,prefixLease,onLeaseTransferred){
   requireValue(['tagged_function', 'untagged_function'].includes(options.dynamicToolFormat),
     'CODEX_CAPABILITY_UNSUPPORTED', 'Normal Codex session requires the selected executable dynamic-tool capability evidence');
   const executionAccess=options[SOURCE_EXECUTION_ACCESS]??access;
-  let executionPolicy = cooperativeExecutionPolicy(executionAccess);
+  let executionPolicy = cooperativeExecutionPolicy(executionAccess,undefined,{hostWorker:options.hostWorker===true});
   const authenticationMode = options.authentication?.mode ?? (options.hostAuth ? 'host_chatgpt' : 'managed_chatgpt');
   requireValue(['host_chatgpt', 'managed_chatgpt', 'environment_api_key'].includes(authenticationMode),
     'CODEX_AUTH_MODE', 'Unsupported normal Codex authentication mode');
@@ -787,7 +787,7 @@ async function createNormalSession(options,prefixLease,onLeaseTransferred){
       requireValue(sourceHome&&options[SOURCE_COMMON_ONLY]&&preparedDiscovery.selection&&preparedDiscovery.authentication?.type==='chatgpt',
         'CODEX_PREFIX_SOURCE','Prepared discovery belongs only to an authenticated common-only source');
       ({model,effort}=preparedDiscovery.selection);resolvedSelection=structuredClone(preparedDiscovery.selection);
-      executionPolicy=cooperativeExecutionPolicy(executionAccess,resolvedSelection.main_execution_context);
+      executionPolicy=cooperativeExecutionPolicy(executionAccess,resolvedSelection.main_execution_context,{hostWorker:options.hostWorker===true});
       authAccountId=preparedDiscovery.account_id;
       await record({model,effort,sandbox:executionPolicy.thread_sandbox,execution_policy:executionPolicy});
       if(options.onSessionOwned)await options.onSessionOwned(session);requireOpen();
@@ -812,7 +812,7 @@ async function createNormalSession(options,prefixLease,onLeaseTransferred){
         'CODEX_SESSION_ARGUMENTS', 'The owned discovery client did not resolve Main model and effort');
       ({model,effort}=selection);
       resolvedSelection=structuredClone(selection);
-      executionPolicy=cooperativeExecutionPolicy(executionAccess,selection.main_execution_context);
+      executionPolicy=cooperativeExecutionPolicy(executionAccess,selection.main_execution_context,{hostWorker:options.hostWorker===true});
       await record({model,effort,sandbox:executionPolicy.thread_sandbox,execution_policy:executionPolicy});
     }
     if (authentication.authenticated) {
