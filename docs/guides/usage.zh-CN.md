@@ -67,8 +67,8 @@ Windows 启动器根据 Codex 已安装插件记录启动；macOS/Linux 脚本�
 | 预设 | 适用工作 |
 | --- | --- |
 | GPT-6 Luna / Max | 普通常规检查、文档和边界明确的实现 |
-| GPT-6.1 Sol / High | 复杂实现、跨模块分析和独立审查 |
-| GPT-6 Astra / Medium | 困难规划、新的因果诊断和未解决的设计取舍 |
+| GPT-6.2 Sol / High | 复杂实现、跨模块分析和独立审查 |
+| GPT-6.2 Astra / Medium | 困难规划、新的因果诊断和未解决的设计取舍 |
 
 这些 Provider 路由可以编辑。只读扫描或普通审计本身不需要规划模型。生成的独立 worker 默认使用 Provider 子 Agent，并获得本次任务范围内的写权限；实际会话中的判断与协调使用 Main（orchestration）。Main worker 和持久 Thread 是你在编辑器中选择的可选项。
 

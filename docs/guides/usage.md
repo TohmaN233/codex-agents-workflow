@@ -67,8 +67,8 @@ The current authoring presets distinguish task difficulty:
 | Preset | Intended work |
 | --- | --- |
 | GPT-6 Luna / Max | Routine bounded inspection, documentation and implementation |
-| GPT-6.1 Sol / High | Complex implementation, cross-module analysis and independent review |
-| GPT-6 Astra / Medium | Difficult planning, novel causal diagnosis and unresolved design tradeoffs |
+| GPT-6.2 Sol / High | Complex implementation, cross-module analysis and independent review |
+| GPT-6.2 Astra / Medium | Difficult planning, novel causal diagnosis and unresolved design tradeoffs |
 
 These are editable Provider routes. A read-only scan or ordinary audit does not by itself require a planning model. Generated independent workers default to Provider subagents with task-scoped write access; actual conversation decisions and orchestration use Main (orchestration). Main workers and persistent Threads are optional choices you make in the editor.
 

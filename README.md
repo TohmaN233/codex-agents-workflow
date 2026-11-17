@@ -14,7 +14,7 @@ A useful AI process often outgrows one prompt: gather the right material, split 
 
 Your current Main conversation keeps the decisions and final acceptance. Workers receive the materials their steps need. The local Host handles scheduling, handoffs, tools, and recorded progress.
 
-Version **1.2.2** narrows worker receipt checks to declared products, preserving original tool diagnostics and artifact checks without freezing renderer state directories. The workbench checks for updates when opened and provides a GitHub Star link; update checks never block Runs.
+Version **1.2.3** updates the built-in Sol and Astra providers to GPT-6.2. Version 1.2.2 narrowed worker receipt checks to declared products, preserving original tool diagnostics and artifact checks without freezing renderer state directories. The workbench checks for updates when opened and provides a GitHub Star link; update checks never block Runs.
 
 ![The visual editor: connect steps, choose Providers, and run the graph](docs/assets/tutorial/workbench-editor.png)
 
