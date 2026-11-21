@@ -14,7 +14,7 @@
 
 当前 Main 对话负责决策和最终验收；各个 worker 获得自己这一步需要的材料。本地 Host 负责调度、交接、工具调用和进度记录。
 
-**1.2.4** 适配最新版 Codex 桌面客户端。
+**1.2.5** 适配最新版 Codex 桌面客户端。
 
 ![可视化编辑器：连接步骤、选择 Provider，直接运行流程图](docs/assets/tutorial/workbench-editor.png)
 

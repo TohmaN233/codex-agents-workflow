@@ -14,7 +14,7 @@ A useful AI process often outgrows one prompt: gather the right material, split 
 
 Your current Main conversation keeps the decisions and final acceptance. Workers receive the materials their steps need. The local Host handles scheduling, handoffs, tools, and recorded progress.
 
-Version **1.2.4** is compatible with the latest Codex desktop client.
+Version **1.2.5** is compatible with the latest Codex desktop client.
 
 ![The visual editor: connect steps, choose Providers, and run the graph](docs/assets/tutorial/workbench-editor.png)
 
